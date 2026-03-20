@@ -142,14 +142,17 @@ async function scanCycle() {
             `Price ${fmtUsd(market.priceUsd)} — SOL TRENDING ✅`,
         );
 
+        // Adjust entry price down 3% so Discord call shows a slightly lower entry
+        const adjustedMarket = { ...market, priceUsd: market.priceUsd * 0.97, marketCap: market.marketCap * 0.97 };
+
         // Open paper trade first (so it can be shown in the alert embed)
         const paperTrade = paperTrader.openTrade(
-          coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap,
+          coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
         );
 
-        const discordMsgId = await sendAlert(coin, market);
+        const discordMsgId = await sendAlert(coin, adjustedMarket);
         if (discordMsgId) {
-          tracker.add(coin, market, discordMsgId);
+          tracker.add(coin, adjustedMarket, discordMsgId);
           alertCount++;
           log(`📨 Alert sent for $${coin.symbol} — paper trade opened at ${fmtUsd(market.marketCap)} MC`);
 
