@@ -459,6 +459,9 @@ async function main() {
   // Ensure data directory exists (important for Railway volumes)
   mkdirSync(CONFIG.DATA_DIR, { recursive: true });
 
+  // Start dashboard HTTP server FIRST so Railway health check passes
+  startDashboard();
+
   console.log('');
   console.log('╔═══════════════════════════════════════════════════╗');
   console.log('║       5-Minute Volume Scanner v2.0                ║');
@@ -500,9 +503,6 @@ async function main() {
     console.log('  Trading:        DISABLED (paper only)');
     console.log('');
   }
-
-  // Start dashboard HTTP server (uses PORT env on Railway, 3000 locally)
-  startDashboard();
 
   if (tracker.size > 0) {
     log(`Loaded ${tracker.size} previous calls — milestone tracking continues`);
