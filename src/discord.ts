@@ -73,29 +73,6 @@ function buyRow(mint: string): string {
   ].join('    ');
 }
 
-function buyButtons(mint: string) {
-  return [
-    {
-      type: 1, // Action Row
-      components: [
-        {
-          type: 2,    // Button
-          style: 5,   // Link
-          label: 'Buy on GMGN',
-          url: `https://gmgn.ai/sol/token/PumpClaw_${mint}`,
-          emoji: { name: '🐸' },
-        },
-        {
-          type: 2,
-          style: 5,
-          label: 'Buy on Axiom',
-          url: `https://axiom.trade/t/${mint}/@noose?chain=sol`,
-          emoji: { name: '🔺' },
-        },
-      ],
-    },
-  ];
-}
 
 // ── Alert embed (description-based) ────────────────────────
 
@@ -144,8 +121,8 @@ function buildAlertEmbed(
 
   lines.push('');
   lines.push(linkRow(coin.mint));
-  lines.push(buyRow(coin.mint));
   lines.push(`\`\`\`${coin.mint}\`\`\``);
+  lines.push(buyRow(coin.mint));
 
   // ── Performance section ──
   if (snapshots.length > 0) {
@@ -198,7 +175,6 @@ function buildAlertEmbed(
       footer: { text: footerText },
       timestamp: new Date().toISOString(),
     }],
-    components: buyButtons(coin.mint),
   };
 }
 
@@ -227,8 +203,8 @@ function buildMilestoneEmbed(rec: CallRecord, multiplier: number, currentPrice: 
 
   lines.push('');
   lines.push(linkRow(rec.mint));
-  lines.push(buyRow(rec.mint));
   lines.push(`\`\`\`${rec.mint}\`\`\``);
+  lines.push(buyRow(rec.mint));
 
   return {
     embeds: [{
@@ -239,7 +215,6 @@ function buildMilestoneEmbed(rec: CallRecord, multiplier: number, currentPrice: 
       footer: { text: `Peak: ${rec.peakMultiplier.toFixed(1)}X  ·  Entry MC ${fmtUsd(rec.entryMC)}` },
       timestamp: new Date().toISOString(),
     }],
-    components: buyButtons(rec.mint),
   };
 }
 
