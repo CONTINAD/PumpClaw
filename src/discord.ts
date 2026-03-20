@@ -198,6 +198,7 @@ function buildAlertEmbed(
       footer: { text: footerText },
       timestamp: new Date().toISOString(),
     }],
+    components: buyButtons(coin.mint),
   };
 }
 
@@ -238,6 +239,7 @@ function buildMilestoneEmbed(rec: CallRecord, multiplier: number, currentPrice: 
       footer: { text: `Peak: ${rec.peakMultiplier.toFixed(1)}X  ·  Entry MC ${fmtUsd(rec.entryMC)}` },
       timestamp: new Date().toISOString(),
     }],
+    components: buyButtons(rec.mint),
   };
 }
 
