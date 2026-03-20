@@ -107,11 +107,11 @@ async function scanCycle() {
         if (market.volume5m < volThreshold) continue;
 
         // Skip coins that are dumping — already peaked and on the way down
-        if (market.priceChange1h < -30) {
+        if (market.priceChange1h < -40) {
           log(`⚠ DUMP — skipping ${post.name}: 1h change ${market.priceChange1h.toFixed(1)}% (was higher, now crashing)`);
           continue;
         }
-        if (market.priceChange5m < -15) {
+        if (market.priceChange5m < -25) {
           log(`⚠ DUMP — skipping ${post.name}: 5m change ${market.priceChange5m.toFixed(1)}% (actively dumping)`);
           continue;
         }
