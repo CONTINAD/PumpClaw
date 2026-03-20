@@ -94,34 +94,65 @@ export class Trader {
       return null;
     }
 
-    // Check SOL balance and calculate entry size (5% of balance)
+    // Check SOL balance and calculate entry size
     let balance: number;
-    try {
-      balance = await getSolBalance();
-    } catch (err: any) {
-      console.error(`[Trader] Balance check failed: ${err.message}`);
-      return null;
+    for (let balAttempt = 1; balAttempt <= 3; balAttempt++) {
+      try {
+        balance = await getSolBalance();
+        break;
+      } catch (err: any) {
+        console.error(`[Trader] Balance check failed (attempt ${balAttempt}): ${err.message}`);
+        if (balAttempt < 3) {
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          return null;
+        }
+      }
     }
 
-    if (balance < CONFIG.TRADE_MIN_SOL_BALANCE) {
-      console.log(`[Trader] Balance too low: ${balance.toFixed(4)} SOL (min ${CONFIG.TRADE_MIN_SOL_BALANCE})`);
-      return null;
-    }
-
-    const rawEntry = Math.floor(balance * CONFIG.TRADE_ENTRY_PCT * 1000) / 1000; // round down to 3 decimals
+    const rawEntry = Math.floor(balance! * CONFIG.TRADE_ENTRY_PCT * 1000) / 1000;
     const entrySol = Math.max(rawEntry, CONFIG.TRADE_MIN_ENTRY_SOL);
-    if (balance - entrySol < CONFIG.TRADE_MIN_SOL_BALANCE) {
-      console.log(`[Trader] Not enough balance for min entry: ${balance.toFixed(4)} SOL - ${entrySol} SOL would leave < ${CONFIG.TRADE_MIN_SOL_BALANCE}`);
+
+    // Need at least enough for the entry + a tiny bit for tx fees (~0.005 SOL)
+    if (balance! < entrySol + 0.005) {
+      console.log(`[Trader] Balance too low for entry: ${balance!.toFixed(4)} SOL (need ${entrySol} + fees)`);
       return null;
     }
 
-    // Execute buy
-    let result: SwapResult;
-    try {
-      console.log(`[Trader] Buying $${symbol} with ${entrySol} SOL (${(CONFIG.TRADE_ENTRY_PCT * 100).toFixed(0)}% of ${balance.toFixed(4)} SOL, min ${CONFIG.TRADE_MIN_ENTRY_SOL})...`);
-      result = await jupiterBuy(mint, entrySol);
-    } catch (err: any) {
-      console.error(`[Trader] Buy failed for $${symbol}: ${err.message}`);
+    // Execute buy with retry + confirmation check
+    let result: SwapResult | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`[Trader] Buying $${symbol} with ${entrySol} SOL (${(CONFIG.TRADE_ENTRY_PCT * 100).toFixed(0)}% of ${balance!.toFixed(4)} SOL)${attempt > 1 ? ` [RETRY #${attempt}]` : ''}...`);
+        result = await jupiterBuy(mint, entrySol);
+        break;
+      } catch (err: any) {
+        console.error(`[Trader] Buy failed for $${symbol} (attempt ${attempt}): ${err.message}`);
+
+        // Check if tokens arrived despite the error (tx may have gone through)
+        try {
+          const tokenBal = await getTokenBalance(mint);
+          if (tokenBal > 0) {
+            console.log(`[Trader] ⚠ Buy error but tokens detected (${tokenBal}) — treating as success`);
+            result = {
+              txSignature: 'confirmed-via-balance-check',
+              inputAmount: Math.floor(entrySol * 1e9),
+              outputAmount: tokenBal,
+              priceImpactPct: 0,
+            };
+            break;
+          }
+        } catch { /* ignore balance check error */ }
+
+        if (attempt < 3) {
+          console.log(`[Trader] Retrying buy for $${symbol} in 3s...`);
+          await new Promise(r => setTimeout(r, 3000));
+        }
+      }
+    }
+
+    if (!result) {
+      console.error(`[Trader] ❌ Buy FAILED after 3 attempts for $${symbol}`);
       return null;
     }
 
