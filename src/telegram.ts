@@ -103,7 +103,7 @@ export interface TrendingPost {
 
 // Regex to extract CA + name from the Soul_Sniper_Bot link followed by "New ... Trending"
 const POST_PATTERN =
-  /Soul_Sniper_Bot\?start=\w+_([A-Za-z0-9]{30,50}pump)[^>]*>[^<]*<b[^>]*>[\u200e\u200f]?([^<]+)<\/b><\/a><b>\s*New\s*<\/b>/g;
+  /Soul_Sniper_Bot\?start=\w+_([A-Za-z0-9]{30,50}(?:pump|bonk))[^>]*>[^<]*<b[^>]*>[\u200e\u200f]?([^<]+)<\/b><\/a><b>\s*New\s*<\/b>/g;
 
 // Regex to extract Telegram message IDs (for dedup between scrapes)
 const MSG_ID_PATTERN = /data-post="solearlytrending\/(\d+)"/g;
