@@ -11,6 +11,7 @@ import { Trader } from './trader.js';
 import { getWallet, getSolBalance } from './wallet.js';
 import { checkBundle } from './bundle-check.js';
 import { jupiterQuoteSol } from './jupiter.js';
+import { startDashboard } from './dashboard.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
 // ── Leaderboard timestamp persistence ───────────────────────
@@ -499,6 +500,9 @@ async function main() {
     console.log('  Trading:        DISABLED (paper only)');
     console.log('');
   }
+
+  // Start dashboard HTTP server (uses PORT env on Railway, 3000 locally)
+  startDashboard();
 
   if (tracker.size > 0) {
     log(`Loaded ${tracker.size} previous calls — milestone tracking continues`);

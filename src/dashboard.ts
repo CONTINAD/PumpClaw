@@ -666,8 +666,6 @@ function formatExitReasonJS(reason: string): string {
 
 // ── Server ──────────────────────────────────────────────────
 
-const PORT = 3000;
-
 // Pre-load Chart.js once at startup
 const chartJsSource = readFileSync(join(__dirname, 'chart.min.js'), 'utf-8');
 
@@ -677,49 +675,59 @@ function parseRange(url: string): TimeRange {
   return (val in RANGE_MS) ? val as TimeRange : 'all';
 }
 
-const server = createServer((req, res) => {
-  const url = req.url ?? '/';
-  const pathname = url.split('?')[0];
+export function startDashboard(port?: number): void {
+  const PORT = port ?? parseInt(process.env.PORT || '3000', 10);
+  const HOST = process.env.PORT ? '0.0.0.0' : '127.0.0.1'; // Railway needs 0.0.0.0
 
-  if (pathname === '/chart.js') {
-    res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=86400' });
-    res.end(chartJsSource);
-  } else if (pathname === '/' || pathname === '/dashboard') {
-    try {
-      const range = parseRange(url);
-      const data = buildDashboardData(range);
-      const html = buildHTML(data, range);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
-    } catch (err: any) {
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
-    }
-  } else if (pathname === '/api/data') {
-    try {
-      const range = parseRange(url);
-      const data = buildDashboardData(range);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(data, null, 2));
-    } catch (err: any) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-  } else {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not found');
-  }
-});
+  const server = createServer((req, res) => {
+    const url = req.url ?? '/';
+    const pathname = url.split('?')[0];
 
-server.listen(PORT, '127.0.0.1', () => {
+    if (pathname === '/chart.js') {
+      res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=86400' });
+      res.end(chartJsSource);
+    } else if (pathname === '/' || pathname === '/dashboard') {
+      try {
+        const range = parseRange(url);
+        const data = buildDashboardData(range);
+        const html = buildHTML(data, range);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
+      }
+    } else if (pathname === '/api/data') {
+      try {
+        const range = parseRange(url);
+        const data = buildDashboardData(range);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+    }
+  });
+
+  server.listen(PORT, HOST, () => {
+    console.log(`  Dashboard:  http://${HOST}:${PORT}`);
+  });
+}
+
+// Allow standalone execution: `tsx src/dashboard.ts`
+const isMain = process.argv[1]?.endsWith('dashboard.ts') || process.argv[1]?.endsWith('dashboard.js');
+if (isMain) {
   console.log('');
   console.log('╔═══════════════════════════════════════════════════╗');
   console.log('║       5min Vol Scanner — Dashboard                ║');
   console.log('╚═══════════════════════════════════════════════════╝');
   console.log('');
-  console.log(`  Dashboard:  http://localhost:${PORT}`);
-  console.log(`  API:        http://localhost:${PORT}/api/data`);
+  startDashboard();
   console.log('');
   console.log('  Refresh the page to get latest data.');
   console.log('');
-});
+}
