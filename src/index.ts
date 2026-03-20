@@ -94,9 +94,11 @@ async function scanCycle() {
       for (const post of freshPosts) {
         const market = marketData.get(post.mint);
         if (!market) continue;
-        const volThreshold = market.marketCap < CONFIG.LOW_MC_THRESHOLD
-          ? CONFIG.MIN_5M_VOLUME_LOW_MC
-          : CONFIG.MIN_5M_VOLUME_HIGH_MC;
+        const volThreshold = market.marketCap < CONFIG.MICRO_MC_THRESHOLD
+          ? CONFIG.MIN_5M_VOLUME_MICRO_MC
+          : market.marketCap < CONFIG.LOW_MC_THRESHOLD
+            ? CONFIG.MIN_5M_VOLUME_LOW_MC
+            : CONFIG.MIN_5M_VOLUME_HIGH_MC;
         if (market.volume5m < volThreshold) continue;
         // Double-check dedup (in case of race)
         if (tracker.hasBeenCalled(post.mint)) continue;
@@ -175,7 +177,7 @@ async function scanCycle() {
           }
         }
         if (topName) {
-          log(`— Fresh coins below threshold. Top: ${topName} at ${fmtUsd(topVol)} 5m vol (needs ${fmtUsd(CONFIG.MIN_5M_VOLUME_LOW_MC)}-${fmtUsd(CONFIG.MIN_5M_VOLUME_HIGH_MC)})`);
+          log(`— Fresh coins below threshold. Top: ${topName} at ${fmtUsd(topVol)} 5m vol (needs ${fmtUsd(CONFIG.MIN_5M_VOLUME_MICRO_MC)}-${fmtUsd(CONFIG.MIN_5M_VOLUME_HIGH_MC)})`);
         }
       }
     }
@@ -448,6 +450,7 @@ async function main() {
   console.log('╚═══════════════════════════════════════════════════╝');
   console.log('');
   console.log(`  Trending Source: @solearlytrending (Telegram)`);
+  console.log(`  5m Vol (MC<20k): ${fmtUsd(CONFIG.MIN_5M_VOLUME_MICRO_MC)}`);
   console.log(`  5m Vol (MC<50k): ${fmtUsd(CONFIG.MIN_5M_VOLUME_LOW_MC)}`);
   console.log(`  5m Vol (MC≥50k): ${fmtUsd(CONFIG.MIN_5M_VOLUME_HIGH_MC)}`);
   console.log(`  Scan Interval:  ${CONFIG.SCAN_INTERVAL_MS / 1000}s`);

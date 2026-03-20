@@ -11,9 +11,11 @@ export const CONFIG = {
   DEXSCREENER_API: 'https://api.dexscreener.com',
 
   // Alerts — volume thresholds
-  MIN_5M_VOLUME_LOW_MC: 8_000,    // required 5m vol if MC < 50k
-  MIN_5M_VOLUME_HIGH_MC: 15_000,  // required 5m vol if MC >= 50k
-  LOW_MC_THRESHOLD: 50_000,       // MC cutoff between the two tiers
+  MIN_5M_VOLUME_MICRO_MC: 5_000,  // required 5m vol if MC < 20k
+  MIN_5M_VOLUME_LOW_MC: 8_000,   // required 5m vol if MC 20k-50k
+  MIN_5M_VOLUME_HIGH_MC: 15_000, // required 5m vol if MC >= 50k
+  MICRO_MC_THRESHOLD: 20_000,    // MC cutoff for micro tier
+  LOW_MC_THRESHOLD: 50_000,      // MC cutoff between low and high tiers
   SCAN_INTERVAL_MS: 30_000,
 
   // Performance tracking intervals (minutes after alert)
