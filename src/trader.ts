@@ -110,8 +110,8 @@ export class Trader {
       }
     }
 
-    // Flat 20% entry sizing
-    const entryPct = 0.20;
+    // Flat 15% entry sizing
+    const entryPct = 0.15;
     const rawEntry = Math.floor(balance! * entryPct * 1000) / 1000;
     const entrySol = Math.max(rawEntry, CONFIG.TRADE_MIN_ENTRY_SOL);
 
