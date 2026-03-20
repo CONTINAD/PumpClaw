@@ -110,7 +110,9 @@ export class Trader {
       }
     }
 
-    const rawEntry = Math.floor(balance! * CONFIG.TRADE_ENTRY_PCT * 1000) / 1000;
+    // Tiered entry: 30% under 0.5 SOL, 20% under 1 SOL, 15% at 1+ SOL
+    const entryPct = balance! < 0.5 ? 0.30 : balance! < 1.0 ? 0.20 : CONFIG.TRADE_ENTRY_PCT;
+    const rawEntry = Math.floor(balance! * entryPct * 1000) / 1000;
     const entrySol = Math.max(rawEntry, CONFIG.TRADE_MIN_ENTRY_SOL);
 
     // Need at least enough for the entry + a tiny bit for tx fees (~0.005 SOL)
@@ -123,7 +125,7 @@ export class Trader {
     let result: SwapResult | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        console.log(`[Trader] Buying $${symbol} with ${entrySol} SOL (${(CONFIG.TRADE_ENTRY_PCT * 100).toFixed(0)}% of ${balance!.toFixed(4)} SOL)${attempt > 1 ? ` [RETRY #${attempt}]` : ''}...`);
+        console.log(`[Trader] Buying $${symbol} with ${entrySol} SOL (${(entryPct * 100).toFixed(0)}% of ${balance!.toFixed(4)} SOL)${attempt > 1 ? ` [RETRY #${attempt}]` : ''}...`);
         result = await jupiterBuy(mint, entrySol);
         break;
       } catch (err: any) {
