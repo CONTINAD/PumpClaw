@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx --env-file=.env watch src/index.ts"
+    "dev": "tsx --env-file=.env watch src/index.ts",
+    "dashboard": "tsx src/dashboard.ts"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.14",
