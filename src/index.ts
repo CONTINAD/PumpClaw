@@ -105,6 +105,17 @@ async function scanCycle() {
             ? CONFIG.MIN_5M_VOLUME_LOW_MC
             : CONFIG.MIN_5M_VOLUME_HIGH_MC;
         if (market.volume5m < volThreshold) continue;
+
+        // Skip coins that are dumping — already peaked and on the way down
+        if (market.priceChange1h < -30) {
+          log(`⚠ DUMP — skipping ${post.name}: 1h change ${market.priceChange1h.toFixed(1)}% (was higher, now crashing)`);
+          continue;
+        }
+        if (market.priceChange5m < -15) {
+          log(`⚠ DUMP — skipping ${post.name}: 5m change ${market.priceChange5m.toFixed(1)}% (actively dumping)`);
+          continue;
+        }
+
         // Double-check dedup (in case of race or earlier alert in this loop)
         if (tracker.hasBeenCalled(post.mint)) continue;
 
