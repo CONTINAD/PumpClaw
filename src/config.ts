@@ -67,8 +67,8 @@ export const CONFIG = {
 
   // Real trading
   TRADE_ENABLED: true,
-  TRADE_ENTRY_PCT: 0.10,               // 10% of wallet balance per trade
-  TRADE_MIN_ENTRY_SOL: 0.1,            // minimum 0.1 SOL per trade
+  TRADE_ENTRY_PCT: 0.15,               // 15% of wallet balance per trade
+  TRADE_MIN_ENTRY_SOL: 0.05,           // minimum 0.05 SOL per trade
   TRADE_SLIPPAGE_BPS: 3000,            // 30% slippage
   TRADE_PRIORITY_FEE_LAMPORTS: 100_000, // 0.0001 SOL priority fee
   TRADE_MIN_SOL_BALANCE: 0.05,         // don't trade if wallet SOL below this
