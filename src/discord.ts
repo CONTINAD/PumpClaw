@@ -68,7 +68,7 @@ function linkRow(mint: string): string {
 
 function buyRow(mint: string): string {
   return [
-    `🐸 [**Buy on GMGN**](https://gmgn.ai/sol/token/TQ5emawd_${mint})`,
+    `🐸 [**Buy on GMGN**](https://gmgn.ai/sol/token/PumpClaw_${mint})`,
     `🔺 [**Buy on Axiom**](https://axiom.trade/t/${mint}/@noose?chain=sol)`,
   ].join('    ');
 }
@@ -82,7 +82,7 @@ function buyButtons(mint: string) {
           type: 2,    // Button
           style: 5,   // Link
           label: 'Buy on GMGN',
-          url: `https://gmgn.ai/sol/token/TQ5emawd_${mint}`,
+          url: `https://gmgn.ai/sol/token/PumpClaw_${mint}`,
           emoji: { name: '🐸' },
         },
         {
