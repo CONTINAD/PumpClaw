@@ -61,8 +61,6 @@ function linkRow(mint: string): string {
   return [
     `[Pump.fun](https://pump.fun/${mint})`,
     `[DexScreener](https://dexscreener.com/solana/${mint})`,
-    `[Birdeye](https://birdeye.so/token/${mint}?chain=solana)`,
-    `[Photon](https://photon-sol.tinyastro.io/en/lp/${mint})`,
   ].join('  ·  ');
 }
 
@@ -123,6 +121,7 @@ function buildAlertEmbed(
   lines.push('');
   lines.push(linkRow(coin.mint));
   lines.push(`\`\`\`${coin.mint}\`\`\``);
+  lines.push('');
   lines.push(buyRow(coin.mint));
 
   // ── Performance section ──
@@ -205,6 +204,7 @@ function buildMilestoneEmbed(rec: CallRecord, multiplier: number, currentPrice: 
   lines.push('');
   lines.push(linkRow(rec.mint));
   lines.push(`\`\`\`${rec.mint}\`\`\``);
+  lines.push('');
   lines.push(buyRow(rec.mint));
 
   return {
