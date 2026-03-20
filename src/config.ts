@@ -42,6 +42,9 @@ export const CONFIG = {
   BUNDLE_TIME_WINDOW_SEC: 300,      // 5 min narrow window for clustering
   BUNDLE_MAX_CLUSTER_PCT: 40,       // skip if 40%+ of holders in narrow window
   BUNDLE_WIDE_CLUSTER_PCT: 75,      // skip if 75%+ of holders funded within same 7-day window
+  BUNDLE_LOW_BAL_HOLDERS: 20,       // check this many top holders for low SOL balance
+  BUNDLE_LOW_BAL_SOL: 1,            // wallets with less than this SOL are "low balance"
+  BUNDLE_LOW_BAL_PCT: 40,           // skip if 40%+ of top holders have < 1 SOL
 
   // Global fee / activity filter
   MIN_GLOBAL_FEES_SOL: 2,           // skip if estimated trading fees < 2 SOL

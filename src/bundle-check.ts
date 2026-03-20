@@ -223,9 +223,14 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
 
     // 2b. SOL balance clustering — if too many holders have nearly identical balances,
     //     it's likely coordinated (exchange withdrawal farms all get same amount)
+    // 2c. Low balance check — if too many top holders have < 1 SOL, likely throwaway wallets
     let balanceFail = false;
     let balanceClusterPct = 0;
     let balanceClusterMax = 0;
+    let lowBalFail = false;
+    let lowBalCount = 0;
+    let lowBalChecked = 0;
+    let lowBalPct = 0;
     try {
       const balInfos = await rpc('getMultipleAccounts', [ownerWallets, { encoding: 'jsonParsed' }]);
       const balances: number[] = [];
@@ -249,6 +254,13 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
         if (microCount > balanceClusterMax) balanceClusterMax = microCount;
         balanceClusterPct = Math.round((balanceClusterMax / balances.length) * 100);
         balanceFail = balanceClusterPct >= 40; // 40%+ same-balance wallets = coordinated
+
+        // Low balance check: top N holders with < threshold SOL
+        const topN = balances.slice(0, CONFIG.BUNDLE_LOW_BAL_HOLDERS);
+        lowBalChecked = topN.length;
+        lowBalCount = topN.filter(b => b < CONFIG.BUNDLE_LOW_BAL_SOL).length;
+        lowBalPct = lowBalChecked > 0 ? Math.round((lowBalCount / lowBalChecked) * 100) : 0;
+        lowBalFail = lowBalPct >= CONFIG.BUNDLE_LOW_BAL_PCT;
       }
     } catch { /* non-critical, skip */ }
 
@@ -313,7 +325,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
     // Fail if ANY check triggers
     const narrowFail = clusterPct >= CONFIG.BUNDLE_MAX_CLUSTER_PCT;
     const wideFail = wideClusterPct >= CONFIG.BUNDLE_WIDE_CLUSTER_PCT;
-    const safe = !narrowFail && !wideFail && !sameFunderFail && !balanceFail;
+    const safe = !narrowFail && !wideFail && !sameFunderFail && !balanceFail && !lowBalFail;
 
     const reasons: string[] = [];
     reasons.push(`${maxCluster}/${fundingTimes.length} in 5min (${clusterPct}%)`);
@@ -324,6 +336,9 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
     if (balanceClusterMax > 0) {
       reasons.push(`${balanceClusterMax} same bal (${balanceClusterPct}%)`);
     }
+    if (lowBalChecked > 0) {
+      reasons.push(`${lowBalCount}/${lowBalChecked} <${CONFIG.BUNDLE_LOW_BAL_SOL}SOL (${lowBalPct}%)`);
+    }
 
     return {
       safe,
@@ -332,7 +347,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       wideClusterPct,
       wideMaxCluster,
       totalChecked: fundingTimes.length,
-      details: reasons.join(' | ') + (narrowFail ? ' [NARROW FAIL]' : '') + (wideFail ? ' [WIDE FAIL]' : '') + (sameFunderFail ? ` [SAME FUNDER: ${topFunder.slice(0,8)}...]` : '') + (balanceFail ? ' [BALANCE CLUSTER]' : ''),
+      details: reasons.join(' | ') + (narrowFail ? ' [NARROW FAIL]' : '') + (wideFail ? ' [WIDE FAIL]' : '') + (sameFunderFail ? ` [SAME FUNDER: ${topFunder.slice(0,8)}...]` : '') + (balanceFail ? ' [BALANCE CLUSTER]' : '') + (lowBalFail ? ' [LOW BAL HOLDERS]' : ''),
     };
   } catch (err: any) {
     console.error(`[Bundle] Check failed for ${mint.slice(0, 8)}...: ${err.message}`);
