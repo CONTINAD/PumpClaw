@@ -78,6 +78,6 @@ export const CONFIG = {
   TRADE_TP1_MULT: 1.5, TRADE_TP1_SELL: 0.40,   // sell 40% at 1.5X
   TRADE_TP2_MULT: 2.5, TRADE_TP2_SELL: 0.30,   // sell 30% at 2.5X
   TRADE_TP3_MULT: 4,   TRADE_TP3_SELL: 0.20,   // sell 20% at 4X
-  TRADE_TRAILING_DROP: 0.30,           // -30% from ATH on remaining 10%
+  TRADE_TRAILING_DROP: 0.35,           // -35% from ATH on remaining 10%
   TRADE_MONITOR_INTERVAL_MS: 2_000,   // check open positions every 2s
 };
