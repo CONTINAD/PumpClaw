@@ -77,8 +77,13 @@ async function scanCycle() {
     const newPosts = posts.filter(p => !seenTgMsgIds.has(p.messageId));
     for (const p of posts) seenTgMsgIds.add(p.messageId);
 
-    // Only process coins we've NEVER alerted on before
-    const freshPosts = posts.filter(p => !tracker.hasBeenCalled(p.mint));
+    // Only process coins we've NEVER alerted on before — dedup by mint within this batch
+    const seenMintsThisCycle = new Set<string>();
+    const freshPosts = posts.filter(p => {
+      if (tracker.hasBeenCalled(p.mint) || seenMintsThisCycle.has(p.mint)) return false;
+      seenMintsThisCycle.add(p.mint);
+      return true;
+    });
 
     if (newPosts.length > 0) {
       log(`📡 ${posts.length} trending posts, ${newPosts.length} new, ${freshPosts.length} never-called`);
@@ -100,7 +105,7 @@ async function scanCycle() {
             ? CONFIG.MIN_5M_VOLUME_LOW_MC
             : CONFIG.MIN_5M_VOLUME_HIGH_MC;
         if (market.volume5m < volThreshold) continue;
-        // Double-check dedup (in case of race)
+        // Double-check dedup (in case of race or earlier alert in this loop)
         if (tracker.hasBeenCalled(post.mint)) continue;
 
         // Bundle check — skip if too many holders bought at same time
