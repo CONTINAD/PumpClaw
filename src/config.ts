@@ -72,7 +72,7 @@ export const CONFIG = {
   TRADE_SLIPPAGE_BPS: 3000,            // 30% slippage
   TRADE_PRIORITY_FEE_LAMPORTS: 100_000, // 0.0001 SOL priority fee
   TRADE_MIN_SOL_BALANCE: 0.05,         // don't trade if wallet SOL below this
-  TRADE_STOP_LOSS_PCT: 0.80,           // stop at -20% from entry
+  TRADE_STOP_LOSS_PCT: 0.75,           // stop at -25% from entry
   TRADE_TP1_MULT: 1.5, TRADE_TP1_SELL: 0.40,   // sell 40% at 1.5X
   TRADE_TP2_MULT: 2.5, TRADE_TP2_SELL: 0.30,   // sell 30% at 2.5X
   TRADE_TP3_MULT: 4,   TRADE_TP3_SELL: 0.20,   // sell 20% at 4X
