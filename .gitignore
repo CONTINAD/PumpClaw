@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.js
+!src/chart.min.js
 *.d.ts
 *.map
 .env
