@@ -39,7 +39,7 @@ export const CONFIG = {
   BUNDLE_TOP_HOLDERS: 50,           // check this many top holders
   BUNDLE_TIME_WINDOW_SEC: 300,      // 5 min narrow window for clustering
   BUNDLE_MAX_CLUSTER_PCT: 40,       // skip if 40%+ of holders in narrow window
-  BUNDLE_WIDE_CLUSTER_PCT: 60,      // skip if 60%+ of holders funded within same 7-day window
+  BUNDLE_WIDE_CLUSTER_PCT: 50,      // skip if 50%+ of holders funded within same 7-day window
 
   // Global fee / activity filter
   MIN_GLOBAL_FEES_SOL: 2,           // skip if estimated trading fees < 2 SOL
