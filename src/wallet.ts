@@ -14,11 +14,17 @@ let _connection: Connection | null = null;
 export function getWallet(): Keypair {
   if (_wallet) return _wallet;
 
-  if (existsSync(WALLET_FILE)) {
+  // Priority 1: env var (for Railway / cloud deploys)
+  if (process.env.WALLET_PRIVATE_KEY) {
+    _wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
+    console.log(`[Wallet] Loaded wallet from env: ${_wallet.publicKey.toBase58()}`);
+  } else if (existsSync(WALLET_FILE)) {
+    // Priority 2: local file
     const data = JSON.parse(readFileSync(WALLET_FILE, 'utf-8'));
     _wallet = Keypair.fromSecretKey(Uint8Array.from(data.secretKey));
     console.log(`[Wallet] Loaded wallet: ${_wallet.publicKey.toBase58()}`);
   } else {
+    // Priority 3: generate new
     _wallet = Keypair.generate();
     mkdirSync(dirname(WALLET_FILE), { recursive: true });
     writeFileSync(WALLET_FILE, JSON.stringify({
