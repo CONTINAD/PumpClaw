@@ -248,7 +248,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
         }
         if (microCount > balanceClusterMax) balanceClusterMax = microCount;
         balanceClusterPct = Math.round((balanceClusterMax / balances.length) * 100);
-        balanceFail = balanceClusterPct >= 35; // 35%+ micro-balance wallets = exchange farm
+        balanceFail = balanceClusterPct >= 50; // 50%+ same-balance wallets = coordinated
       }
     } catch { /* non-critical, skip */ }
 
