@@ -68,8 +68,8 @@ function linkRow(mint: string): string {
 
 function buyRow(mint: string): string {
   return [
-    `🐸 [**Buy on GMGN**](https://gmgn.ai/sol/token/PumpClaw_${mint})`,
-    `🔺 [**Buy on Axiom**](https://axiom.trade/t/${mint}/@noose?chain=sol)`,
+    `<:gmgn:1427370945466732575> [**Buy on GMGN**](https://gmgn.ai/sol/token/PumpClaw_${mint})`,
+    `<:Axiom:1349278860528844800> [**Buy on Axiom**](https://axiom.trade/t/${mint}/@noose?chain=sol)`,
   ].join('    ');
 }
 
