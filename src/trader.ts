@@ -110,8 +110,8 @@ export class Trader {
       }
     }
 
-    // Tiered entry: 30% under 0.5 SOL, 20% under 1 SOL, 15% at 1+ SOL
-    const entryPct = balance! < 0.5 ? 0.30 : balance! < 1.0 ? 0.20 : CONFIG.TRADE_ENTRY_PCT;
+    // Flat 20% entry sizing
+    const entryPct = 0.20;
     const rawEntry = Math.floor(balance! * entryPct * 1000) / 1000;
     const entrySol = Math.max(rawEntry, CONFIG.TRADE_MIN_ENTRY_SOL);
 
