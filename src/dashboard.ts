@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, statSync, existsSync } from 'fs';
 import { createServer } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -703,6 +703,41 @@ export function startDashboard(port?: number): void {
         const data = buildDashboardData(range);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (pathname === '/api/debug') {
+      try {
+        const files = ['calls.json', 'trades.json', 'positions.json'];
+        const fileInfo: Record<string, any> = {};
+        for (const f of files) {
+          const p = join(CONFIG.DATA_DIR, f);
+          if (existsSync(p)) {
+            const stat = statSync(p);
+            const data = loadJSON<any>(p);
+            const times = data.map((r: any) => r.entryTime).filter(Boolean).sort((a: number, b: number) => b - a);
+            fileInfo[f] = {
+              exists: true,
+              sizeBytes: stat.size,
+              lastModified: stat.mtime.toISOString(),
+              recordCount: data.length,
+              newestEntryTime: times[0] ? new Date(times[0]).toISOString() : null,
+              oldestEntryTime: times[times.length - 1] ? new Date(times[times.length - 1]).toISOString() : null,
+              newestEntryMs: times[0] ?? null,
+            };
+          } else {
+            fileInfo[f] = { exists: false };
+          }
+        }
+        const debug = {
+          dataDir: CONFIG.DATA_DIR,
+          serverTime: new Date().toISOString(),
+          serverTimeMs: Date.now(),
+          files: fileInfo,
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(debug, null, 2));
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
