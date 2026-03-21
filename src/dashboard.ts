@@ -469,6 +469,14 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
 .tag-p{background:rgba(164,124,255,0.1);color:var(--purple)}
 .tag-o{background:rgba(255,159,64,0.1);color:var(--orange)}
 
+/* ── exit breakdown ── */
+.exit-grid{display:flex;flex-direction:column;gap:14px;padding:4px 0}
+.exit-row{display:flex;align-items:center;gap:12px}
+.exit-label{width:110px;font-size:12px;font-weight:500;color:var(--text)}
+.exit-bar-wrap{flex:1;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.exit-bar{height:100%;border-radius:4px;transition:width 0.5s ease}
+.exit-val{min-width:70px;text-align:right;font-size:12px;color:var(--text2)}
+
 /* ── section dividers ── */
 .section-title{
   font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;
@@ -569,34 +577,49 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   </div>
 </div>
 
-<!-- ── charts ── -->
-<div class="section-title">Performance Charts</div>
-
-<div class="row r2">
-  <div class="card"><h3>Cumulative P&L</h3><div class="ch lg"><canvas id="cumPnlChart"></canvas></div></div>
-  <div class="card"><h3>Per-Trade P&L (Real)</h3><div class="ch lg"><canvas id="tradePnlChart"></canvas></div></div>
+<!-- ── main chart ── -->
+<div class="card" style="margin-bottom:16px">
+  <h3>Cumulative P&L</h3>
+  <div style="height:320px;position:relative"><canvas id="cumPnlChart"></canvas></div>
 </div>
 
-<div class="row r2">
-  <div class="card"><h3>Daily P&L</h3><div class="ch lg"><canvas id="dailyPnlChart"></canvas></div></div>
-  <div class="card"><h3>Exit Reasons (Real)</h3><div class="ch lg"><canvas id="exitChart"></canvas></div></div>
+<!-- ── two col: per-trade + exit reasons ── -->
+<div class="row r2" style="margin-bottom:16px">
+  <div class="card">
+    <h3>Per-Trade P&L</h3>
+    <div style="height:260px;position:relative"><canvas id="tradePnlChart"></canvas></div>
+  </div>
+  <div class="card">
+    <h3>Exit Breakdown</h3>
+    <div class="exit-grid">
+      ${(() => {
+        const exitColors: Record<string,string> = {stop_loss:'var(--red)',be_stop:'var(--orange)',tp1:'var(--green)',tp2:'var(--green)',tp3:'var(--green)',trailing_stop:'var(--purple)',profit_protect:'var(--blue)',unknown:'var(--text3)'};
+        const total = Object.values(d.realExitReasons).reduce((a,b)=>a+b,0);
+        if (total === 0) return '<div style="color:var(--text3);padding:40px 0;text-align:center">No exits yet</div>';
+        return Object.entries(d.realExitReasons).map(([reason, count]) => {
+          const pct = (count / total * 100);
+          const color = exitColors[reason] ?? 'var(--text3)';
+          return `<div class="exit-row">
+            <div class="exit-label">${formatExitReasonJS(reason)}</div>
+            <div class="exit-bar-wrap"><div class="exit-bar" style="width:${pct}%;background:${color}"></div></div>
+            <div class="exit-val mono">${count} <span class="dim">(${pct.toFixed(0)}%)</span></div>
+          </div>`;
+        }).join('');
+      })()}
+    </div>
+  </div>
 </div>
 
-<div class="section-title">Analysis</div>
-
-<div class="row r2">
-  <div class="card"><h3>Peak Multiplier Distribution</h3><div class="ch"><canvas id="peakChart"></canvas></div></div>
-  <div class="card"><h3>Milestone Hits</h3><div class="ch"><canvas id="milestoneChart"></canvas></div></div>
-</div>
-
-<div class="row r2">
-  <div class="card"><h3>Win Rate by Entry MC</h3><div class="ch"><canvas id="mcChart"></canvas></div></div>
-  <div class="card"><h3>Calls by Hour (UTC)</h3><div class="ch"><canvas id="hourlyChart"></canvas></div></div>
-</div>
-
-<div class="row r2">
-  <div class="card"><h3>TP Hit Rates</h3><div class="ch"><canvas id="tpChart"></canvas></div></div>
-  <div class="card">&nbsp;</div>
+<!-- ── daily + peaks ── -->
+<div class="row r2" style="margin-bottom:16px">
+  <div class="card">
+    <h3>Daily P&L</h3>
+    <div style="height:260px;position:relative"><canvas id="dailyPnlChart"></canvas></div>
+  </div>
+  <div class="card">
+    <h3>Peak Multipliers</h3>
+    <div style="height:260px;position:relative"><canvas id="peakChart"></canvas></div>
+  </div>
 </div>
 
 <!-- ── tables ── -->
@@ -697,53 +720,15 @@ new Chart(document.getElementById('tradePnlChart'),{type:'bar',data:{
     borderWidth:1}]},
   options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:function(c){const p=${JSON.stringify(d.realPnlBars.map(p=>p.peakMult))};return'Peak: '+p[c.dataIndex].toFixed(1)+'x';}}}},scales:{y:{grid,ticks:{callback:v=>(v>=0?'+':'')+v,font:{family:"'JetBrains Mono',monospace",size:10}}},x:{grid:noGrid,ticks:{maxRotation:45,minRotation:45}}}}});
 
-// tp rates
-new Chart(document.getElementById('tpChart'),{type:'bar',data:{
-  labels:['TP1','TP2','TP3'],
-  datasets:[
-    {label:'Paper',data:[${[1,2,3].map(n=>{const k='tp'+n as 'tp1'|'tp2'|'tp3';return d.tpHitRates.paper.total>0?(d.tpHitRates.paper[k]/d.tpHitRates.paper.total*100).toFixed(1):'0'}).join(',')}],backgroundColor:B+'50',borderColor:B,borderWidth:1},
-    {label:'Real',data:[${[1,2,3].map(n=>{const k='tp'+n as 'tp1'|'tp2'|'tp3';return d.tpHitRates.real.total>0?(d.tpHitRates.real[k]/d.tpHitRates.real.total*100).toFixed(1):'0'}).join(',')}],backgroundColor:G+'50',borderColor:G,borderWidth:1}
-  ]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,max:100,grid,ticks:{callback:v=>v+'%'}},x:{grid:noGrid}}}});
 
-// exit reasons
-new Chart(document.getElementById('exitChart'),{type:'doughnut',data:{
-  labels:${JSON.stringify(Object.keys(d.realExitReasons).map(formatExitReasonJS))},
-  datasets:[{data:${JSON.stringify(Object.values(d.realExitReasons))},
-    backgroundColor:[R+'cc',O+'cc',G+'cc',B+'cc',P+'cc',C+'cc',PK+'cc'],borderColor:'#0a0e17',borderWidth:3}]},
-  options:{responsive:true,maintainAspectRatio:false,cutout:'60%',plugins:{legend:{position:'right',labels:{color:'#7a879e',padding:12}}}}});
-
-// peak dist
+// peak dist — horizontal bar
 new Chart(document.getElementById('peakChart'),{type:'bar',data:{
   labels:${JSON.stringify(d.peakBuckets.map(b=>b.label))},
   datasets:[{data:${JSON.stringify(d.peakBuckets.map(b=>b.count))},
-    backgroundColor:${JSON.stringify(d.peakBuckets.map((_,i)=>i===0?'#ff3b5c30':['#ff9f4030','#4d8eff30','#00d67230','#a47cff30','#00d4c830','#ff6b9d30'][i-1]))},
-    borderColor:${JSON.stringify(d.peakBuckets.map((_,i)=>i===0?'#ff3b5c':['#ff9f40','#4d8eff','#00d672','#a47cff','#00d4c8','#ff6b9d'][i-1]))},
-    borderWidth:1}]},
-  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid},x:{grid:noGrid}}}});
-
-// milestones
-new Chart(document.getElementById('milestoneChart'),{type:'bar',data:{
-  labels:${JSON.stringify(d.milestoneTargets.map(m=>m+'x'))},
-  datasets:[{label:'Count',data:${JSON.stringify(d.milestoneTargets.map(m=>d.milestoneCounts[m]))},
-    backgroundColor:G+'40',borderColor:G,borderWidth:1},
-    {label:'% of calls',data:${JSON.stringify(d.milestoneTargets.map(m=>o.totalCalls>0?+(d.milestoneCounts[m]/o.totalCalls*100).toFixed(1):0))},
-    type:'line',borderColor:C,borderWidth:2,pointRadius:3,pointBackgroundColor:C,yAxisID:'y1'}]},
-  options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,grid},y1:{beginAtZero:true,position:'right',grid:noGrid,ticks:{callback:v=>v+'%'}},x:{grid:noGrid}}}});
-
-// mc
-new Chart(document.getElementById('mcChart'),{type:'bar',data:{
-  labels:${JSON.stringify(d.mcBuckets.map(b=>b.label))},
-  datasets:[
-    {label:'Total',data:${JSON.stringify(d.mcBuckets.map(b=>b.count))},backgroundColor:B+'40',borderColor:B,borderWidth:1},
-    {label:'2x+',data:${JSON.stringify(d.mcBuckets.map(b=>b.winners))},backgroundColor:G+'50',borderColor:G,borderWidth:1},
-    {label:'Win%',data:${JSON.stringify(d.mcBuckets.map(b=>b.count>0?+(b.winners/b.count*100).toFixed(1):0))},type:'line',borderColor:O,borderWidth:2,pointRadius:3,pointBackgroundColor:O,yAxisID:'y1'}
-  ]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,grid},y1:{beginAtZero:true,position:'right',grid:noGrid,ticks:{callback:v=>v+'%'}},x:{grid:noGrid}}}});
-
-// hourly
-new Chart(document.getElementById('hourlyChart'),{type:'bar',data:{
-  labels:${JSON.stringify(Array.from({length:24},(_,i)=>i+':00'))},
-  datasets:[{data:${JSON.stringify(d.hourlyDist)},backgroundColor:P+'30',borderColor:P,borderWidth:1}]},
-  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grid},x:{grid:noGrid}}}});
+    backgroundColor:${JSON.stringify(d.peakBuckets.map((_,i)=>['#ff3b5c50','#ff9f4050','#4d8eff50','#00d67250','#a47cff50','#00d4c850','#ff6b9d50'][i]))},
+    borderColor:${JSON.stringify(d.peakBuckets.map((_,i)=>['#ff3b5c','#ff9f40','#4d8eff','#00d672','#a47cff','#00d4c8','#ff6b9d'][i]))},
+    borderWidth:1,borderRadius:6,barThickness:18}]},
+  options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,grid,ticks:{stepSize:1,font:{family:"'JetBrains Mono',monospace",size:10}}},y:{grid:noGrid,ticks:{font:{size:11}}}}}});
 
 // daily
 const dd=${JSON.stringify(Object.entries(d.dailyPnl).sort(([a],[b])=>a.localeCompare(b)))};
