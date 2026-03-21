@@ -67,150 +67,153 @@ function log(msg: string) {
   console.log(`[${t}] ${msg}`);
 }
 
-// ── Scan cycle ──────────────────────────────────────────────
+// ── Fast scan loop — Telegram scrape + alert + buy (never blocked by milestones) ──
 
-async function scanCycle() {
-  // ─── 1. Scrape @solearlytrending for SOL trending-paid coins ───
+async function fastScanCycle() {
   const posts = await scrapeTrendingPosts();
 
   if (posts.length === 0) {
     log('⚠ No trending posts from Telegram');
-  } else {
-    const newPosts = posts.filter(p => !seenTgMsgIds.has(p.messageId));
-    for (const p of posts) seenTgMsgIds.add(p.messageId);
+    return;
+  }
 
-    // Only process coins we've NEVER alerted on before — dedup by mint within this batch
-    const seenMintsThisCycle = new Set<string>();
-    const freshPosts = posts.filter(p => {
-      if (tracker.hasBeenCalled(p.mint) || seenMintsThisCycle.has(p.mint)) return false;
-      seenMintsThisCycle.add(p.mint);
-      return true;
-    });
+  const newPosts = posts.filter(p => !seenTgMsgIds.has(p.messageId));
+  for (const p of posts) seenTgMsgIds.add(p.messageId);
 
-    if (newPosts.length > 0) {
-      log(`📡 ${posts.length} trending posts, ${newPosts.length} new, ${freshPosts.length} never-called`);
+  const seenMintsThisCycle = new Set<string>();
+  const freshPosts = posts.filter(p => {
+    if (tracker.hasBeenCalled(p.mint) || seenMintsThisCycle.has(p.mint)) return false;
+    seenMintsThisCycle.add(p.mint);
+    return true;
+  });
+
+  if (newPosts.length > 0) {
+    log(`📡 ${posts.length} trending posts, ${newPosts.length} new, ${freshPosts.length} never-called`);
+  }
+
+  if (freshPosts.length === 0) return;
+
+  const mints = [...new Set(freshPosts.map(p => p.mint))];
+  const marketData = await fetchBatchMarketData(mints);
+  log(`📊 DexScreener data for ${marketData.size}/${mints.length} fresh trending coins`);
+
+  let alertCount = 0;
+  for (const post of freshPosts) {
+    const market = marketData.get(post.mint);
+    if (!market) continue;
+    const volThreshold = market.marketCap < CONFIG.MICRO_MC_THRESHOLD
+      ? CONFIG.MIN_5M_VOLUME_MICRO_MC
+      : market.marketCap < CONFIG.LOW_MC_THRESHOLD
+        ? CONFIG.MIN_5M_VOLUME_LOW_MC
+        : CONFIG.MIN_5M_VOLUME_HIGH_MC;
+    if (market.volume5m < volThreshold) continue;
+
+    if (market.priceChange5m < -25) {
+      log(`⚠ DUMP — skipping ${post.name}: 5m change ${market.priceChange5m.toFixed(1)}% (actively dumping)`);
+      continue;
     }
 
-    if (freshPosts.length > 0) {
-      // Get market data for fresh coins
-      const mints = [...new Set(freshPosts.map(p => p.mint))];
-      const marketData = await fetchBatchMarketData(mints);
-      log(`📊 DexScreener data for ${marketData.size}/${mints.length} fresh trending coins`);
+    if (tracker.hasBeenCalled(post.mint)) continue;
 
-      let alertCount = 0;
-      for (const post of freshPosts) {
-        const market = marketData.get(post.mint);
-        if (!market) continue;
-        const volThreshold = market.marketCap < CONFIG.MICRO_MC_THRESHOLD
-          ? CONFIG.MIN_5M_VOLUME_MICRO_MC
-          : market.marketCap < CONFIG.LOW_MC_THRESHOLD
-            ? CONFIG.MIN_5M_VOLUME_LOW_MC
-            : CONFIG.MIN_5M_VOLUME_HIGH_MC;
-        if (market.volume5m < volThreshold) continue;
+    const bundle = await checkBundle(post.mint);
+    if (!bundle.safe) {
+      log(`⚠ BUNDLED — skipping ${post.name}: ${bundle.details}`);
+      continue;
+    }
+    if (bundle.totalChecked > 0) {
+      log(`✅ Bundle check passed: ${bundle.details}`);
+    }
 
-        // Skip coins that are actively dumping
-        if (market.priceChange5m < -25) {
-          log(`⚠ DUMP — skipping ${post.name}: 5m change ${market.priceChange5m.toFixed(1)}% (actively dumping)`);
-          continue;
-        }
+    const smartCheck = await checkSmartWallets(post.mint);
+    if (smartCheck.checked > 0 && !smartCheck.held) {
+      log(`⚠ NO SMART HOLDERS — skipping ${post.name}: 0/${smartCheck.checked} tracked wallets hold this token`);
+      continue;
+    }
+    if (smartCheck.holders > 0) {
+      log(`✅ Smart wallet check passed: ${smartCheck.holders} tracked wallet(s) holding`);
+    }
 
-        // Double-check dedup (in case of race or earlier alert in this loop)
-        if (tracker.hasBeenCalled(post.mint)) continue;
-
-        // Bundle check — skip if too many holders bought at same time
-        const bundle = await checkBundle(post.mint);
-        if (!bundle.safe) {
-          log(`⚠ BUNDLED — skipping ${post.name}: ${bundle.details}`);
-          continue;
-        }
-        if (bundle.totalChecked > 0) {
-          log(`✅ Bundle check passed: ${bundle.details}`);
-        }
-
-        // Smart wallet check — at least one tracked wallet must hold this token
-        const smartCheck = await checkSmartWallets(post.mint);
-        if (smartCheck.checked > 0 && !smartCheck.held) {
-          log(`⚠ NO SMART HOLDERS — skipping ${post.name}: 0/${smartCheck.checked} tracked wallets hold this token`);
-          continue;
-        }
-        if (smartCheck.holders > 0) {
-          log(`✅ Smart wallet check passed: ${smartCheck.holders} tracked wallet(s) holding`);
-        }
-
-        // Global fee check — skip if estimated trading fees too low for the MC
-        if (market.marketCap >= CONFIG.MIN_GLOBAL_FEES_MC) {
-          const solPrice = await getSolPrice();
-          const volumeSol = market.volume24h / solPrice;
-          const estFees = volumeSol * CONFIG.PUMPSWAP_FEE_RATE;
-          if (estFees < CONFIG.MIN_GLOBAL_FEES_SOL) {
-            log(`⚠ LOW FEES — skipping ${post.name}: est ${estFees.toFixed(2)} SOL fees (need ≥${CONFIG.MIN_GLOBAL_FEES_SOL}) — vol ${volumeSol.toFixed(1)} SOL for ${fmtUsd(market.marketCap)} MC`);
-            continue;
-          }
-          log(`✅ Fee check passed: est ${estFees.toFixed(2)} SOL fees (vol ${volumeSol.toFixed(1)} SOL)`);
-        }
-
-        // Fetch full coin details from Pump.fun for image/symbol/socials
-        const coinDetails = await fetchCoinDetails(post.mint);
-        const coin: PumpFunCoin = coinDetails ?? {
-          mint: post.mint,
-          name: post.name,
-          symbol: post.mint.slice(0, 6),
-          isTrendingPaid: true,
-        };
-        coin.isTrendingPaid = true;
-        if (!coinDetails) coin.name = post.name;
-
-        log(
-          `🔔 ALERT: ${coin.name} ($${coin.symbol}) — ` +
-            `5m vol ${fmtUsd(market.volume5m)} — MC ${fmtUsd(market.marketCap)} — ` +
-            `Price ${fmtUsd(market.priceUsd)} — SOL TRENDING ✅`,
-        );
-
-        // Adjust entry price down 3% so Discord call shows a slightly lower entry
-        const adjustedMarket = { ...market, priceUsd: market.priceUsd * 0.97, marketCap: market.marketCap * 0.97 };
-
-        // Open paper trade first (so it can be shown in the alert embed)
-        const paperTrade = paperTrader.openTrade(
-          coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
-        );
-
-        const discordMsgId = await sendAlert(coin, adjustedMarket);
-        if (discordMsgId) {
-          tracker.add(coin, adjustedMarket, discordMsgId);
-          alertCount++;
-          log(`📨 Alert sent for $${coin.symbol} — paper trade opened at ${fmtUsd(market.marketCap)} MC`);
-
-          // Execute real buy via Jupiter
-          if (CONFIG.TRADE_ENABLED) {
-            const realPos = await trader.buy(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap);
-            if (realPos) {
-              log(`💰 REAL BUY: $${coin.symbol} — ${realPos.entrySol} SOL → ${realPos.tokensReceived} tokens (tx: ${realPos.entryTx.slice(0, 16)}...)`);
-            }
-          }
-        }
+    if (market.marketCap >= CONFIG.MIN_GLOBAL_FEES_MC) {
+      const solPrice = await getSolPrice();
+      const volumeSol = market.volume24h / solPrice;
+      const estFees = volumeSol * CONFIG.PUMPSWAP_FEE_RATE;
+      if (estFees < CONFIG.MIN_GLOBAL_FEES_SOL) {
+        log(`⚠ LOW FEES — skipping ${post.name}: est ${estFees.toFixed(2)} SOL fees (need ≥${CONFIG.MIN_GLOBAL_FEES_SOL}) — vol ${volumeSol.toFixed(1)} SOL for ${fmtUsd(market.marketCap)} MC`);
+        continue;
       }
+      log(`✅ Fee check passed: est ${estFees.toFixed(2)} SOL fees (vol ${volumeSol.toFixed(1)} SOL)`);
+    }
 
-      if (alertCount > 0) {
-        log(`✅ Sent ${alertCount} new alert(s)`);
-      } else {
-        // Show top fresh volume for context
-        let topVol = 0;
-        let topName = '';
-        for (const post of freshPosts) {
-          const m = marketData.get(post.mint);
-          if (m && m.volume5m > topVol) {
-            topVol = m.volume5m;
-            topName = post.name;
-          }
-        }
-        if (topName) {
-          log(`— Fresh coins below threshold. Top: ${topName} at ${fmtUsd(topVol)} 5m vol (needs ${fmtUsd(CONFIG.MIN_5M_VOLUME_MICRO_MC)}-${fmtUsd(CONFIG.MIN_5M_VOLUME_HIGH_MC)})`);
+    const coinDetails = await fetchCoinDetails(post.mint);
+    const coin: PumpFunCoin = coinDetails ?? {
+      mint: post.mint,
+      name: post.name,
+      symbol: post.mint.slice(0, 6),
+      isTrendingPaid: true,
+    };
+    coin.isTrendingPaid = true;
+    if (!coinDetails) coin.name = post.name;
+
+    log(
+      `🔔 ALERT: ${coin.name} ($${coin.symbol}) — ` +
+        `5m vol ${fmtUsd(market.volume5m)} — MC ${fmtUsd(market.marketCap)} — ` +
+        `Price ${fmtUsd(market.priceUsd)} — SOL TRENDING ✅`,
+    );
+
+    const adjustedMarket = { ...market, priceUsd: market.priceUsd * 0.97, marketCap: market.marketCap * 0.97 };
+
+    const paperTrade = paperTrader.openTrade(
+      coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
+    );
+
+    const discordMsgId = await sendAlert(coin, adjustedMarket);
+    if (discordMsgId) {
+      tracker.add(coin, adjustedMarket, discordMsgId);
+      alertCount++;
+      log(`📨 Alert sent for $${coin.symbol} — paper trade opened at ${fmtUsd(market.marketCap)} MC`);
+
+      // Execute real buy via Jupiter
+      if (CONFIG.TRADE_ENABLED) {
+        log(`[Trader] 🔄 Attempting buy for $${coin.symbol}...`);
+        const realPos = await trader.buy(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap);
+        if (realPos) {
+          log(`💰 REAL BUY: $${coin.symbol} — ${realPos.entrySol} SOL → ${realPos.tokensReceived} tokens (tx: ${realPos.entryTx.slice(0, 16)}...)`);
+        } else {
+          log(`⚠ BUY SKIPPED/FAILED for $${coin.symbol} — check [Trader] logs above for reason`);
         }
       }
     }
   }
 
-  // ─── 2. Performance snapshot updates (5m, 15m, 30m, 1h) ───
+  if (alertCount > 0) {
+    log(`✅ Sent ${alertCount} new alert(s)`);
+  } else {
+    let topVol = 0;
+    let topName = '';
+    for (const post of freshPosts) {
+      const m = marketData.get(post.mint);
+      if (m && m.volume5m > topVol) {
+        topVol = m.volume5m;
+        topName = post.name;
+      }
+    }
+    if (topName) {
+      log(`— Fresh coins below threshold. Top: ${topName} at ${fmtUsd(topVol)} 5m vol (needs ${fmtUsd(CONFIG.MIN_5M_VOLUME_MICRO_MC)}-${fmtUsd(CONFIG.MIN_5M_VOLUME_HIGH_MC)})`);
+    }
+  }
+
+  // Trim seen Telegram IDs
+  if (seenTgMsgIds.size > 500) {
+    const arr = [...seenTgMsgIds];
+    seenTgMsgIds.clear();
+    for (const id of arr.slice(-200)) seenTgMsgIds.add(id);
+  }
+}
+
+// ── Slow maintenance loop — snapshots, milestones, leaderboards (independent) ──
+
+async function maintenanceCycle() {
+  // ─── 1. Performance snapshot updates (5m, 15m, 30m, 1h) ───
   const needsSnapshot = tracker.getCallsNeedingSnapshot();
   for (const rec of needsSnapshot) {
     const current = await fetchSingleMarketData(rec.mint);
@@ -219,17 +222,14 @@ async function scanCycle() {
       continue;
     }
 
-    // Cross-check with Jupiter quote — DexScreener often returns stale prices
     const solPrice = await getSolPrice();
     const jup = await jupiterGetPrice(rec.mint, solPrice);
     if (jup && jup.priceUsd > 0) {
       const dexMult = current.priceUsd / rec.entryPrice;
       const jupMult = jup.priceUsd / rec.entryPrice;
-      // If Jupiter shows >20% higher than DexScreener, use Jupiter price
       if (jupMult > dexMult * 1.2) {
         log(`🔄 Jupiter price correction for $${rec.symbol}: DexScreener ${dexMult.toFixed(2)}X vs Jupiter ${jupMult.toFixed(2)}X — using Jupiter`);
         current.priceUsd = jup.priceUsd;
-        // Estimate MC from price ratio
         if (current.marketCap > 0 && dexMult > 0) {
           current.marketCap = current.marketCap * (jupMult / dexMult);
         }
@@ -248,7 +248,6 @@ async function scanCycle() {
     tracker.recordSnapshot(rec.mint, snapshot);
     tracker.updatePeak(rec.mint, current.priceUsd, current.marketCap);
 
-    // Check paper trade stop/TP levels on each price update
     const paperTrade = paperTrader.getTrade(rec.mint);
     if (paperTrade) {
       const tradeExits = paperTrader.checkTrade(rec.mint, current.priceUsd, current.marketCap);
@@ -257,7 +256,6 @@ async function scanCycle() {
       }
     }
 
-    // Check real position TP/SL
     if (CONFIG.TRADE_ENABLED) {
       const realExits = await trader.checkPosition(rec.mint, current.priceUsd, current.marketCap);
       for (const exit of realExits) {
@@ -270,7 +268,6 @@ async function scanCycle() {
     const emoji = pct >= 0 ? '🟢' : '🔴';
     log(`${emoji} $${rec.symbol} ${label}: ${fmtPct(pct)} (${fmtUsd(current.priceUsd)})`);
 
-    // Rebuild coin for embed
     const coin: PumpFunCoin = {
       mint: rec.mint,
       name: rec.name,
@@ -293,7 +290,7 @@ async function scanCycle() {
     await updateWithPerformance(rec.alertMessageId, coin, entryMarket, rec.snapshots);
   }
 
-  // ─── 3. Milestone checking (2x, 3x, 5x, 10x…) ───
+  // ─── 2. Milestone checking (2x, 3x, 5x, 10x…) ───
   const now = Date.now();
   if (now - lastMilestoneCheck >= CONFIG.MILESTONE_CHECK_INTERVAL_MS) {
     lastMilestoneCheck = now;
@@ -303,15 +300,12 @@ async function scanCycle() {
       const mints = allCalls.map(r => r.mint);
       const marketData = await fetchBatchMarketData(mints);
 
-      // Get SOL price once for all Jupiter checks
       const solPrice = await getSolPrice();
 
       for (const rec of allCalls) {
         const market = marketData.get(rec.mint);
         if (!market || market.priceUsd === 0) continue;
 
-        // Only do expensive Jupiter cross-check for recent calls (< 7 days)
-        // or calls near a milestone threshold
         const ageMs = now - rec.entryTime;
         const dexMult = market.priceUsd / rec.entryPrice;
         const isRecent = ageMs < 7 * 24 * 60 * 60 * 1000;
@@ -332,10 +326,8 @@ async function scanCycle() {
           }
         }
 
-        // Always update ATH peak
         tracker.updatePeak(rec.mint, market.priceUsd, market.marketCap);
 
-        // Check paper trade stop/TP levels
         const paperTrade = paperTrader.getTrade(rec.mint);
         if (paperTrade) {
           const tradeExits = paperTrader.checkTrade(rec.mint, market.priceUsd, market.marketCap);
@@ -344,7 +336,6 @@ async function scanCycle() {
           }
         }
 
-        // Check real position TP/SL
         if (CONFIG.TRADE_ENABLED) {
           const realExits = await trader.checkPosition(rec.mint, market.priceUsd, market.marketCap);
           for (const exit of realExits) {
@@ -370,7 +361,7 @@ async function scanCycle() {
     }
   }
 
-  // ─── 4. Leaderboard posts (1h, 6h, 12h, 24h, 7d) ───
+  // ─── 3. Leaderboard posts (1h, 6h, 12h, 24h, 7d) ───
   const now2 = Date.now();
   for (const interval of CONFIG.LEADERBOARD_INTERVALS) {
     const lastPost = lastLeaderboardPost.get(interval.label) ?? 0;
@@ -379,7 +370,6 @@ async function scanCycle() {
     const calls = tracker.getCallsSince(interval.lookback);
     if (calls.length === 0) continue;
 
-    // Fetch current prices for all calls in this window
     const lbMints = calls.map(r => r.mint);
     const lbMarket = await fetchBatchMarketData(lbMints);
 
@@ -387,7 +377,6 @@ async function scanCycle() {
     for (const rec of calls) {
       const m = lbMarket.get(rec.mint);
       if (!m || rec.entryPrice === 0) continue;
-      // Update ATH peak while we have fresh data
       tracker.updatePeak(rec.mint, m.priceUsd, m.marketCap);
       entries.push({
         rec,
@@ -407,7 +396,7 @@ async function scanCycle() {
     }
   }
 
-  // ─── 5. Monthly top 10 leaderboard (daily at CONFIG.MONTHLY_LB_HOUR_UTC) ───
+  // ─── 4. Monthly top 10 leaderboard (daily at CONFIG.MONTHLY_LB_HOUR_UTC) ───
   const nowDate = new Date();
   const utcHour = nowDate.getUTCHours();
   const todayStr = `${nowDate.getUTCFullYear()}-${String(nowDate.getUTCMonth() + 1).padStart(2, '0')}-${String(nowDate.getUTCDate()).padStart(2, '0')}`;
@@ -416,7 +405,6 @@ async function scanCycle() {
     saveLbTimestamps({ leaderboard: Object.fromEntries(lastLeaderboardPost), monthlyDate: lastMonthlyLbDate });
     const monthTrades = paperTrader.getMonthTrades();
     if (monthTrades.length > 0) {
-      // Fetch current prices for open trades
       const openMints = monthTrades.filter(t => t.status === 'open').map(t => t.mint);
       const liveData = openMints.length > 0 ? await fetchBatchMarketData(openMints) : new Map();
 
@@ -436,13 +424,6 @@ async function scanCycle() {
       const msgId = await sendMonthlyLeaderboard(monthLabel, entries);
       if (msgId) log(`📨 Monthly leaderboard posted`);
     }
-  }
-
-  // ─── 6. Trim seen Telegram IDs ───
-  if (seenTgMsgIds.size > 500) {
-    const arr = [...seenTgMsgIds];
-    seenTgMsgIds.clear();
-    for (const id of arr.slice(-200)) seenTgMsgIds.add(id);
   }
 }
 
@@ -590,7 +571,7 @@ async function main() {
   if (tracker.size > 0) {
     log(`Loaded ${tracker.size} previous calls — milestone tracking continues`);
   }
-  log('Starting scan loop…');
+  log('Starting fast scan loop (15s) + maintenance loop (30s)…');
   if (CONFIG.TRADE_ENABLED) {
     log(`Starting position monitor (${CONFIG.TRADE_MONITOR_INTERVAL_MS / 1000}s interval)…`);
   }
@@ -603,21 +584,41 @@ async function main() {
     });
   }
 
-  while (true) {
-    try {
-      await scanCycle();
-    } catch (err: any) {
-      log(`❌ Cycle error: ${err.message}`);
-      if (err.stack) console.error(err.stack);
+  // Fast scan loop — Telegram + alert + buy (15s, never blocked by milestones)
+  const fastLoop = async () => {
+    while (true) {
+      try {
+        await fastScanCycle();
+      } catch (err: any) {
+        log(`❌ Scan error: ${err.message}`);
+        if (err.stack) console.error(err.stack);
+      }
+      await new Promise(r => setTimeout(r, 15_000));
     }
+  };
 
-    if (tracker.size > 0) {
-      log(`📋 ${tracker.size} total calls | ${tracker.activeSnapshotCount} awaiting snapshots`);
+  // Slow maintenance loop — snapshots, milestones, leaderboards (30s, independent)
+  const maintenanceLoop = async () => {
+    // Small initial delay so first scan runs first
+    await new Promise(r => setTimeout(r, 5_000));
+    while (true) {
+      try {
+        await maintenanceCycle();
+      } catch (err: any) {
+        log(`❌ Maintenance error: ${err.message}`);
+        if (err.stack) console.error(err.stack);
+      }
+
+      if (tracker.size > 0) {
+        log(`📋 ${tracker.size} total calls | ${tracker.activeSnapshotCount} awaiting snapshots`);
+      }
+      console.log('');
+      await new Promise(r => setTimeout(r, CONFIG.MILESTONE_CHECK_INTERVAL_MS));
     }
+  };
 
-    console.log('');
-    await new Promise(r => setTimeout(r, CONFIG.SCAN_INTERVAL_MS));
-  }
+  // Run both loops concurrently — scan is never blocked by slow milestone checks
+  await Promise.all([fastLoop(), maintenanceLoop()]);
 }
 
 main().catch(err => {

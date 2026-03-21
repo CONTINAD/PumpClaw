@@ -76,34 +76,23 @@ export async function fetchBatchMarketData(mints: string[]): Promise<Map<string,
   for (const chunk of chunks) {
     const addresses = chunk.join(',');
 
-    // Query BOTH endpoints and merge — v1 sometimes only returns the launchlab
-    // pair for bonk tokens while the legacy endpoint has the active raydium pair
-    let pairs: any[] = [];
+    // Query BOTH endpoints in PARALLEL and merge — v1 sometimes only returns
+    // the launchlab pair for bonk tokens while legacy has the active raydium pair
+    const [v1Result, legacyResult] = await Promise.allSettled([
+      fetch(`${CONFIG.DEXSCREENER_API}/tokens/v1/solana/${addresses}`, { signal: AbortSignal.timeout(10_000) })
+        .then(async r => r.ok ? r.json() : []),
+      fetch(`${CONFIG.DEXSCREENER_API}/latest/dex/tokens/${addresses}`, { signal: AbortSignal.timeout(10_000) })
+        .then(async r => r.ok ? r.json() : { pairs: [] }),
+    ]);
 
-    // v1 endpoint
-    try {
-      const res = await fetch(
-        `${CONFIG.DEXSCREENER_API}/tokens/v1/solana/${addresses}`,
-        { signal: AbortSignal.timeout(15_000) },
-      );
-      if (res.ok) {
-        const body = await res.json();
-        const v1Pairs = Array.isArray(body) ? body : body?.pairs ?? [];
-        pairs.push(...v1Pairs);
-      }
-    } catch {}
-
-    // Legacy endpoint (has all DEX pairs including raydium/meteora migrations)
-    try {
-      const res = await fetch(
-        `${CONFIG.DEXSCREENER_API}/latest/dex/tokens/${addresses}`,
-        { signal: AbortSignal.timeout(15_000) },
-      );
-      if (res.ok) {
-        const body = await res.json();
-        pairs.push(...(body?.pairs ?? []));
-      }
-    } catch {}
+    const pairs: any[] = [];
+    if (v1Result.status === 'fulfilled') {
+      const v1 = v1Result.value;
+      pairs.push(...(Array.isArray(v1) ? v1 : v1?.pairs ?? []));
+    }
+    if (legacyResult.status === 'fulfilled') {
+      pairs.push(...(legacyResult.value?.pairs ?? []));
+    }
 
     for (const pair of pairs) {
       const parsed = parsePair(pair);
