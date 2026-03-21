@@ -303,20 +303,31 @@ async function scanCycle() {
       const mints = allCalls.map(r => r.mint);
       const marketData = await fetchBatchMarketData(mints);
 
+      // Get SOL price once for all Jupiter checks
+      const solPrice = await getSolPrice();
+
       for (const rec of allCalls) {
         const market = marketData.get(rec.mint);
         if (!market || market.priceUsd === 0) continue;
 
-        // Cross-check with Jupiter quote — DexScreener often returns stale prices
-        const solPrice = await getSolPrice();
-        const jup = await jupiterGetPrice(rec.mint, solPrice);
-        if (jup && jup.priceUsd > 0) {
-          const dexMult = market.priceUsd / rec.entryPrice;
-          const jupMult = jup.priceUsd / rec.entryPrice;
-          if (jupMult > dexMult * 1.2) {
-            market.priceUsd = jup.priceUsd;
-            if (market.marketCap > 0 && dexMult > 0) {
-              market.marketCap = market.marketCap * (jupMult / dexMult);
+        // Only do expensive Jupiter cross-check for recent calls (< 7 days)
+        // or calls near a milestone threshold
+        const ageMs = now - rec.entryTime;
+        const dexMult = market.priceUsd / rec.entryPrice;
+        const isRecent = ageMs < 7 * 24 * 60 * 60 * 1000;
+        const nearMilestone = CONFIG.MILESTONES.some(m =>
+          !rec.hitMilestones.some(h => h.multiplier === m) && dexMult >= m * 0.7
+        );
+
+        if (isRecent || nearMilestone) {
+          const jup = await jupiterGetPrice(rec.mint, solPrice);
+          if (jup && jup.priceUsd > 0) {
+            const jupMult = jup.priceUsd / rec.entryPrice;
+            if (jupMult > dexMult * 1.2) {
+              market.priceUsd = jup.priceUsd;
+              if (market.marketCap > 0 && dexMult > 0) {
+                market.marketCap = market.marketCap * (jupMult / dexMult);
+              }
             }
           }
         }
