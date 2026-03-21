@@ -1,4 +1,4 @@
-import { readFileSync, statSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync } from 'fs';
 import { createServer } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -861,6 +861,83 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+    } else if (pathname.startsWith('/api/refresh/')) {
+      const mint = pathname.replace('/api/refresh/', '');
+      if (!mint || mint.length < 30) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid mint address' }));
+        return;
+      }
+      // Fetch real price from Jupiter and update tracker data
+      (async () => {
+        try {
+          const jupRes = await fetch(`https://api.jup.ag/price/v2?ids=${mint}&showExtraInfo=true`, {
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!jupRes.ok) {
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Jupiter API returned ' + jupRes.status }));
+            return;
+          }
+          const jupData: any = await jupRes.json();
+          const tokenData = jupData?.data?.[mint];
+          if (!tokenData?.price) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'No price data from Jupiter for this mint' }));
+            return;
+          }
+          const currentPriceUsd = parseFloat(tokenData.price);
+
+          // Load and update calls.json
+          const callsPath = join(CONFIG.DATA_DIR, 'calls.json');
+          const calls: CallRecord[] = loadJSON<CallRecord>(callsPath);
+          const rec = calls.find(c => c.mint === mint);
+          if (!rec) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Mint not found in calls.json' }));
+            return;
+          }
+
+          const oldPeak = rec.peakMultiplier;
+          const newMult = currentPriceUsd / rec.entryPrice;
+          const updatedFields: Record<string, any> = {
+            entryPrice: rec.entryPrice,
+            currentPriceUsd,
+            oldPeakMultiplier: oldPeak,
+            newMultiplier: newMult,
+          };
+
+          if (newMult > rec.peakMultiplier) {
+            rec.peakMultiplier = newMult;
+            rec.peakPrice = currentPriceUsd;
+            if (rec.entryMC > 0) {
+              rec.peakMC = rec.entryMC * newMult;
+            }
+            updatedFields.peakUpdated = true;
+          } else {
+            updatedFields.peakUpdated = false;
+            updatedFields.note = 'Current price is below existing peak — peak unchanged';
+          }
+
+          writeFileSync(callsPath, JSON.stringify(calls, null, 2));
+
+          // Also update positions.json if the mint exists there
+          const posPath = join(CONFIG.DATA_DIR, 'positions.json');
+          const positions: RealPosition[] = loadJSON<RealPosition>(posPath);
+          const pos = positions.find(p => p.mint === mint);
+          if (pos && newMult > pos.peakMultiplier) {
+            pos.peakMultiplier = newMult;
+            writeFileSync(posPath, JSON.stringify(positions, null, 2));
+            updatedFields.positionPeakUpdated = true;
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, ...updatedFields }, null, 2));
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      })();
     } else {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not found');
