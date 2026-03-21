@@ -76,8 +76,11 @@ export async function fetchBatchMarketData(mints: string[]): Promise<Map<string,
   for (const chunk of chunks) {
     const addresses = chunk.join(',');
 
-    // Try newer v1 endpoint first, then fall back to /latest/dex/tokens
+    // Query BOTH endpoints and merge — v1 sometimes only returns the launchlab
+    // pair for bonk tokens while the legacy endpoint has the active raydium pair
     let pairs: any[] = [];
+
+    // v1 endpoint
     try {
       const res = await fetch(
         `${CONFIG.DEXSCREENER_API}/tokens/v1/solana/${addresses}`,
@@ -85,22 +88,22 @@ export async function fetchBatchMarketData(mints: string[]): Promise<Map<string,
       );
       if (res.ok) {
         const body = await res.json();
-        pairs = Array.isArray(body) ? body : body?.pairs ?? [];
+        const v1Pairs = Array.isArray(body) ? body : body?.pairs ?? [];
+        pairs.push(...v1Pairs);
       }
     } catch {}
 
-    if (pairs.length === 0) {
-      try {
-        const res = await fetch(
-          `${CONFIG.DEXSCREENER_API}/latest/dex/tokens/${addresses}`,
-          { signal: AbortSignal.timeout(15_000) },
-        );
-        if (res.ok) {
-          const body = await res.json();
-          pairs = body?.pairs ?? [];
-        }
-      } catch {}
-    }
+    // Legacy endpoint (has all DEX pairs including raydium/meteora migrations)
+    try {
+      const res = await fetch(
+        `${CONFIG.DEXSCREENER_API}/latest/dex/tokens/${addresses}`,
+        { signal: AbortSignal.timeout(15_000) },
+      );
+      if (res.ok) {
+        const body = await res.json();
+        pairs.push(...(body?.pairs ?? []));
+      }
+    } catch {}
 
     for (const pair of pairs) {
       const parsed = parsePair(pair);
