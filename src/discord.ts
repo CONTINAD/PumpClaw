@@ -168,6 +168,7 @@ function buildAlertEmbed(
 
   return {
     embeds: [{
+      author: { name: 'PumpClaw', icon_url: 'https://pump.fun/icon.png' },
       title: `🔔  ${coin.name}  ($${coin.symbol})`,
       description: lines.join('\n'),
       color,
@@ -209,6 +210,7 @@ function buildMilestoneEmbed(rec: CallRecord, multiplier: number, currentPrice: 
 
   return {
     embeds: [{
+      author: { name: 'PumpClaw', icon_url: 'https://pump.fun/icon.png' },
       title: `${emoji}  ${rec.name} ($${rec.symbol}) hits ${multiplier}X!`,
       description: lines.join('\n'),
       color: colorForMultiplier(multiplier),
@@ -277,6 +279,7 @@ function buildLeaderboardEmbed(label: string, entries: LeaderboardEntry[]) {
 
   return {
     embeds: [{
+      author: { name: 'PumpClaw', icon_url: 'https://pump.fun/icon.png' },
       title: `📋  Top Calls — ${label}`,
       description: lines.join('\n'),
       color,
@@ -329,6 +332,7 @@ function buildTradeExitEmbed(trade: PaperTrade, exit: TradeExit) {
   const titlePnl = `${pnlSign}${pnlSoFar.toFixed(3)} SOL`;
   return {
     embeds: [{
+      author: { name: 'PumpClaw', icon_url: 'https://pump.fun/icon.png' },
       title: `${emoji}  $${trade.symbol} — ${exit.label}  (${titlePnl})`,
       description: lines.join('\n'),
       color,
@@ -454,6 +458,7 @@ function buildMonthlyLeaderboardEmbed(
 
   return {
     embeds: [{
+      author: { name: 'PumpClaw', icon_url: 'https://pump.fun/icon.png' },
       title: `📅  ${month} — Monthly Report`,
       description: lines.join('\n'),
       color,
@@ -537,6 +542,7 @@ function buildMonthlyReportFromCalls(
 
   return {
     embeds: [{
+      author: { name: 'PumpClaw', icon_url: 'https://pump.fun/icon.png' },
       title: `📅  ${month} — Monthly Report`,
       description: lines.join('\n'),
       color,

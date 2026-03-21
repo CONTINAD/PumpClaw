@@ -367,8 +367,8 @@ a{color:var(--accent);text-decoration:none}
   backdrop-filter:blur(12px);
 }
 .brand{display:flex;align-items:center;gap:10px}
-.brand-icon{width:28px;height:28px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--purple));display:flex;align-items:center;justify-content:center}
-.brand-icon svg{width:16px;height:16px}
+.brand-icon{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#ff3b5c,#ff9f40);display:flex;align-items:center;justify-content:center;box-shadow:0 0 12px rgba(255,59,92,0.3)}
+.brand-icon svg{width:18px;height:18px}
 .brand h1{font-size:16px;font-weight:600;color:#fff;letter-spacing:-0.3px}
 .brand .ver{font-size:10px;color:var(--text3);margin-left:4px;font-weight:400}
 .meta{display:flex;align-items:center;gap:16px;font-size:12px;color:var(--text3)}
@@ -495,7 +495,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
 <!-- ── top bar ── -->
 <div class="topbar">
   <div class="brand">
-    <div class="brand-icon"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+    <div class="brand-icon"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"><path d="M5 2L9 14"/><path d="M9 2L12 14"/><path d="M13 2L15 14"/><path d="M17 4L18 12"/><path d="M3 18Q12 12 21 18"/></svg></div>
     <h1>PumpClaw<span class="ver">v2</span></h1>
   </div>
   <div class="meta">
