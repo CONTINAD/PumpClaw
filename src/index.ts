@@ -113,9 +113,9 @@ async function fastScanCycle() {
       continue;
     }
 
-    // Skip coins that already pumped hard — trending because of past move, not future upside
-    if (market.priceChange1h > 200) {
-      log(`⚠ ALREADY PUMPED — skipping ${post.name}: 1h change ${fmtPct(market.priceChange1h)} (entered too late)`);
+    // Skip coins re-entering trending after already pumping (e.g. "New Trending" at 3X)
+    if (market.priceChange1h > 150) {
+      log(`⚠ ALREADY PUMPED — skipping ${post.name}: 1h change ${fmtPct(market.priceChange1h)} (re-entered trending after pump)`);
       continue;
     }
 
