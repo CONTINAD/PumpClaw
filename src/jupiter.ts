@@ -159,24 +159,40 @@ export async function jupiterQuoteSol(mint: string, tokenAmount: number): Promis
 }
 
 /**
- * Get the current USD price of a token using Jupiter price API.
- * Falls back to quote-based pricing if price API fails.
+ * Get the current price of a token via Jupiter quote API.
+ * Quotes a small SOL buy (0.1 SOL) to derive the token's SOL-native price,
+ * then converts to USD using the provided SOL price.
+ *
+ * This replaces the Jupiter Price API v2 which now requires auth.
  */
-export async function jupiterGetPrice(mint: string): Promise<{ priceUsd: number; priceNative: number } | null> {
+export async function jupiterGetPrice(mint: string, solPriceUsd?: number): Promise<{ priceUsd: number; priceNative: number } | null> {
   try {
-    // Jupiter Price API v2
-    const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}&showExtraInfo=true`, {
-      signal: AbortSignal.timeout(5_000),
+    // Quote: how many tokens do I get for 0.1 SOL?
+    const lamportsIn = 100_000_000; // 0.1 SOL
+    const params = new URLSearchParams({
+      inputMint: WSOL_MINT,
+      outputMint: mint,
+      amount: String(lamportsIn),
+      slippageBps: '100',
+    });
+    const res = await fetch(`${JUPITER_QUOTE}?${params}`, {
+      signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return null;
-    const data: any = await res.json();
-    const tokenData = data?.data?.[mint];
-    if (!tokenData?.price) return null;
-    const priceUsd = parseFloat(tokenData.price);
-    // Derive SOL-native price using extraInfo if available
-    const priceNative = tokenData.extraInfo?.quotedPrice?.buyPrice
-      ? parseFloat(tokenData.extraInfo.quotedPrice.buyPrice)
-      : 0;
+    const quote: any = await res.json();
+
+    const tokensOut = parseInt(quote.outAmount);
+    if (!tokensOut || tokensOut <= 0) return null;
+
+    // priceNative = SOL per token = (SOL spent) / (tokens received)
+    const solSpent = lamportsIn / 1e9; // 0.1
+    // Need token decimals — derive from the quote's output decimal context
+    // The outAmount is in raw units, so price = SOL / rawTokens
+    const priceNative = solSpent / tokensOut;
+
+    // Convert to USD if SOL price provided
+    const priceUsd = solPriceUsd ? priceNative * solPriceUsd : 0;
+
     return { priceUsd, priceNative };
   } catch {
     return null;

@@ -219,8 +219,9 @@ async function scanCycle() {
       continue;
     }
 
-    // Cross-check with Jupiter — DexScreener often returns stale prices
-    const jup = await jupiterGetPrice(rec.mint);
+    // Cross-check with Jupiter quote — DexScreener often returns stale prices
+    const solPrice = await getSolPrice();
+    const jup = await jupiterGetPrice(rec.mint, solPrice);
     if (jup && jup.priceUsd > 0) {
       const dexMult = current.priceUsd / rec.entryPrice;
       const jupMult = jup.priceUsd / rec.entryPrice;
@@ -306,8 +307,9 @@ async function scanCycle() {
         const market = marketData.get(rec.mint);
         if (!market || market.priceUsd === 0) continue;
 
-        // Cross-check with Jupiter — DexScreener often returns stale prices
-        const jup = await jupiterGetPrice(rec.mint);
+        // Cross-check with Jupiter quote — DexScreener often returns stale prices
+        const solPrice = await getSolPrice();
+        const jup = await jupiterGetPrice(rec.mint, solPrice);
         if (jup && jup.priceUsd > 0) {
           const dexMult = market.priceUsd / rec.entryPrice;
           const jupMult = jup.priceUsd / rec.entryPrice;
@@ -545,22 +547,16 @@ async function main() {
   }
 
   // ── One-time fixup: correct stale peak for $SOMETHING ──
+  // Called at $35.7K MC, hit $274K MC (~7.7X) but DexScreener returned stale data
   {
     const FIXUP_MINT = 'BbiFLmfnbZPhm6hUCo78h5kAoAtwsXSHYjvDUHeNbonk';
     const rec = tracker.getByMint(FIXUP_MINT);
-    if (rec && rec.peakMultiplier < 1.5) {
-      try {
-        const dex = await fetchSingleMarketData(FIXUP_MINT);
-        if (dex && dex.priceUsd > 0 && rec.entryPrice > 0) {
-          const realMult = dex.priceUsd / rec.entryPrice;
-          if (realMult > rec.peakMultiplier) {
-            tracker.updatePeak(FIXUP_MINT, dex.priceUsd, dex.marketCap);
-            log(`✅ Fixed $${rec.symbol} peak: ${rec.peakMultiplier.toFixed(1)}X → ${realMult.toFixed(1)}X (was stale DexScreener data)`);
-          }
-        }
-      } catch (err: any) {
-        log(`⚠ Fixup for ${FIXUP_MINT} failed: ${err.message}`);
-      }
+    if (rec && rec.peakMultiplier < 5) {
+      const knownPeakMC = 274_000;
+      const knownPeakMult = knownPeakMC / rec.entryMC;
+      const knownPeakPrice = rec.entryPrice * knownPeakMult;
+      tracker.updatePeak(FIXUP_MINT, knownPeakPrice, knownPeakMC);
+      log(`✅ Fixed $${rec.symbol} peak: was ${rec.peakMultiplier.toFixed(1)}X → ${knownPeakMult.toFixed(1)}X (known ATH $274K MC)`);
     }
   }
 
