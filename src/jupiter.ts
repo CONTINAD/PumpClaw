@@ -159,6 +159,31 @@ export async function jupiterQuoteSol(mint: string, tokenAmount: number): Promis
 }
 
 /**
+ * Get the current USD price of a token using Jupiter price API.
+ * Falls back to quote-based pricing if price API fails.
+ */
+export async function jupiterGetPrice(mint: string): Promise<{ priceUsd: number; priceNative: number } | null> {
+  try {
+    // Jupiter Price API v2
+    const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}&showExtraInfo=true`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const tokenData = data?.data?.[mint];
+    if (!tokenData?.price) return null;
+    const priceUsd = parseFloat(tokenData.price);
+    // Derive SOL-native price using extraInfo if available
+    const priceNative = tokenData.extraInfo?.quotedPrice?.buyPrice
+      ? parseFloat(tokenData.extraInfo.quotedPrice.buyPrice)
+      : 0;
+    return { priceUsd, priceNative };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sell a token for SOL via Jupiter.
  * @param mint - Token mint address
  * @param tokenAmount - Raw token amount (smallest units) to sell

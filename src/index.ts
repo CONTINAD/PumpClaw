@@ -11,7 +11,7 @@ import { Trader } from './trader.js';
 import { getWallet, getSolBalance } from './wallet.js';
 import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
-import { jupiterQuoteSol } from './jupiter.js';
+import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
@@ -219,6 +219,22 @@ async function scanCycle() {
       continue;
     }
 
+    // Cross-check with Jupiter — DexScreener often returns stale prices
+    const jup = await jupiterGetPrice(rec.mint);
+    if (jup && jup.priceUsd > 0) {
+      const dexMult = current.priceUsd / rec.entryPrice;
+      const jupMult = jup.priceUsd / rec.entryPrice;
+      // If Jupiter shows >20% higher than DexScreener, use Jupiter price
+      if (jupMult > dexMult * 1.2) {
+        log(`🔄 Jupiter price correction for $${rec.symbol}: DexScreener ${dexMult.toFixed(2)}X vs Jupiter ${jupMult.toFixed(2)}X — using Jupiter`);
+        current.priceUsd = jup.priceUsd;
+        // Estimate MC from price ratio
+        if (current.marketCap > 0 && dexMult > 0) {
+          current.marketCap = current.marketCap * (jupMult / dexMult);
+        }
+      }
+    }
+
     const interval = CONFIG.PERFORMANCE_INTERVALS[rec.nextSnapshotIndex];
     const snapshot: PerformanceSnapshot = {
       intervalMin: interval,
@@ -289,6 +305,19 @@ async function scanCycle() {
       for (const rec of allCalls) {
         const market = marketData.get(rec.mint);
         if (!market || market.priceUsd === 0) continue;
+
+        // Cross-check with Jupiter — DexScreener often returns stale prices
+        const jup = await jupiterGetPrice(rec.mint);
+        if (jup && jup.priceUsd > 0) {
+          const dexMult = market.priceUsd / rec.entryPrice;
+          const jupMult = jup.priceUsd / rec.entryPrice;
+          if (jupMult > dexMult * 1.2) {
+            market.priceUsd = jup.priceUsd;
+            if (market.marketCap > 0 && dexMult > 0) {
+              market.marketCap = market.marketCap * (jupMult / dexMult);
+            }
+          }
+        }
 
         // Always update ATH peak
         tracker.updatePeak(rec.mint, market.priceUsd, market.marketCap);
