@@ -13,7 +13,6 @@ import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
 import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
-import { tgSendStartup } from './telegram-notify.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
 // ── Leaderboard timestamp persistence ───────────────────────
@@ -578,8 +577,7 @@ async function main() {
   }
   console.log('');
 
-  // Send Telegram startup message with 6h stats
-  tgSendStartup(tracker.getActiveCalls()).catch(() => {});
+
 
   // Launch the fast position monitor in parallel
   if (CONFIG.TRADE_ENABLED) {
