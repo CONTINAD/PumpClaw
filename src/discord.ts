@@ -3,6 +3,7 @@ import type { PumpFunCoin } from './pumpfun.js';
 import type { MarketData } from './dexscreener.js';
 import type { PerformanceSnapshot, CallRecord } from './tracker.js';
 import type { PaperTrade, TradeExit } from './paper-trader.js';
+import { tgSendAlert, tgUpdateAlert, tgSendMilestone, tgSendLeaderboard, tgSendTradeExit, tgSendMonthlyReport } from './telegram-notify.js';
 
 // ── Formatting helpers ──────────────────────────────────────
 
@@ -558,6 +559,9 @@ export async function sendAlert(
   coin: PumpFunCoin,
   market: MarketData,
 ): Promise<string | null> {
+  // Send to Telegram in parallel (fire-and-forget)
+  tgSendAlert(coin, market).catch(() => {});
+
   try {
     const body = buildAlertEmbed(coin, market);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
@@ -583,6 +587,9 @@ export async function updateWithPerformance(
   entryMarket: MarketData,
   snapshots: PerformanceSnapshot[],
 ): Promise<void> {
+  // Send update to Telegram (new message since TG can't edit by webhook msg ID)
+  tgUpdateAlert(coin, entryMarket, snapshots).catch(() => {});
+
   try {
     const body = buildAlertEmbed(coin, entryMarket, snapshots);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}/messages/${messageId}`, {
@@ -604,6 +611,8 @@ export async function sendMilestoneAlert(
   currentPrice: number,
   currentMC: number,
 ): Promise<string | null> {
+  tgSendMilestone(rec, multiplier, currentPrice, currentMC).catch(() => {});
+
   try {
     const body = buildMilestoneEmbed(rec, multiplier, currentPrice, currentMC);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
@@ -624,6 +633,8 @@ export async function sendMilestoneAlert(
 }
 
 export async function sendLeaderboard(label: string, entries: LeaderboardEntry[]): Promise<string | null> {
+  tgSendLeaderboard(label, entries).catch(() => {});
+
   try {
     const body = buildLeaderboardEmbed(label, entries);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
@@ -644,6 +655,8 @@ export async function sendLeaderboard(label: string, entries: LeaderboardEntry[]
 }
 
 export async function sendTradeExit(trade: PaperTrade, exit: TradeExit): Promise<string | null> {
+  tgSendTradeExit(trade, exit).catch(() => {});
+
   try {
     const body = buildTradeExitEmbed(trade, exit);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
@@ -667,6 +680,8 @@ export async function sendMonthlyLeaderboard(
   month: string,
   entries: MonthlyLeaderboardEntry[],
 ): Promise<string | null> {
+  tgSendMonthlyReport(month, entries).catch(() => {});
+
   try {
     const body = buildMonthlyLeaderboardEmbed(month, entries);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
