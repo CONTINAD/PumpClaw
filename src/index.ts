@@ -557,6 +557,22 @@ async function main() {
       const knownPeakPrice = rec.entryPrice * knownPeakMult;
       tracker.updatePeak(FIXUP_MINT, knownPeakPrice, knownPeakMC);
       log(`✅ Fixed $${rec.symbol} peak: was ${rec.peakMultiplier.toFixed(1)}X → ${knownPeakMult.toFixed(1)}X (known ATH $274K MC)`);
+
+      // Send missed milestone alerts (2X, 3X, 5X)
+      const alreadyHit = new Set(rec.hitMilestones.map(m => m.multiplier));
+      for (const target of CONFIG.MILESTONES) {
+        if (knownPeakMult >= target && !alreadyHit.has(target)) {
+          const hitPrice = rec.entryPrice * target;
+          const hitMC = rec.entryMC * target;
+          log(`🚀 MISSED MILESTONE: $${rec.symbol} hit ${target}X! Entry ${fmtUsd(rec.entryMC)} → ${fmtUsd(hitMC)}`);
+          const msgId = await sendMilestoneAlert(rec, target, hitPrice, hitMC);
+          if (msgId) {
+            tracker.setMilestoneMessageId(FIXUP_MINT, target, msgId);
+            rec.hitMilestones.push({ multiplier: target, price: hitPrice, marketCap: hitMC, timestamp: Date.now() });
+            log(`📨 Milestone ${target}X alert sent for $${rec.symbol}`);
+          }
+        }
+      }
     }
   }
 
