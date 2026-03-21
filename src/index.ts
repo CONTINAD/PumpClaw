@@ -544,6 +544,26 @@ async function main() {
     console.log('');
   }
 
+  // ── One-time fixup: correct stale peak for $SOMETHING ──
+  {
+    const FIXUP_MINT = 'BbiFLmfnbZPhm6hUCo78h5kAoAtwsXSHYjvDUHeNbonk';
+    const rec = tracker.getByMint(FIXUP_MINT);
+    if (rec && rec.peakMultiplier < 1.5) {
+      try {
+        const dex = await fetchSingleMarketData(FIXUP_MINT);
+        if (dex && dex.priceUsd > 0 && rec.entryPrice > 0) {
+          const realMult = dex.priceUsd / rec.entryPrice;
+          if (realMult > rec.peakMultiplier) {
+            tracker.updatePeak(FIXUP_MINT, dex.priceUsd, dex.marketCap);
+            log(`✅ Fixed $${rec.symbol} peak: ${rec.peakMultiplier.toFixed(1)}X → ${realMult.toFixed(1)}X (was stale DexScreener data)`);
+          }
+        }
+      } catch (err: any) {
+        log(`⚠ Fixup for ${FIXUP_MINT} failed: ${err.message}`);
+      }
+    }
+  }
+
   if (tracker.size > 0) {
     log(`Loaded ${tracker.size} previous calls — milestone tracking continues`);
   }
