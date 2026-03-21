@@ -82,6 +82,41 @@ function links(mint: string): string {
   ].join('  ·  ');
 }
 
+// ── Startup message ──
+
+export async function tgSendStartup(calls: CallRecord[]): Promise<void> {
+  const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
+  const recent = calls.filter(c => c.entryTime >= sixHoursAgo);
+
+  const lines: string[] = [];
+  lines.push('🟢 <b>PumpClaw Online</b>');
+  lines.push('');
+
+  if (recent.length === 0) {
+    lines.push('No calls in the last 6 hours.');
+  } else {
+    const sorted = [...recent].sort((a, b) => b.peakMultiplier - a.peakMultiplier);
+    const top = sorted.slice(0, 5);
+    const hit2x = recent.filter(c => c.peakMultiplier >= 2).length;
+    const hit5x = recent.filter(c => c.peakMultiplier >= 5).length;
+    const avgPeak = recent.reduce((s, c) => s + c.peakMultiplier, 0) / recent.length;
+
+    lines.push(`<b>Last 6 Hours</b>`);
+    lines.push(`${recent.length} calls  ·  ${hit2x} hit 2X+  ·  ${hit5x} hit 5X+  ·  ${avgPeak.toFixed(1)}X avg peak`);
+    lines.push('');
+
+    const medals = ['🥇', '🥈', '🥉', '4.', '5.'];
+    for (let i = 0; i < top.length; i++) {
+      const c = top[i];
+      const medal = medals[i];
+      const icon = c.peakMultiplier >= 2 ? '🟩' : '🟥';
+      lines.push(`${medal} ${icon} <b>$${c.symbol}</b>  ·  <b>${c.peakMultiplier.toFixed(1)}X</b> ATH  ·  ${fmtUsd(c.entryMC)} → ${fmtUsd(c.peakMC)}`);
+    }
+  }
+
+  await sendTg(lines.join('\n'));
+}
+
 // ── Alert ──
 
 export async function tgSendAlert(coin: PumpFunCoin, market: MarketData): Promise<void> {

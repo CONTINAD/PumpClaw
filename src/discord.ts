@@ -587,8 +587,7 @@ export async function updateWithPerformance(
   entryMarket: MarketData,
   snapshots: PerformanceSnapshot[],
 ): Promise<void> {
-  // Send update to Telegram (new message since TG can't edit by webhook msg ID)
-  tgUpdateAlert(coin, entryMarket, snapshots).catch(() => {});
+  // Skip performance updates on Telegram — too spammy (4 messages per call)
 
   try {
     const body = buildAlertEmbed(coin, entryMarket, snapshots);
@@ -636,7 +635,10 @@ export async function sendMilestoneAlert(
 }
 
 export async function sendLeaderboard(label: string, entries: LeaderboardEntry[]): Promise<string | null> {
-  tgSendLeaderboard(label, entries).catch(() => {});
+  // Only send 24h+ leaderboards to Telegram to avoid spam
+  if (label === '24 Hours' || label === '7 Days') {
+    tgSendLeaderboard(label, entries).catch(() => {});
+  }
 
   try {
     const body = buildLeaderboardEmbed(label, entries);
