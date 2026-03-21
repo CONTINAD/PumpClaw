@@ -79,6 +79,7 @@ function links(mint: string): string {
     `<a href="https://dexscreener.com/solana/${mint}">DexScreener</a>`,
     `<a href="https://gmgn.ai/sol/token/${mint}">GMGN</a>`,
     `<a href="https://axiom.trade/t/${mint}/@noose?chain=sol">Axiom</a>`,
+    `<a href="https://trade.padre.gg/trade/solana/${mint}?rk=cache">Terminal</a>`,
   ].join('  ·  ');
 }
 
