@@ -222,16 +222,19 @@ async function maintenanceCycle() {
       continue;
     }
 
-    const solPrice = await getSolPrice();
-    const jup = await jupiterGetPrice(rec.mint, solPrice);
-    if (jup && jup.priceUsd > 0) {
-      const dexMult = current.priceUsd / rec.entryPrice;
-      const jupMult = jup.priceUsd / rec.entryPrice;
-      if (jupMult > dexMult * 1.2) {
-        log(`🔄 Jupiter price correction for $${rec.symbol}: DexScreener ${dexMult.toFixed(2)}X vs Jupiter ${jupMult.toFixed(2)}X — using Jupiter`);
-        current.priceUsd = jup.priceUsd;
-        if (current.marketCap > 0 && dexMult > 0) {
-          current.marketCap = current.marketCap * (jupMult / dexMult);
+    // Only cross-check with Jupiter if DexScreener price looks stale (barely moved)
+    const dexMult = current.priceUsd / rec.entryPrice;
+    if (dexMult < 1.3 && dexMult > 0.7) {
+      const solPrice = await getSolPrice();
+      const jup = await jupiterGetPrice(rec.mint, solPrice);
+      if (jup && jup.priceUsd > 0) {
+        const jupMult = jup.priceUsd / rec.entryPrice;
+        if (jupMult > dexMult * 1.2) {
+          log(`🔄 Jupiter price correction for $${rec.symbol}: DexScreener ${dexMult.toFixed(2)}X vs Jupiter ${jupMult.toFixed(2)}X — using Jupiter`);
+          current.priceUsd = jup.priceUsd;
+          if (current.marketCap > 0 && dexMult > 0) {
+            current.marketCap = current.marketCap * (jupMult / dexMult);
+          }
         }
       }
     }

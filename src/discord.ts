@@ -610,10 +610,8 @@ export async function sendMilestoneAlert(
   currentPrice: number,
   currentMC: number,
 ): Promise<string | null> {
-  // Only send 5X+ milestones to Telegram to avoid spam
-  if (multiplier >= 5) {
-    tgSendMilestone(rec, multiplier, currentPrice, currentMC).catch(() => {});
-  }
+  // Send 2X+ milestones to Telegram (milestones are 2,3,5,10… never fractional)
+  tgSendMilestone(rec, multiplier, currentPrice, currentMC).catch(() => {});
 
   try {
     const body = buildMilestoneEmbed(rec, multiplier, currentPrice, currentMC);

@@ -6,6 +6,18 @@ const JUPITER_QUOTE = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUPITER_SWAP = 'https://lite-api.jup.ag/swap/v1/swap';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
+// ── Rate limiter for Jupiter quote API ──
+// Jupiter free tier allows ~30 req/min. We space out non-buy quote calls.
+let _lastQuoteTime = 0;
+const QUOTE_MIN_GAP_MS = 2500; // 2.5s between price-check quotes
+
+async function rateLimitedQuote(): Promise<void> {
+  const now = Date.now();
+  const wait = QUOTE_MIN_GAP_MS - (now - _lastQuoteTime);
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _lastQuoteTime = Date.now();
+}
+
 export interface SwapResult {
   txSignature: string;
   inputAmount: number;     // raw units
@@ -141,6 +153,7 @@ export async function jupiterBuy(mint: string, solAmount: number): Promise<SwapR
  */
 export async function jupiterQuoteSol(mint: string, tokenAmount: number): Promise<number | null> {
   try {
+    await rateLimitedQuote();
     const params = new URLSearchParams({
       inputMint: mint,
       outputMint: WSOL_MINT,
@@ -167,6 +180,9 @@ export async function jupiterQuoteSol(mint: string, tokenAmount: number): Promis
  */
 export async function jupiterGetPrice(mint: string, solPriceUsd?: number): Promise<{ priceUsd: number; priceNative: number } | null> {
   try {
+    // Rate limit price-check quotes so they don't starve buy/sell quotes
+    await rateLimitedQuote();
+
     // Quote: how many tokens do I get for 0.1 SOL?
     const lamportsIn = 100_000_000; // 0.1 SOL
     const params = new URLSearchParams({
