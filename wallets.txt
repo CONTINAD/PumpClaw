@@ -1,0 +1,2 @@
+# Paste wallet addresses here, one per line.
+# Empty lines and lines starting with # are ignored.

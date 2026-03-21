@@ -10,6 +10,7 @@ import { PaperTrader } from './paper-trader.js';
 import { Trader } from './trader.js';
 import { getWallet, getSolBalance } from './wallet.js';
 import { checkBundle } from './bundle-check.js';
+import { checkSmartWallets } from './wallet-filter.js';
 import { jupiterQuoteSol } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
 import type { PumpFunCoin } from './pumpfun.js';
@@ -124,6 +125,16 @@ async function scanCycle() {
         }
         if (bundle.totalChecked > 0) {
           log(`✅ Bundle check passed: ${bundle.details}`);
+        }
+
+        // Smart wallet check — at least one tracked wallet must hold this token
+        const smartCheck = await checkSmartWallets(post.mint);
+        if (smartCheck.checked > 0 && !smartCheck.held) {
+          log(`⚠ NO SMART HOLDERS — skipping ${post.name}: 0/${smartCheck.checked} tracked wallets hold this token`);
+          continue;
+        }
+        if (smartCheck.holders > 0) {
+          log(`✅ Smart wallet check passed: ${smartCheck.holders} tracked wallet(s) holding`);
         }
 
         // Global fee check — skip if estimated trading fees too low for the MC
