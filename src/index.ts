@@ -55,8 +55,26 @@ const _lbTs = loadLbTimestamps();
 const tracker = new PerformanceTracker();
 const paperTrader = new PaperTrader();
 const trader = new Trader();
-const seenTgMsgIds = new Set<string>();
+const SEEN_MSG_FILE = join(CONFIG.DATA_DIR, 'seen-msg-ids.json');
+const seenTgMsgIds = new Set<string>(loadSeenMsgIds());
+let seenMsgInitialized = seenTgMsgIds.size > 0;  // false on first-ever startup
 let lastMilestoneCheck = 0;
+
+function loadSeenMsgIds(): string[] {
+  try {
+    return JSON.parse(readFileSync(SEEN_MSG_FILE, 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+function saveSeenMsgIds(): void {
+  try {
+    // Keep only the last 200 message IDs to avoid unbounded growth
+    const ids = [...seenTgMsgIds].slice(-200);
+    writeFileSync(SEEN_MSG_FILE, JSON.stringify(ids));
+  } catch {}
+}
 const lastLeaderboardPost = new Map<string, number>(Object.entries(_lbTs.leaderboard));
 let lastMonthlyLbDate = _lbTs.monthlyDate;
 
@@ -79,17 +97,27 @@ async function fastScanCycle() {
 
   const newPosts = posts.filter(p => !seenTgMsgIds.has(p.messageId));
   for (const p of posts) seenTgMsgIds.add(p.messageId);
+  saveSeenMsgIds();
 
+  // On first-ever startup (no persisted IDs), seed with all visible posts and skip them.
+  // This prevents calling stale "New Trending" posts that already pumped.
+  if (!seenMsgInitialized) {
+    seenMsgInitialized = true;
+    log(`📡 First startup — seeded ${posts.length} existing message IDs (skipping stale posts)`);
+    return;
+  }
+
+  if (newPosts.length === 0) return;
+
+  // Only consider posts with NEW message IDs (appeared since last scrape)
   const seenMintsThisCycle = new Set<string>();
-  const freshPosts = posts.filter(p => {
+  const freshPosts = newPosts.filter(p => {
     if (tracker.hasBeenCalled(p.mint) || seenMintsThisCycle.has(p.mint)) return false;
     seenMintsThisCycle.add(p.mint);
     return true;
   });
 
-  if (newPosts.length > 0) {
-    log(`📡 ${posts.length} trending posts, ${newPosts.length} new, ${freshPosts.length} never-called`);
-  }
+  log(`📡 ${posts.length} trending posts, ${newPosts.length} new, ${freshPosts.length} never-called`);
 
   if (freshPosts.length === 0) return;
 
@@ -172,21 +200,26 @@ async function fastScanCycle() {
       coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
     );
 
+    // Mark as called BEFORE sending alerts — prevents duplicate sends if Discord is slow/down
+    tracker.add(coin, adjustedMarket, 'pending');
+    alertCount++;
+
     const discordMsgId = await sendAlert(coin, adjustedMarket);
     if (discordMsgId) {
-      tracker.add(coin, adjustedMarket, discordMsgId);
-      alertCount++;
+      tracker.setDiscordMsgId(coin.mint, discordMsgId);
       log(`📨 Alert sent for $${coin.symbol} — paper trade opened at ${fmtUsd(market.marketCap)} MC`);
+    } else {
+      log(`⚠ Alert failed for $${coin.symbol} — TG sent, Discord failed`);
+    }
 
-      // Execute real buy via Jupiter
-      if (CONFIG.TRADE_ENABLED) {
-        log(`[Trader] 🔄 Attempting buy for $${coin.symbol}...`);
-        const realPos = await trader.buy(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap);
-        if (realPos) {
-          log(`💰 REAL BUY: $${coin.symbol} — ${realPos.entrySol} SOL → ${realPos.tokensReceived} tokens (tx: ${realPos.entryTx.slice(0, 16)}...)`);
-        } else {
-          log(`⚠ BUY SKIPPED/FAILED for $${coin.symbol} — check [Trader] logs above for reason`);
-        }
+    // Execute real buy via Jupiter
+    if (CONFIG.TRADE_ENABLED) {
+      log(`[Trader] 🔄 Attempting buy for $${coin.symbol}...`);
+      const realPos = await trader.buy(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap);
+      if (realPos) {
+        log(`💰 REAL BUY: $${coin.symbol} — ${realPos.entrySol} SOL → ${realPos.tokensReceived} tokens (tx: ${realPos.entryTx.slice(0, 16)}...)`);
+      } else {
+        log(`⚠ BUY SKIPPED/FAILED for $${coin.symbol} — check [Trader] logs above for reason`);
       }
     }
   }

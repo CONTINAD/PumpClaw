@@ -203,6 +203,14 @@ export class PerformanceTracker {
     return newHits;
   }
 
+  /** Update the Discord alert message ID (e.g. after initial 'pending' placeholder). */
+  setDiscordMsgId(mint: string, msgId: string): void {
+    const rec = this.calls.get(mint);
+    if (!rec) return;
+    rec.alertMessageId = msgId;
+    this.save();
+  }
+
   /** Store the Discord message ID for a sent milestone alert. */
   setMilestoneMessageId(mint: string, multiplier: number, msgId: string): void {
     const rec = this.calls.get(mint);
