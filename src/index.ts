@@ -55,26 +55,8 @@ const _lbTs = loadLbTimestamps();
 const tracker = new PerformanceTracker();
 const paperTrader = new PaperTrader();
 const trader = new Trader();
-const SEEN_MSG_FILE = join(CONFIG.DATA_DIR, 'seen-msg-ids.json');
-const seenTgMsgIds = new Set<string>(loadSeenMsgIds());
-let seenMsgInitialized = seenTgMsgIds.size > 0;  // false on first-ever startup
+const seenTgMsgIds = new Set<string>();
 let lastMilestoneCheck = 0;
-
-function loadSeenMsgIds(): string[] {
-  try {
-    return JSON.parse(readFileSync(SEEN_MSG_FILE, 'utf-8'));
-  } catch {
-    return [];
-  }
-}
-
-function saveSeenMsgIds(): void {
-  try {
-    // Keep only the last 200 message IDs to avoid unbounded growth
-    const ids = [...seenTgMsgIds].slice(-200);
-    writeFileSync(SEEN_MSG_FILE, JSON.stringify(ids));
-  } catch {}
-}
 const lastLeaderboardPost = new Map<string, number>(Object.entries(_lbTs.leaderboard));
 let lastMonthlyLbDate = _lbTs.monthlyDate;
 
@@ -95,21 +77,13 @@ async function fastScanCycle() {
     return;
   }
 
+  // Track message IDs to avoid processing the same post twice within a session
   const newPosts = posts.filter(p => !seenTgMsgIds.has(p.messageId));
   for (const p of posts) seenTgMsgIds.add(p.messageId);
-  saveSeenMsgIds();
-
-  // On first-ever startup (no persisted IDs), seed with all visible posts and skip them.
-  // This prevents calling stale "New Trending" posts that already pumped.
-  if (!seenMsgInitialized) {
-    seenMsgInitialized = true;
-    log(`📡 First startup — seeded ${posts.length} existing message IDs (skipping stale posts)`);
-    return;
-  }
 
   if (newPosts.length === 0) return;
 
-  // Only consider posts with NEW message IDs (appeared since last scrape)
+  // Only consider mints that haven't been called before (persisted in calls.json)
   const seenMintsThisCycle = new Set<string>();
   const freshPosts = newPosts.filter(p => {
     if (tracker.hasBeenCalled(p.mint) || seenMintsThisCycle.has(p.mint)) return false;
