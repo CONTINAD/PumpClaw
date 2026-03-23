@@ -115,12 +115,6 @@ async function fastScanCycle() {
       continue;
     }
 
-    // Skip coins re-entering trending after already pumping (e.g. "New Trending" at 3X)
-    if (market.priceChange1h > 150) {
-      log(`⚠ ALREADY PUMPED — skipping ${post.name}: 1h change ${fmtPct(market.priceChange1h)} (re-entered trending after pump)`);
-      continue;
-    }
-
     if (tracker.hasBeenCalled(post.mint)) continue;
 
     const bundle = await checkBundle(post.mint);
