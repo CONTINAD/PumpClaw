@@ -162,7 +162,7 @@ async function fastScanCycle() {
         `Price ${fmtUsd(market.priceUsd)} — SOL TRENDING ✅`,
     );
 
-    const adjustedMarket = { ...market, priceUsd: market.priceUsd * 0.97, marketCap: market.marketCap * 0.97 };
+    const adjustedMarket = { ...market, priceUsd: market.priceUsd * 0.96, marketCap: market.marketCap * 0.96 };
 
     const paperTrade = paperTrader.openTrade(
       coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
