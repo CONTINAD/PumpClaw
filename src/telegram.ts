@@ -202,6 +202,66 @@ export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
     }
   }
 
-  console.error(`[Telegram] All 3 scrape attempts failed: ${lastErr?.message}`);
+  console.error(`[Telegram] All 3 proxy attempts failed: ${lastErr?.message}`);
+
+  // Fallback: try direct fetch without proxy
+  if (PROXY_LIST.length > 0) {
+    try {
+      console.log(`[Telegram] Falling back to direct fetch (no proxy)`);
+      const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+      const res = await fetch(TG_URL, {
+        headers: {
+          'User-Agent': ua,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache',
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.ok) {
+        const html = await res.text();
+        const decoded = html
+          .replace(/&lrm;/g, '\u200e')
+          .replace(/&rlm;/g, '\u200f')
+          .replace(/&#036;/g, '$')
+          .replace(/&amp;/g, '&')
+          .replace(/&gt;/g, '>')
+          .replace(/&lt;/g, '<')
+          .replace(/&quot;/g, '"');
+
+        const msgIds: string[] = [];
+        for (const m of decoded.matchAll(MSG_ID_PATTERN)) {
+          msgIds.push(m[1]);
+        }
+
+        const posts: TrendingPost[] = [];
+        const seen = new Set<string>();
+        for (const m of decoded.matchAll(POST_PATTERN)) {
+          const mint = m[1];
+          const name = m[2].replace(/[\u200e\u200f]/g, '').trim();
+          if (seen.has(mint)) continue;
+          seen.add(mint);
+          const matchPos = m.index!;
+          let closestMsgId = 'unknown';
+          let bestDist = Infinity;
+          for (const mid of msgIds) {
+            const midPos = decoded.indexOf(`data-post="solearlytrending/${mid}"`);
+            if (midPos >= 0 && midPos < matchPos && matchPos - midPos < bestDist) {
+              bestDist = matchPos - midPos;
+              closestMsgId = mid;
+            }
+          }
+          posts.push({ mint, name, messageId: closestMsgId });
+        }
+
+        console.log(`[Telegram] Direct fetch succeeded: ${posts.length} posts`);
+        return posts;
+      }
+      console.error(`[Telegram] Direct fetch failed: HTTP ${res.status}`);
+    } catch (err: any) {
+      console.error(`[Telegram] Direct fetch error: ${err.message}`);
+    }
+  }
+
   return [];
 }
