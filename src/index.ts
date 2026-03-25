@@ -156,13 +156,17 @@ async function fastScanCycle() {
     coin.isTrendingPaid = true;
     if (!coinDetails) coin.name = post.name;
 
+    // Re-fetch price right before calling — use the lower MC if it dropped during checks
+    const freshMarket = await fetchSingleMarketData(post.mint);
+    const liveMarket = (freshMarket && freshMarket.marketCap < market.marketCap) ? freshMarket : market;
+
     log(
       `🔔 ALERT: ${coin.name} ($${coin.symbol}) — ` +
-        `5m vol ${fmtUsd(market.volume5m)} — MC ${fmtUsd(market.marketCap)} — ` +
-        `Price ${fmtUsd(market.priceUsd)} — SOL TRENDING ✅`,
+        `5m vol ${fmtUsd(liveMarket.volume5m)} — MC ${fmtUsd(liveMarket.marketCap)} — ` +
+        `Price ${fmtUsd(liveMarket.priceUsd)} — SOL TRENDING ✅`,
     );
 
-    const adjustedMarket = { ...market, priceUsd: market.priceUsd * 0.96, marketCap: market.marketCap * 0.96 };
+    const adjustedMarket = { ...liveMarket, priceUsd: liveMarket.priceUsd * 0.96, marketCap: liveMarket.marketCap * 0.96 };
 
     const paperTrade = paperTrader.openTrade(
       coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
