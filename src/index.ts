@@ -34,7 +34,7 @@ function loadLbTimestamps(): LbTimestamps {
     const todayStr = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-${String(today.getUTCDate()).padStart(2, '0')}`;
     const seeded: LbTimestamps = {
       leaderboard: {
-        '1 Hour': now, '6 Hours': now, '12 Hours': now,
+        '6 Hours': now, '12 Hours': now,
         '24 Hours': now, '7 Days': now,
       },
       monthlyDate: todayStr,

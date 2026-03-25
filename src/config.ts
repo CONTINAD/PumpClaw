@@ -29,7 +29,6 @@ export const CONFIG = {
 
   // Leaderboard intervals: [label, postEveryMs, lookbackMs]
   LEADERBOARD_INTERVALS: [
-    { label: '1 Hour',  postEvery: 1 * 60 * 60 * 1000,   lookback: 1 * 60 * 60 * 1000 },
     { label: '6 Hours', postEvery: 6 * 60 * 60 * 1000,   lookback: 6 * 60 * 60 * 1000 },
     { label: '12 Hours', postEvery: 12 * 60 * 60 * 1000,  lookback: 12 * 60 * 60 * 1000 },
     { label: '24 Hours', postEvery: 24 * 60 * 60 * 1000,  lookback: 24 * 60 * 60 * 1000 },
