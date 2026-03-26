@@ -57,13 +57,13 @@ export const CONFIG = {
   // Paper trading (simulated 1 SOL per call)
   PAPER_ENTRY_SOL: 1.0,
   PAPER_STOP_LOSS_PCT: 0.70,   // stop at -30% from entry (price = entry * 0.70)
-  PAPER_TP1_MULT: 2,           // TP1 at 2X — sell 40%, move SL to break-even
-  PAPER_TP1_SELL: 0.40,
-  PAPER_TP2_MULT: 3,           // TP2 at 3X — sell 30%
+  PAPER_TP1_MULT: 2,           // TP1 at 2X — sell 50%, move SL to break-even
+  PAPER_TP1_SELL: 0.50,
+  PAPER_TP2_MULT: 4,           // TP2 at 4X — sell 30%
   PAPER_TP2_SELL: 0.30,
-  PAPER_TP3_MULT: 5,           // TP3 at 5X — sell 20%, activate trailing stop
-  PAPER_TP3_SELL: 0.20,
-  PAPER_TRAILING_DROP: 0.35,   // trailing stop fires at -35% from ATH (remaining 10%)
+  PAPER_TP3_MULT: 8,           // TP3 at 8X — sell 15%, activate trailing stop
+  PAPER_TP3_SELL: 0.15,
+  PAPER_TRAILING_DROP: 0.35,   // trailing stop fires at -35% from ATH (remaining 5%)
   PAPER_DATA_FILE: join(DATA_DIR, 'trades.json'),
 
   // Monthly top 10 leaderboard — posted daily
