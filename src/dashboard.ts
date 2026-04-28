@@ -303,18 +303,6 @@ function buildHTML(data: ReturnType<typeof buildDashboardData>, activeRange: Tim
   const d = data;
   const o = d.overview;
 
-  // win/loss bar helper
-  const wrBar = (w: number, l: number, color: string) => {
-    const total = w + l;
-    const pct = total > 0 ? (w / total * 100) : 0;
-    return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-      <div style="flex:1;height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden">
-        <div style="width:${pct}%;height:100%;background:${color};border-radius:2px"></div>
-      </div>
-      <span style="font-size:11px;color:#888;min-width:36px">${pct.toFixed(0)}%</span>
-    </div>`;
-  };
-
   // Compute derived display values
   const realWinPct = (o.realWins + o.realLosses) > 0 ? (o.realWins / (o.realWins + o.realLosses) * 100) : 0;
   const paperWinPct = (o.paperWins + o.paperLosses) > 0 ? (o.paperWins / (o.paperWins + o.paperLosses) * 100) : 0;
@@ -322,11 +310,22 @@ function buildHTML(data: ReturnType<typeof buildDashboardData>, activeRange: Tim
   const tp2Pct = d.tpHitRates.real.total > 0 ? (d.tpHitRates.real.tp2 / d.tpHitRates.real.total * 100) : 0;
   const tp3Pct = d.tpHitRates.real.total > 0 ? (d.tpHitRates.real.tp3 / d.tpHitRates.real.total * 100) : 0;
 
+  // Milestone hit rates
+  const ms2Pct = o.totalCalls > 0 ? ((d.milestoneCounts[2] ?? 0) / o.totalCalls * 100) : 0;
+  const ms5Pct = o.totalCalls > 0 ? ((d.milestoneCounts[5] ?? 0) / o.totalCalls * 100) : 0;
+  const ms10Pct = o.totalCalls > 0 ? ((d.milestoneCounts[10] ?? 0) / o.totalCalls * 100) : 0;
+
+  // Average peak
+  let peakSum = 0, peakCount = 0;
+  for (const c of d.callsWithPeaks) { peakSum += c.peakMultiplier; peakCount++; }
+  const avgPeak = peakCount > 0 ? peakSum / peakCount : 1;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="60">
 <title>PumpClaw Dashboard</title>
 <script src="/chart.js"></script>
 <style>
@@ -396,16 +395,21 @@ a{color:var(--accent);text-decoration:none}
   display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;
 }
 .hero-card{
-  background:var(--bg1);border:1px solid var(--border);border-radius:12px;padding:24px 28px;
+  background:linear-gradient(135deg,var(--bg1),var(--bg2));
+  border:1px solid var(--border);border-radius:14px;padding:28px 32px;
   position:relative;overflow:hidden;
 }
 .hero-card::before{
-  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+}
+.hero-card::after{
+  content:'';position:absolute;inset:0;border-radius:14px;pointer-events:none;
+  opacity:0.04;background:radial-gradient(circle at top right,var(--accent),transparent 70%);
 }
 .hero-real::before{background:linear-gradient(90deg,var(--green),var(--cyan))}
 .hero-paper::before{background:linear-gradient(90deg,var(--blue),var(--purple))}
-.hero-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-bottom:10px}
-.hero-val{font-size:36px;font-weight:700;font-family:'JetBrains Mono','SF Mono',monospace;letter-spacing:-1.5px;line-height:1.1}
+.hero-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);margin-bottom:14px}
+.hero-val{font-size:46px;font-weight:800;font-family:'JetBrains Mono','SF Mono',monospace;letter-spacing:-2px;line-height:1}
 .hero-sub{display:flex;gap:20px;margin-top:12px;font-size:12px;color:var(--text2)}
 .hero-sub span{display:flex;align-items:center;gap:5px}
 .hero-pct{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace}
@@ -482,10 +486,83 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;
   color:var(--text3);padding:20px 0 12px;
   border-top:1px solid var(--border);margin-top:8px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.section-title .badge{
+  display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
+  background:var(--bg2);border:1px solid var(--border);border-radius:12px;
+  font-size:10px;color:var(--text2);text-transform:none;letter-spacing:0;
 }
 
+/* ── Hall of Fame runner cards ── */
+.runners{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+  gap:12px;margin-bottom:24px;
+}
+.runner{
+  position:relative;background:var(--bg1);border:1px solid var(--border);
+  border-radius:12px;padding:16px 18px;transition:all 0.2s;overflow:hidden;
+  cursor:default;
+}
+.runner:hover{border-color:var(--border2);transform:translateY(-2px)}
+.runner::before{
+  content:'';position:absolute;inset:0;border-radius:12px;pointer-events:none;
+  opacity:0.06;background:radial-gradient(circle at top right,var(--accent),transparent 60%);
+}
+.runner-rank{
+  position:absolute;top:10px;right:12px;font-size:10px;font-weight:600;
+  color:var(--text3);font-family:'JetBrains Mono',monospace;
+}
+.runner-sym{
+  font-size:18px;font-weight:700;color:#fff;letter-spacing:-0.3px;
+  margin-bottom:2px;display:flex;align-items:center;gap:6px;
+}
+.runner-name{font-size:11px;color:var(--text3);margin-bottom:14px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;
+}
+.runner-peak{
+  font-size:32px;font-weight:800;font-family:'JetBrains Mono',monospace;
+  letter-spacing:-1px;line-height:1;margin-bottom:8px;
+  background:linear-gradient(135deg,var(--green),var(--cyan));
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
+.runner-peak.huge{background:linear-gradient(135deg,#ff9f40,#ff3b5c)}
+.runner-peak.mid{background:linear-gradient(135deg,var(--blue),var(--purple))}
+.runner-peak,.runner-peak.huge,.runner-peak.mid{
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
+.runner-mc{font-size:11px;color:var(--text2);margin-bottom:10px;font-family:'JetBrains Mono',monospace}
+.runner-mc strong{color:var(--text)}
+.runner-ms{display:flex;flex-wrap:wrap;gap:4px}
+.runner-ms .ms{
+  font-size:9px;font-weight:600;padding:2px 6px;border-radius:3px;
+  background:rgba(0,214,114,0.12);color:var(--green);
+  font-family:'JetBrains Mono',monospace;
+}
+.runner-date{font-size:10px;color:var(--text3);margin-top:8px;font-family:'JetBrains Mono',monospace}
+
+/* ── trophy icons for top 3 ── */
+.runner.gold{border-color:rgba(255,215,0,0.25)}
+.runner.gold::before{opacity:0.12;background:radial-gradient(circle at top right,#ffd700,transparent 60%)}
+.runner.silver{border-color:rgba(192,192,192,0.2)}
+.runner.silver::before{opacity:0.08;background:radial-gradient(circle at top right,#c0c0c0,transparent 60%)}
+.runner.bronze{border-color:rgba(205,127,50,0.2)}
+.runner.bronze::before{opacity:0.08;background:radial-gradient(circle at top right,#cd7f32,transparent 60%)}
+
+/* ── refresh indicator ── */
+.refresh-indicator{
+  display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text3);
+}
+.refresh-indicator .spinner{
+  width:10px;height:10px;border:1.5px solid var(--border2);border-top-color:var(--accent);
+  border-radius:50%;animation:spin 1s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
 @media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}.hero{grid-template-columns:1fr}}
-@media(max-width:900px){.r2{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.wrap{padding:0 16px 40px}.topbar{padding:12px 16px}}
+@media(max-width:900px){.r2{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.wrap{padding:0 16px 40px}.topbar{padding:12px 16px}.runners{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -499,6 +576,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <h1>PumpClaw<span class="ver">v2</span></h1>
   </div>
   <div class="meta">
+    <div class="refresh-indicator"><div class="spinner"></div><span>auto-refresh 60s</span></div>
     <div class="dot"></div>
     <span class="mono" style="font-size:11px">${new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}</span>
   </div>
@@ -546,9 +624,24 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
 <!-- ── metric strip ── -->
 <div class="metrics">
   <div class="m">
-    <div class="k">Invested</div>
-    <div class="v">${o.totalRealInvested.toFixed(3)}</div>
-    <div class="d">SOL deployed</div>
+    <div class="k">Avg Peak</div>
+    <div class="v">${avgPeak.toFixed(2)}×</div>
+    <div class="d">across ${o.totalCalls} calls</div>
+  </div>
+  <div class="m">
+    <div class="k">Hit 2×+</div>
+    <div class="v g">${ms2Pct.toFixed(0)}%</div>
+    <div class="bar"><div class="bar-fill" style="width:${ms2Pct}%;background:var(--green)"></div></div>
+  </div>
+  <div class="m">
+    <div class="k">Hit 5×+</div>
+    <div class="v b">${ms5Pct.toFixed(0)}%</div>
+    <div class="bar"><div class="bar-fill" style="width:${Math.min(ms5Pct*4,100)}%;background:var(--blue)"></div></div>
+  </div>
+  <div class="m">
+    <div class="k">Hit 10×+</div>
+    <div class="v p">${ms10Pct.toFixed(0)}%</div>
+    <div class="bar"><div class="bar-fill" style="width:${Math.min(ms10Pct*8,100)}%;background:var(--purple)"></div></div>
   </div>
   <div class="m">
     <div class="k">Best Trade</div>
@@ -556,24 +649,9 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <div class="d">${o.bestReal?(o.bestReal.pnl>=0?'+':'')+o.bestReal.pnl.toFixed(4)+' SOL':'no trades'}</div>
   </div>
   <div class="m">
-    <div class="k">Worst Trade</div>
-    <div class="v r" style="font-size:14px">${o.worstReal?'$'+o.worstReal.symbol:'--'}</div>
-    <div class="d">${o.worstReal?o.worstReal.pnl.toFixed(4)+' SOL':'no trades'}</div>
-  </div>
-  <div class="m">
-    <div class="k">TP1 Hit Rate</div>
-    <div class="v">${tp1Pct.toFixed(0)}%</div>
-    <div class="bar"><div class="bar-fill" style="width:${tp1Pct}%;background:var(--green)"></div></div>
-  </div>
-  <div class="m">
-    <div class="k">TP2 Hit Rate</div>
-    <div class="v">${tp2Pct.toFixed(0)}%</div>
-    <div class="bar"><div class="bar-fill" style="width:${tp2Pct}%;background:var(--blue)"></div></div>
-  </div>
-  <div class="m">
-    <div class="k">TP3 Hit Rate</div>
-    <div class="v">${tp3Pct.toFixed(0)}%</div>
-    <div class="bar"><div class="bar-fill" style="width:${tp3Pct}%;background:var(--purple)"></div></div>
+    <div class="k">Invested</div>
+    <div class="v">${o.totalRealInvested.toFixed(3)}</div>
+    <div class="d">SOL deployed</div>
   </div>
 </div>
 
@@ -649,27 +727,32 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   </div>
 </div>
 
-<div class="section-title">Top Runners</div>
-
-<div class="card" style="margin-bottom:16px;padding:0;overflow:hidden">
-  <div class="tbl">
-  <table>
-    <thead><tr><th>#</th><th>Token</th><th>Entry MC</th><th>Peak</th><th>Peak MC</th><th>Milestones</th><th>Date</th></tr></thead>
-    <tbody>
-    ${d.callsWithPeaks.length === 0 ? '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text3)">No calls in this range</td></tr>' : ''}
-    ${d.callsWithPeaks.slice(0,30).map((c,i)=>`<tr>
-      <td class="dim">${i+1}</td>
-      <td><strong style="color:#fff">$${esc(c.symbol)}</strong> <span class="dim">${esc(c.name)}</span></td>
-      <td class="mono dim">$${fmtK(c.entryMC)}</td>
-      <td class="mono ${c.peakMultiplier>=2?'g':c.peakMultiplier>=1.5?'b':'dim'}" style="font-weight:600">${c.peakMultiplier.toFixed(1)}x</td>
-      <td class="mono dim">$${fmtK(c.peakMC)}</td>
-      <td>${c.milestones.length?c.milestones.map(m=>`<span class="tag tag-g">${m}x</span>`).join(' '):'<span class="dim">--</span>'}</td>
-      <td class="dim">${new Date(c.entryTime).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</td>
-    </tr>`).join('')}
-    </tbody>
-  </table>
-  </div>
+<div class="section-title">
+  <span>🏆 Hall of Fame — Top Runners</span>
+  <span class="badge">avg peak ${avgPeak.toFixed(2)}× across ${o.totalCalls} calls</span>
 </div>
+
+${d.callsWithPeaks.length === 0
+  ? '<div class="card" style="text-align:center;padding:48px;color:var(--text3);margin-bottom:24px">No calls in this range</div>'
+  : `<div class="runners">
+    ${d.callsWithPeaks.slice(0, 24).map((c, i) => {
+      const peakClass = c.peakMultiplier >= 10 ? 'huge' : c.peakMultiplier >= 3 ? '' : 'mid';
+      const rankClass = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
+      const trophy = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '';
+      return `<div class="runner ${rankClass}">
+        <div class="runner-rank">#${i + 1}</div>
+        <div class="runner-sym">${trophy} $${esc(c.symbol)}</div>
+        <div class="runner-name">${esc(c.name)}</div>
+        <div class="runner-peak ${peakClass}">${c.peakMultiplier.toFixed(1)}×</div>
+        <div class="runner-mc">$${fmtK(c.entryMC)} → <strong>$${fmtK(c.peakMC)}</strong></div>
+        <div class="runner-ms">
+          ${c.milestones.length ? c.milestones.map(m => `<span class="ms">${m}×</span>`).join('') : '<span class="ms" style="background:rgba(122,135,158,0.1);color:var(--text3)">—</span>'}
+        </div>
+        <div class="runner-date">${new Date(c.entryTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+      </div>`;
+    }).join('')}
+  </div>`
+}
 
 </div>
 

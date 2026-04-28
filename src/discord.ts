@@ -357,51 +357,13 @@ function progressBar(value: number, max: number, width = 10): string {
   return '▓'.repeat(filled) + '░'.repeat(width - filled);
 }
 
-/** Simulated PnL for a CallRecord based on its peak multiplier (backtest estimate). */
-function estimatePnl(peak: number): number {
-  const sol = CONFIG.PAPER_ENTRY_SOL;
-  // Walk through the TP ladder based on what peak was achieved
-  let returned = 0;
-  let remaining = 1.0;
-
-  if (peak >= CONFIG.PAPER_TP1_MULT) {
-    returned += CONFIG.PAPER_TP1_SELL * sol * CONFIG.PAPER_TP1_MULT;
-    remaining -= CONFIG.PAPER_TP1_SELL;
-  }
-  if (peak >= CONFIG.PAPER_TP2_MULT) {
-    returned += CONFIG.PAPER_TP2_SELL * sol * CONFIG.PAPER_TP2_MULT;
-    remaining -= CONFIG.PAPER_TP2_SELL;
-  }
-  if (peak >= CONFIG.PAPER_TP3_MULT) {
-    returned += CONFIG.PAPER_TP3_SELL * sol * CONFIG.PAPER_TP3_MULT;
-    remaining -= CONFIG.PAPER_TP3_SELL;
-    // Trailing stop would have caught the remaining at ~60% of ATH
-    returned += remaining * sol * peak * (1 - CONFIG.PAPER_TRAILING_DROP);
-    remaining = 0;
-  }
-
-  if (remaining > 0) {
-    // Never hit 5X — price came back. Assume worst: SL hit.
-    if (peak < CONFIG.PAPER_TP1_MULT) {
-      returned += remaining * sol * CONFIG.PAPER_STOP_LOSS_PCT;  // -30% stop
-    } else {
-      // Hit 2X+ but not 5X — BE stop catches the rest
-      returned += remaining * sol * 1.0;  // break-even on remaining
-    }
-  }
-
-  return returned - sol;
-}
 
 function buildMonthlyLeaderboardEmbed(
   month: string,
   entries: MonthlyLeaderboardEntry[],
 ) {
-  const sorted = [...entries].sort((a, b) => b.currentPnl - a.currentPnl);
+  const sorted = [...entries].sort((a, b) => b.peakMultiplier - a.peakMultiplier);
   const top = sorted.slice(0, 10);
-  const totalPnl = entries.reduce((s, e) => s + e.currentPnl, 0);
-  const profitable = entries.filter(e => e.currentPnl > 0).length;
-  const winRate = entries.length > 0 ? Math.round((profitable / entries.length) * 100) : 0;
 
   const lines: string[] = [];
   lines.push(`> **${entries.length}** calls tracked this month`);
@@ -416,11 +378,10 @@ function buildMonthlyLeaderboardEmbed(
     const e = top[i];
     const medal = medals[i];
     const peak = e.peakMultiplier;
-    const pnlSign = e.currentPnl >= 0 ? '+' : '';
     const bar = progressBar(peak, Math.max(maxPeak, 2), 12);
     const status = e.trade.status === 'open' ? '  🔴 *live*' : '';
     lines.push(`${medal}  **$${e.trade.symbol}**  ·  **${peak.toFixed(1)}X** ATH${status}`);
-    lines.push(`      ${fmtUsd(e.trade.entryMC)} → ${fmtUsd(e.trade.entryMC * peak)} MC  ·  \`${bar}\`  ·  **${pnlSign}${e.currentPnl.toFixed(2)} SOL**`);
+    lines.push(`      ${fmtUsd(e.trade.entryMC)} → ${fmtUsd(e.trade.entryMC * peak)} MC  ·  \`${bar}\``);
   }
 
   if (entries.length > 10) {
@@ -445,17 +406,14 @@ function buildMonthlyLeaderboardEmbed(
   lines.push(`  Hit 5X+         ${String(hit5x).padStart(4)}  (${Math.round((hit5x / entries.length) * 100)}%)`);
   lines.push(`  Hit 10X+        ${String(hit10x).padStart(4)}  (${Math.round((hit10x / entries.length) * 100)}%)`);
   lines.push(`  Avg Peak        ${avgPeak.toFixed(1).padStart(5)}X`);
-  lines.push(`  Win Rate (2X+)  ${String(winRate).padStart(4)}%`);
   lines.push('```');
 
-  const totalSign = totalPnl >= 0 ? '+' : '';
-  lines.push(`💰  Month P&L: **${totalSign}${totalPnl.toFixed(2)} SOL** simulated (1 SOL/trade)`);
   if (top.length > 0) {
     const best = top[0];
-    lines.push(`🏆  Best: **$${best.trade.symbol}** peaked at **${best.peakMultiplier.toFixed(1)}X** (${pnlSign(best.currentPnl)}${best.currentPnl.toFixed(2)} SOL)`);
+    lines.push(`🏆  Best: **$${best.trade.symbol}** peaked at **${best.peakMultiplier.toFixed(1)}X**`);
   }
 
-  const color = totalPnl >= 5 ? 0x00ff88 : totalPnl >= 0 ? 0xffd700 : 0xff4444;
+  const color = hit10x >= 3 ? 0x00ff88 : hit5x >= 5 ? 0xffd700 : 0x4d8eff;
 
   return {
     embeds: [{
@@ -463,14 +421,10 @@ function buildMonthlyLeaderboardEmbed(
       title: `📅  ${month} — Monthly Report`,
       description: lines.join('\n'),
       color,
-      footer: { text: `Simulated 1 SOL/trade  ·  Ranked by P&L  ·  ${new Date().toLocaleDateString('en-US', { timeZone: 'UTC' })}` },
+      footer: { text: `Ranked by ATH peak  ·  ${new Date().toLocaleDateString('en-US', { timeZone: 'UTC' })}` },
       timestamp: new Date().toISOString(),
     }],
   };
-}
-
-function pnlSign(n: number): string {
-  return n >= 0 ? '+' : '';
 }
 
 /** Build the monthly report from raw CallRecords (for months before paper trading started). */
@@ -489,15 +443,12 @@ function buildMonthlyReportFromCalls(
   const avgPeak = totalCalls > 0
     ? calls.reduce((s, c) => s + c.peakMultiplier, 0) / totalCalls
     : 0;
-  const totalSimPnl = calls.reduce((s, c) => s + estimatePnl(c.peakMultiplier), 0);
-  const profitable = calls.filter(c => estimatePnl(c.peakMultiplier) > 0).length;
-  const winRate = totalCalls > 0 ? Math.round((profitable / totalCalls) * 100) : 0;
   const maxPeak = top.length > 0 ? top[0].peakMultiplier : 1;
 
   const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 
   const lines: string[] = [];
-  lines.push(`> **${totalCalls}** calls tracked  ·  1 SOL per entry simulated`);
+  lines.push(`> **${totalCalls}** calls tracked this month`);
   lines.push('');
   lines.push('**━━━━━━━━━  🏆  TOP 10  ━━━━━━━━━**');
   lines.push('');
@@ -506,12 +457,10 @@ function buildMonthlyReportFromCalls(
     const c = top[i];
     const medal = medals[i];
     const peak = c.peakMultiplier;
-    const pnl = estimatePnl(peak);
-    const sign = pnl >= 0 ? '+' : '';
     const bar = progressBar(peak, Math.max(maxPeak, 2), 12);
 
     lines.push(`${medal}  **$${c.symbol}**  ·  **${peak.toFixed(1)}X** ATH`);
-    lines.push(`      ${fmtUsd(c.entryMC)} → ${fmtUsd(c.peakMC)} MC  ·  \`${bar}\`  ·  **${sign}${pnl.toFixed(2)} SOL**`);
+    lines.push(`      ${fmtUsd(c.entryMC)} → ${fmtUsd(c.peakMC)} MC  ·  \`${bar}\``);
   }
 
   if (totalCalls > 10) {
@@ -530,16 +479,13 @@ function buildMonthlyReportFromCalls(
   lines.push(`  Hit 5X+         ${String(hit5x).padStart(4)}  (${totalCalls > 0 ? Math.round((hit5x / totalCalls) * 100) : 0}%)`);
   lines.push(`  Hit 10X+        ${String(hit10x).padStart(4)}  (${totalCalls > 0 ? Math.round((hit10x / totalCalls) * 100) : 0}%)`);
   lines.push(`  Avg Peak        ${avgPeak.toFixed(1).padStart(5)}X`);
-  lines.push(`  Win Rate (2X+)  ${String(winRate).padStart(4)}%`);
   lines.push('```');
 
-  const totalSign = totalSimPnl >= 0 ? '+' : '';
-  lines.push(`💰  Sim. P&L: **${totalSign}${totalSimPnl.toFixed(2)} SOL** from ${totalCalls} trades`);
   if (top.length > 0) {
     lines.push(`🏆  Best: **$${top[0].symbol}** peaked at **${top[0].peakMultiplier.toFixed(1)}X** (${fmtUsd(top[0].entryMC)} → ${fmtUsd(top[0].peakMC)})`);
   }
 
-  const color = totalSimPnl >= 5 ? 0x00ff88 : totalSimPnl >= 0 ? 0xffd700 : 0xff4444;
+  const color = hit10x >= 3 ? 0x00ff88 : hit5x >= 5 ? 0xffd700 : 0x4d8eff;
 
   return {
     embeds: [{
@@ -547,13 +493,23 @@ function buildMonthlyReportFromCalls(
       title: `📅  ${month} — Monthly Report`,
       description: lines.join('\n'),
       color,
-      footer: { text: `Simulated 1 SOL/trade  ·  Ranked by ATH peak  ·  ${new Date().toLocaleDateString('en-US', { timeZone: 'UTC' })}` },
+      footer: { text: `Ranked by ATH peak  ·  ${new Date().toLocaleDateString('en-US', { timeZone: 'UTC' })}` },
       timestamp: new Date().toISOString(),
     }],
   };
 }
 
 // ── Public API ──────────────────────────────────────────────
+
+/** Fire-and-forget send to the secondary webhook (mirrors primary). */
+function mirrorToWebhook2(body: any): void {
+  if (!CONFIG.DISCORD_WEBHOOK_2) return;
+  fetch(CONFIG.DISCORD_WEBHOOK_2, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(() => {});
+}
 
 export async function sendAlert(
   coin: PumpFunCoin,
@@ -564,6 +520,7 @@ export async function sendAlert(
 
   try {
     const body = buildAlertEmbed(coin, market);
+    mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -615,6 +572,7 @@ export async function sendMilestoneAlert(
 
   try {
     const body = buildMilestoneEmbed(rec, multiplier, currentPrice, currentMC);
+    mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -640,6 +598,7 @@ export async function sendLeaderboard(label: string, entries: LeaderboardEntry[]
 
   try {
     const body = buildLeaderboardEmbed(label, entries);
+    mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -662,6 +621,7 @@ export async function sendTradeExit(trade: PaperTrade, exit: TradeExit): Promise
 
   try {
     const body = buildTradeExitEmbed(trade, exit);
+    mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -687,6 +647,7 @@ export async function sendMonthlyLeaderboard(
 
   try {
     const body = buildMonthlyLeaderboardEmbed(month, entries);
+    mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -711,6 +672,7 @@ export async function sendMonthlyReportFromCalls(
 ): Promise<string | null> {
   try {
     const body = buildMonthlyReportFromCalls(month, calls);
+    mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

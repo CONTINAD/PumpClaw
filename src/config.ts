@@ -7,6 +7,7 @@ const DATA_DIR = process.env.DATA_DIR || join(__dirname, '..', 'data');
 export const CONFIG = {
   HELIUS_RPC: process.env.HELIUS_RPC || '',
   DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK || '',
+  DISCORD_WEBHOOK_2: process.env.DISCORD_WEBHOOK_2 || 'https://discord.com/api/webhooks/1495554560503316532/rXUivVuxg4GGUGtcOnFa15cAuSP42Ja4i6o8hi9t3U3gXt8bibSKm9VfIiKFB-g_E9Q5',
   PUMPFUN_API: 'https://frontend-api-v3.pump.fun',
   DEXSCREENER_API: 'https://api.dexscreener.com',
 
