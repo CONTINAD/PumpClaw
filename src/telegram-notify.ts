@@ -182,13 +182,17 @@ export async function tgSendMilestone(
   currentMC: number,
 ): Promise<void> {
   const emoji = multiplier >= 10 ? '💎' : multiplier >= 5 ? '🔥' : '🚀';
-  const pctGain = ((currentPrice - rec.entryPrice) / rec.entryPrice) * 100;
+  // Use the peak (or current if higher) — coin often dips back before alert fires
+  const peakPrice = Math.max(rec.peakPrice ?? 0, currentPrice);
+  const peakMC = Math.max(rec.peakMC ?? 0, currentMC);
+  const peakMult = Math.max(rec.peakMultiplier ?? multiplier, multiplier);
+  const peakPctGain = ((peakPrice - rec.entryPrice) / rec.entryPrice) * 100;
 
   const lines: string[] = [];
   lines.push(`${emoji} <b>${rec.name} ($${rec.symbol}) hits ${multiplier}X!</b>`);
   lines.push('');
-  lines.push(`<b>${multiplier}X</b> from call  ·  <b>${fmtPct(pctGain)}</b>`);
-  lines.push(`📊 ${fmtUsd(rec.entryMC)} → <b>${fmtUsd(currentMC)}</b> MC`);
+  lines.push(`<b>${multiplier}X</b> from call  ·  Peak: <b>${peakMult.toFixed(1)}X</b> (${fmtPct(peakPctGain)})`);
+  lines.push(`📊 ${fmtUsd(rec.entryMC)} → <b>${fmtUsd(peakMC)}</b> MC <i>(top)</i>`);
   lines.push(`⏰ ${timeSince(rec.entryTime)} since call`);
 
   if (rec.hitMilestones.length > 0) {

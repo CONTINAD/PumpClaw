@@ -186,12 +186,17 @@ function buildMilestoneEmbed(rec: CallRecord, multiplier: number, currentPrice: 
   const emoji = multiplier >= 10 ? '💎' : multiplier >= 5 ? '🔥' : '🚀';
   const thumbnail = rec.imageUri;
 
-  const pctGain = ((currentPrice - rec.entryPrice) / rec.entryPrice) * 100;
+  // Use the HIGHER of peak or current — meme coins spike between polls and the milestone
+  // alert often fires after the price already came back down. We want to show the actual top.
+  const peakPrice = Math.max(rec.peakPrice ?? 0, currentPrice);
+  const peakMC = Math.max(rec.peakMC ?? 0, currentMC);
+  const peakMult = Math.max(rec.peakMultiplier ?? multiplier, multiplier);
+  const peakPctGain = ((peakPrice - rec.entryPrice) / rec.entryPrice) * 100;
 
   const lines: string[] = [];
-  lines.push(`> **${multiplier}X** from our call  ·  **${fmtPct(pctGain)}**`);
+  lines.push(`> **${multiplier}X** from our call  ·  Peak: **${peakMult.toFixed(1)}X** (${fmtPct(peakPctGain)})`);
   lines.push('');
-  lines.push(`📊  ${fmtUsd(rec.entryMC)}  →  **${fmtUsd(currentMC)}** MC`);
+  lines.push(`📊  ${fmtUsd(rec.entryMC)}  →  **${fmtUsd(peakMC)}** MC  *(top)*`);
   lines.push(`⏰  ${timeSince(rec.entryTime)} since call`);
 
   // Show milestone journey
@@ -216,7 +221,7 @@ function buildMilestoneEmbed(rec: CallRecord, multiplier: number, currentPrice: 
       description: lines.join('\n'),
       color: colorForMultiplier(multiplier),
       ...(thumbnail ? { thumbnail: { url: thumbnail } } : {}),
-      footer: { text: `Peak: ${rec.peakMultiplier.toFixed(1)}X  ·  Entry MC ${fmtUsd(rec.entryMC)}` },
+      footer: { text: `Peak: ${peakMult.toFixed(1)}X  ·  Entry MC ${fmtUsd(rec.entryMC)}` },
       timestamp: new Date().toISOString(),
     }],
   };
