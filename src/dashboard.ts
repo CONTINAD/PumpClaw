@@ -667,8 +667,84 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
 .glow-r{text-shadow:0 0 20px rgba(255,59,92,0.3)}
 .glow-b{text-shadow:0 0 20px rgba(77,142,255,0.3)}
 
-@media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}.hero{grid-template-columns:1fr}}
-@media(max-width:900px){.r2{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.wrap{padding:0 16px 40px}.topbar{padding:12px 16px}.runners{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}
+/* ── MC distribution bars ── */
+.mc-grid{display:flex;flex-direction:column;gap:14px;padding:4px 0}
+.mc-row{display:grid;grid-template-columns:80px 1fr 90px;gap:12px;align-items:center}
+.mc-label{font-size:12px;font-weight:600;color:var(--text);font-family:'JetBrains Mono',monospace}
+.mc-bar-wrap{position:relative;height:24px;background:var(--bg3);border-radius:6px;overflow:hidden}
+.mc-bar-total{
+  position:absolute;inset:0;background:linear-gradient(90deg,var(--bg3),rgba(77,142,255,0.15));
+  transition:width 0.6s ease;
+}
+.mc-bar-wins{
+  position:absolute;left:0;top:0;bottom:0;border-radius:6px 0 0 6px;
+  background:linear-gradient(90deg,var(--green),var(--cyan));
+  transition:width 0.6s ease;
+}
+.mc-numbers{display:flex;justify-content:space-between;font-size:11px;color:var(--text2);font-family:'JetBrains Mono',monospace}
+.mc-numbers .winrate{color:var(--green);font-weight:600}
+
+/* ── hourly heatmap ── */
+.hour-grid{
+  display:grid;grid-template-columns:repeat(24,1fr);gap:3px;padding:4px 0;
+}
+.hour-cell{
+  aspect-ratio:1;border-radius:4px;background:var(--bg3);
+  position:relative;transition:all 0.2s;
+  display:flex;align-items:flex-end;justify-content:center;
+  font-size:9px;color:var(--text3);
+  padding-bottom:1px;
+}
+.hour-cell:hover{transform:scale(1.15);z-index:2;box-shadow:0 4px 12px rgba(0,0,0,0.5)}
+.hour-cell.h0{background:var(--bg3);color:var(--text3)}
+.hour-cell.h1{background:rgba(77,142,255,0.15);color:var(--text2)}
+.hour-cell.h2{background:rgba(77,142,255,0.30);color:var(--text2)}
+.hour-cell.h3{background:rgba(77,142,255,0.50);color:#fff}
+.hour-cell.h4{background:rgba(77,142,255,0.75);color:#fff}
+.hour-cell.h5{background:linear-gradient(135deg,#4d8eff,#a47cff);color:#fff;box-shadow:0 0 12px rgba(77,142,255,0.4)}
+.hour-axis{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;margin-top:6px}
+.hour-axis div{font-size:9px;color:var(--text3);text-align:center;font-family:'JetBrains Mono',monospace}
+
+/* ── live status pill ── */
+.live-pill{
+  display:inline-flex;align-items:center;gap:6px;padding:4px 10px;
+  background:rgba(0,214,114,0.10);border:1px solid rgba(0,214,114,0.3);
+  border-radius:14px;font-size:10px;color:var(--green);
+  font-weight:600;letter-spacing:0.5px;text-transform:uppercase;
+}
+.live-pill .live-dot{
+  width:6px;height:6px;border-radius:50%;background:var(--green);
+  box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;
+}
+
+@media(max-width:1100px){
+  .metrics{grid-template-columns:repeat(3,1fr)}
+  .hero{grid-template-columns:1fr}
+  .funnel{grid-template-columns:repeat(4,1fr)}
+  .funnel-step:nth-child(n+5){grid-column:span 1}
+}
+@media(max-width:900px){
+  .r2{grid-template-columns:1fr}
+  .metrics{grid-template-columns:repeat(2,1fr)}
+  .wrap{padding:0 16px 40px}
+  .topbar{padding:12px 16px;flex-wrap:wrap;gap:10px}
+  .runners{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .funnel{grid-template-columns:repeat(3,1fr)}
+  .gauge-wrap{flex-direction:column;align-items:center;gap:14px}
+  .gauge-stats{grid-template-columns:repeat(4,1fr);width:100%}
+  .hero-val{font-size:36px}
+  .meta .live-pill{display:none}
+  .meta .refresh-indicator span{display:none}
+  .mc-row{grid-template-columns:60px 1fr 80px;gap:8px}
+}
+@media(max-width:600px){
+  .funnel{grid-template-columns:repeat(2,1fr)}
+  .runners{grid-template-columns:1fr 1fr}
+  .runner-peak{font-size:26px}
+  .hero-val{font-size:28px}
+  .gauge{width:110px;height:110px}
+  .gauge-pct{font-size:22px}
+}
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -682,9 +758,9 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <h1>PumpClaw<span class="ver">v2</span></h1>
   </div>
   <div class="meta">
+    <div class="live-pill"><div class="live-dot"></div>Live · ${o.openPaperTrades} open</div>
     <div class="refresh-indicator"><div class="spinner"></div><span>auto-refresh 60s</span></div>
-    <div class="dot"></div>
-    <span class="mono" style="font-size:11px">${new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}</span>
+    <span class="mono" style="font-size:11px;color:var(--text3)">${new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}</span>
   </div>
 </div>
 
@@ -867,6 +943,68 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   <div class="card">
     <h3>Peak Multipliers</h3>
     <div style="height:260px;position:relative"><canvas id="peakChart"></canvas></div>
+  </div>
+</div>
+
+<!-- ── MC distribution + Hourly activity ── -->
+<div class="row r2" style="margin-bottom:16px">
+  <div class="card">
+    <h3>Entry MC vs Win Rate <span style="margin-left:auto;font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0">where the winners come from</span></h3>
+    <div class="mc-grid">
+      ${(() => {
+        const maxCount = Math.max(...d.mcBuckets.map(b => b.count), 1);
+        return d.mcBuckets.map(b => {
+          const widthPct = (b.count / maxCount) * 100;
+          const winPct = b.count > 0 ? (b.winners / b.count) * 100 : 0;
+          const winWidthPct = (b.winners / maxCount) * 100;
+          return `<div>
+            <div class="mc-row">
+              <div class="mc-label">${b.label}</div>
+              <div class="mc-bar-wrap">
+                <div class="mc-bar-total" style="width:${widthPct}%"></div>
+                <div class="mc-bar-wins" style="width:${winWidthPct}%"></div>
+              </div>
+              <div class="mc-numbers">
+                <span>${b.count} calls</span>
+                <span class="winrate">${winPct.toFixed(0)}%</span>
+              </div>
+            </div>
+          </div>`;
+        }).join('');
+      })()}
+    </div>
+    <div style="margin-top:14px;display:flex;gap:14px;font-size:10px;color:var(--text3)">
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:2px;background:linear-gradient(90deg,var(--green),var(--cyan))"></span>Winners (2×+)</span>
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:2px;background:rgba(77,142,255,0.15)"></span>All calls</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Hourly Activity <span style="margin-left:auto;font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0">when calls fire (UTC)</span></h3>
+    <div class="hour-grid">
+      ${(() => {
+        const maxHour = Math.max(...d.hourlyDist, 1);
+        return d.hourlyDist.map((count, _) => {
+          const intensity = count / maxHour;
+          const cls = intensity > 0.85 ? 'h5' : intensity > 0.65 ? 'h4' : intensity > 0.4 ? 'h3' : intensity > 0.2 ? 'h2' : intensity > 0 ? 'h1' : 'h0';
+          return `<div class="hour-cell ${cls}" title="${count} calls">${count > 0 ? count : ''}</div>`;
+        }).join('');
+      })()}
+    </div>
+    <div class="hour-axis">
+      ${Array.from({length: 24}, (_, h) => `<div>${h % 6 === 0 ? h : ''}</div>`).join('')}
+    </div>
+    <div style="margin-top:14px;display:flex;gap:14px;font-size:10px;color:var(--text3);align-items:center">
+      <span>Less</span>
+      <span style="display:flex;gap:3px">
+        <span style="width:14px;height:14px;border-radius:3px;background:var(--bg3)"></span>
+        <span style="width:14px;height:14px;border-radius:3px;background:rgba(77,142,255,0.30)"></span>
+        <span style="width:14px;height:14px;border-radius:3px;background:rgba(77,142,255,0.50)"></span>
+        <span style="width:14px;height:14px;border-radius:3px;background:rgba(77,142,255,0.75)"></span>
+        <span style="width:14px;height:14px;border-radius:3px;background:linear-gradient(135deg,#4d8eff,#a47cff)"></span>
+      </span>
+      <span>More</span>
+      <span style="margin-left:auto">Total: ${d.hourlyDist.reduce((s,n)=>s+n,0)} calls</span>
+    </div>
   </div>
 </div>
 
