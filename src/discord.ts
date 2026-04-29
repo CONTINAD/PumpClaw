@@ -506,6 +506,17 @@ function buildMonthlyReportFromCalls(
 
 // ── Public API ──────────────────────────────────────────────
 
+/** Add a role ping to a webhook payload (in-place, returns same body). */
+function withRolePing(body: any): any {
+  const roleId = CONFIG.DISCORD_CALLER_ROLE_ID;
+  if (!roleId) return body;
+  return {
+    ...body,
+    content: `<@&${roleId}>`,
+    allowed_mentions: { parse: [], roles: [roleId] },
+  };
+}
+
 /** Fire-and-forget send to the secondary webhook (mirrors primary). */
 function mirrorToWebhook2(body: any): void {
   if (!CONFIG.DISCORD_WEBHOOK_2) return;
@@ -524,7 +535,7 @@ export async function sendAlert(
   tgSendAlert(coin, market).catch(() => {});
 
   try {
-    const body = buildAlertEmbed(coin, market);
+    const body = withRolePing(buildAlertEmbed(coin, market));
     mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',
@@ -576,7 +587,11 @@ export async function sendMilestoneAlert(
   tgSendMilestone(rec, multiplier, currentPrice, currentMC).catch(() => {});
 
   try {
-    const body = buildMilestoneEmbed(rec, multiplier, currentPrice, currentMC);
+    let body: any = buildMilestoneEmbed(rec, multiplier, currentPrice, currentMC);
+    // Only ping the caller role on big milestones (default: 10X+)
+    if (multiplier >= CONFIG.DISCORD_BIG_MILESTONE_THRESHOLD) {
+      body = withRolePing(body);
+    }
     mirrorToWebhook2(body);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
       method: 'POST',

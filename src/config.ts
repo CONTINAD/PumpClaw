@@ -8,6 +8,8 @@ export const CONFIG = {
   HELIUS_RPC: process.env.HELIUS_RPC || '',
   DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK || '',
   DISCORD_WEBHOOK_2: process.env.DISCORD_WEBHOOK_2 || 'https://discord.com/api/webhooks/1498748255478219012/A9lvI1Uo5QHkxuRQcm1yO96abLuLV99RLlRos9sULB_bk_shfyi6BpULq_eaUpQnbHt0',
+  DISCORD_CALLER_ROLE_ID: process.env.DISCORD_CALLER_ROLE_ID || '1499104951912370437',
+  DISCORD_BIG_MILESTONE_THRESHOLD: 10,  // ping caller role only on milestones >= this
   PUMPFUN_API: 'https://frontend-api-v3.pump.fun',
   DEXSCREENER_API: 'https://api.dexscreener.com',
 
