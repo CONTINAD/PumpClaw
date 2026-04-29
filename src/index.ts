@@ -163,14 +163,12 @@ async function fastScanCycle() {
       log(`✅ Bundle check passed: ${bundle.details}`);
     }
 
+    // Smart wallet check: informational, not blocking. Most fresh pump.fun coins
+    // won't yet have any of our 186 tracked wallets in them — skipping them all
+    // would mean we miss almost everything. Just log it as a positive signal.
     const smartCheck = await checkSmartWallets(post.mint);
-    if (smartCheck.checked > 0 && !smartCheck.held) {
-      log(`⚠ NO SMART HOLDERS — skipping ${post.name}: 0/${smartCheck.checked} tracked wallets hold this token`);
-      recordSkip(post, 'NO_SMART_HOLDERS', `0/${smartCheck.checked} smart wallets hold`, market.marketCap);
-      continue;
-    }
     if (smartCheck.holders > 0) {
-      log(`✅ Smart wallet check passed: ${smartCheck.holders} tracked wallet(s) holding`);
+      log(`💎 SMART HOLDERS — ${smartCheck.holders} tracked wallet(s) holding $${post.name}`);
     }
 
     if (market.marketCap >= CONFIG.MIN_GLOBAL_FEES_MC) {
