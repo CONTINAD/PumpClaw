@@ -366,9 +366,25 @@ a{color:var(--accent);text-decoration:none}
   backdrop-filter:blur(12px);
 }
 .brand{display:flex;align-items:center;gap:10px}
-.brand-icon{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#ff3b5c,#ff9f40);display:flex;align-items:center;justify-content:center;box-shadow:0 0 12px rgba(255,59,92,0.3)}
-.brand-icon svg{width:18px;height:18px}
-.brand h1{font-size:16px;font-weight:600;color:#fff;letter-spacing:-0.3px}
+.brand-icon{
+  width:34px;height:34px;border-radius:9px;
+  background:linear-gradient(135deg,#ff3b5c,#ff9f40,#ffcd3c);
+  background-size:200% 200%;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 16px rgba(255,59,92,0.4),0 0 32px rgba(255,159,64,0.15);
+  animation:brandShine 4s ease-in-out infinite;
+}
+@keyframes brandShine{
+  0%,100%{background-position:0% 50%}
+  50%{background-position:100% 50%}
+}
+.brand-icon svg{width:19px;height:19px}
+.brand h1{
+  font-size:17px;font-weight:700;letter-spacing:-0.3px;
+  background:linear-gradient(135deg,#fff,#c8d3e6);
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
 .brand .ver{font-size:10px;color:var(--text3);margin-left:4px;font-weight:400}
 .meta{display:flex;align-items:center;gap:16px;font-size:12px;color:var(--text3)}
 .meta .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
@@ -544,12 +560,26 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
 .runner-date{font-size:10px;color:var(--text3);margin-top:8px;font-family:'JetBrains Mono',monospace}
 
 /* ── trophy icons for top 3 ── */
-.runner.gold{border-color:rgba(255,215,0,0.25)}
-.runner.gold::before{opacity:0.12;background:radial-gradient(circle at top right,#ffd700,transparent 60%)}
-.runner.silver{border-color:rgba(192,192,192,0.2)}
-.runner.silver::before{opacity:0.08;background:radial-gradient(circle at top right,#c0c0c0,transparent 60%)}
-.runner.bronze{border-color:rgba(205,127,50,0.2)}
-.runner.bronze::before{opacity:0.08;background:radial-gradient(circle at top right,#cd7f32,transparent 60%)}
+.runner.gold{
+  border-color:rgba(255,215,0,0.35);
+  box-shadow:0 0 24px rgba(255,215,0,0.08),inset 0 1px 0 rgba(255,215,0,0.15);
+}
+.runner.gold::before{
+  opacity:0.18;
+  background:radial-gradient(circle at top right,#ffd700,transparent 65%);
+  animation:goldPulse 3s ease-in-out infinite;
+}
+@keyframes goldPulse{0%,100%{opacity:0.14}50%{opacity:0.22}}
+.runner.silver{
+  border-color:rgba(192,192,192,0.28);
+  box-shadow:0 0 18px rgba(192,192,192,0.06);
+}
+.runner.silver::before{opacity:0.1;background:radial-gradient(circle at top right,#c0c0c0,transparent 60%)}
+.runner.bronze{
+  border-color:rgba(205,127,50,0.28);
+  box-shadow:0 0 18px rgba(205,127,50,0.06);
+}
+.runner.bronze::before{opacity:0.1;background:radial-gradient(circle at top right,#cd7f32,transparent 60%)}
 
 /* ── refresh indicator ── */
 .refresh-indicator{
@@ -560,6 +590,82 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   border-radius:50%;animation:spin 1s linear infinite;
 }
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── milestone funnel ── */
+.funnel{
+  display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-top:8px;
+}
+.funnel-step{
+  position:relative;background:var(--bg2);border:1px solid var(--border);
+  border-radius:10px;padding:18px 14px 14px;text-align:center;
+  transition:all 0.2s;
+}
+.funnel-step:hover{transform:translateY(-1px);border-color:var(--border2)}
+.funnel-step.active{
+  background:linear-gradient(180deg,rgba(0,214,114,0.10),rgba(0,214,114,0.02));
+  border-color:rgba(0,214,114,0.4);
+}
+.funnel-step.gold{
+  background:linear-gradient(180deg,rgba(255,215,0,0.10),rgba(255,215,0,0.02));
+  border-color:rgba(255,215,0,0.35);
+}
+.funnel-step.fire{
+  background:linear-gradient(180deg,rgba(255,159,64,0.10),rgba(255,59,92,0.02));
+  border-color:rgba(255,159,64,0.35);
+}
+.funnel-step.diamond{
+  background:linear-gradient(180deg,rgba(164,124,255,0.10),rgba(0,212,200,0.02));
+  border-color:rgba(164,124,255,0.4);
+}
+.funnel-target{
+  font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;
+  color:var(--text3);letter-spacing:0.3px;margin-bottom:8px;
+}
+.funnel-step.active .funnel-target,
+.funnel-step.gold .funnel-target,
+.funnel-step.fire .funnel-target,
+.funnel-step.diamond .funnel-target{color:var(--text)}
+.funnel-count{
+  font-size:24px;font-weight:800;font-family:'JetBrains Mono',monospace;
+  letter-spacing:-1px;line-height:1;color:#fff;margin-bottom:4px;
+}
+.funnel-pct{font-size:10px;color:var(--text2);font-family:'JetBrains Mono',monospace}
+.funnel-bar{
+  position:absolute;bottom:0;left:0;height:3px;border-radius:0 0 10px 10px;
+  background:linear-gradient(90deg,var(--green),var(--cyan));
+  transition:width 0.6s ease;
+}
+.funnel-step.gold .funnel-bar{background:linear-gradient(90deg,#ffd700,#ffaa00)}
+.funnel-step.fire .funnel-bar{background:linear-gradient(90deg,#ff9f40,#ff3b5c)}
+.funnel-step.diamond .funnel-bar{background:linear-gradient(90deg,var(--purple),var(--cyan))}
+
+/* ── win rate gauge ── */
+.gauge-wrap{display:flex;align-items:center;gap:24px;padding:8px 0}
+.gauge{
+  position:relative;width:140px;height:140px;flex-shrink:0;
+}
+.gauge svg{width:100%;height:100%;transform:rotate(-90deg)}
+.gauge-track{fill:none;stroke:var(--bg3);stroke-width:10;}
+.gauge-fill{fill:none;stroke:url(#gaugeGrad);stroke-width:10;stroke-linecap:round;
+  transition:stroke-dasharray 0.8s ease;
+}
+.gauge-text{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+}
+.gauge-pct{font-size:28px;font-weight:800;font-family:'JetBrains Mono',monospace;
+  letter-spacing:-1.5px;color:#fff;line-height:1;
+}
+.gauge-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+.gauge-stats{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.gauge-stat{padding:8px 0}
+.gauge-stat .gs-k{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px}
+.gauge-stat .gs-v{font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:-0.5px;color:#fff}
+
+/* ── glow effect for big numbers ── */
+.glow-g{text-shadow:0 0 20px rgba(0,214,114,0.4)}
+.glow-r{text-shadow:0 0 20px rgba(255,59,92,0.3)}
+.glow-b{text-shadow:0 0 20px rgba(77,142,255,0.3)}
 
 @media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}.hero{grid-template-columns:1fr}}
 @media(max-width:900px){.r2{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.wrap{padding:0 16px 40px}.topbar{padding:12px 16px}.runners{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}
@@ -602,7 +708,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
 <div class="hero">
   <div class="hero-card hero-real">
     <div class="hero-label">Real Trading P&L</div>
-    <div class="hero-val ${o.totalRealPnl>=0?'g':'r'}">${o.totalRealPnl>=0?'+':''}${o.totalRealPnl.toFixed(4)} <span style="font-size:16px;font-weight:500;opacity:0.6">SOL</span></div>
+    <div class="hero-val ${o.totalRealPnl>=0?'g glow-g':'r glow-r'}">${o.totalRealPnl>=0?'+':''}${o.totalRealPnl.toFixed(4)} <span style="font-size:16px;font-weight:500;opacity:0.6">SOL</span></div>
     <div class="hero-sub">
       <span>ROI <span class="hero-pct ${o.realROI>=0?'pct-g':'pct-r'}">${o.realROI>=0?'+':''}${o.realROI.toFixed(1)}%</span></span>
       <span>W/L: <strong style="color:var(--green)">${o.realWins}</strong>/<strong style="color:var(--red)">${o.realLosses}</strong></span>
@@ -612,7 +718,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   </div>
   <div class="hero-card hero-paper">
     <div class="hero-label">Paper Trading P&L</div>
-    <div class="hero-val ${o.totalPaperPnl>=0?'b':'r'}">${o.totalPaperPnl>=0?'+':''}${o.totalPaperPnl.toFixed(2)} <span style="font-size:16px;font-weight:500;opacity:0.6">SOL</span></div>
+    <div class="hero-val ${o.totalPaperPnl>=0?'b glow-b':'r glow-r'}">${o.totalPaperPnl>=0?'+':''}${o.totalPaperPnl.toFixed(2)} <span style="font-size:16px;font-weight:500;opacity:0.6">SOL</span></div>
     <div class="hero-sub">
       <span>W/L: <strong style="color:var(--blue)">${o.paperWins}</strong>/<strong style="color:var(--red)">${o.paperLosses}</strong></span>
       <span>Win Rate: <strong style="color:#fff">${paperWinPct.toFixed(0)}%</strong></span>
@@ -652,6 +758,70 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <div class="k">Invested</div>
     <div class="v">${o.totalRealInvested.toFixed(3)}</div>
     <div class="d">SOL deployed</div>
+  </div>
+</div>
+
+<!-- ── milestone funnel + win rate gauge ── -->
+<div class="row r2" style="margin-bottom:16px">
+  <div class="card">
+    <h3>Milestone Funnel <span style="margin-left:auto;font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0">how far calls go</span></h3>
+    <div class="funnel">
+      ${(() => {
+        const targets = [2, 3, 5, 10, 20, 50, 100];
+        const total = o.totalCalls || 1;
+        return targets.map(t => {
+          const count = d.milestoneCounts[t] ?? 0;
+          const pct = (count / total) * 100;
+          const cls = t >= 50 ? 'diamond' : t >= 10 ? 'fire' : t >= 5 ? 'gold' : count > 0 ? 'active' : '';
+          return `<div class="funnel-step ${cls}">
+            <div class="funnel-target">${t}×</div>
+            <div class="funnel-count">${count}</div>
+            <div class="funnel-pct">${pct.toFixed(1)}%</div>
+            <div class="funnel-bar" style="width:${Math.min(pct * 4, 100)}%"></div>
+          </div>`;
+        }).join('');
+      })()}
+    </div>
+  </div>
+  <div class="card">
+    <h3>Performance Overview</h3>
+    <div class="gauge-wrap">
+      <div class="gauge">
+        <svg viewBox="0 0 100 100">
+          <defs>
+            <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#00d672"/>
+              <stop offset="100%" stop-color="#00d4c8"/>
+            </linearGradient>
+          </defs>
+          <circle class="gauge-track" cx="50" cy="50" r="42"/>
+          <circle class="gauge-fill" cx="50" cy="50" r="42"
+            stroke-dasharray="${(ms2Pct/100*264).toFixed(1)} 264"/>
+        </svg>
+        <div class="gauge-text">
+          <div class="gauge-pct">${ms2Pct.toFixed(0)}%</div>
+          <div class="gauge-label">Hit 2×+</div>
+        </div>
+      </div>
+      <div class="gauge-stats">
+        <div class="gauge-stat">
+          <div class="gs-k">Avg Peak</div>
+          <div class="gs-v">${avgPeak.toFixed(2)}×</div>
+        </div>
+        <div class="gauge-stat">
+          <div class="gs-k">Best Runner</div>
+          <div class="gs-v g">${d.callsWithPeaks[0]?.peakMultiplier.toFixed(1) ?? '0'}×</div>
+        </div>
+        <div class="gauge-stat">
+          <div class="gs-k">Hit 5×+</div>
+          <div class="gs-v">${d.milestoneCounts[5] ?? 0}</div>
+        </div>
+        <div class="gauge-stat">
+          <div class="gs-k">Hit 10×+</div>
+          <div class="gs-v p">${d.milestoneCounts[10] ?? 0}</div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
