@@ -60,11 +60,11 @@ export const CONFIG = {
   PAPER_STOP_LOSS_PCT: 0.78,   // stop at -22% from entry (price = entry * 0.78)
   PAPER_TP1_MULT: 2,           // TP1 at 2X — sell 50%, move SL to break-even
   PAPER_TP1_SELL: 0.50,
-  PAPER_TP2_MULT: 4,           // TP2 at 4X — sell 30%
-  PAPER_TP2_SELL: 0.30,
-  PAPER_TP3_MULT: 8,           // TP3 at 8X — sell 15%, activate trailing stop
+  PAPER_TP2_MULT: 4,           // TP2 at 4X — sell 25%
+  PAPER_TP2_SELL: 0.25,
+  PAPER_TP3_MULT: 6,           // TP3 at 6X — sell 15%, activate trailing stop on remaining 10%
   PAPER_TP3_SELL: 0.15,
-  PAPER_TRAILING_DROP: 0.35,   // trailing stop fires at -35% from ATH (remaining 5%)
+  PAPER_TRAILING_DROP: 0.35,   // trailing stop fires at -35% from ATH
   PAPER_DATA_FILE: join(DATA_DIR, 'trades.json'),
 
   // Monthly top 10 leaderboard — posted daily
