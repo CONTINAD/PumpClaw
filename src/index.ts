@@ -57,6 +57,21 @@ const paperTrader = new PaperTrader();
 const trader = new Trader();
 const seenTgMsgIds = new Set<string>();
 let lastMilestoneCheck = 0;
+
+// Ring buffer of recently skipped tokens — exposed via /api/skipped on dashboard
+export interface SkippedToken {
+  mint: string;
+  name: string;
+  reason: string;
+  details: string;
+  marketCap: number;
+  timestamp: number;
+}
+export const skippedRing: SkippedToken[] = [];
+function recordSkip(post: { mint: string; name: string }, reason: string, details: string, mc: number) {
+  skippedRing.push({ mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now() });
+  if (skippedRing.length > 200) skippedRing.shift();
+}
 const lastLeaderboardPost = new Map<string, number>(Object.entries(_lbTs.leaderboard));
 let lastMonthlyLbDate = _lbTs.monthlyDate;
 
@@ -108,10 +123,14 @@ async function fastScanCycle() {
       : market.marketCap < CONFIG.LOW_MC_THRESHOLD
         ? CONFIG.MIN_5M_VOLUME_LOW_MC
         : CONFIG.MIN_5M_VOLUME_HIGH_MC;
-    if (market.volume5m < volThreshold) continue;
+    if (market.volume5m < volThreshold) {
+      recordSkip(post, 'LOW_VOL', `${fmtUsd(market.volume5m)} vol < ${fmtUsd(volThreshold)}`, market.marketCap);
+      continue;
+    }
 
     if (market.priceChange5m < -25) {
       log(`⚠ DUMP — skipping ${post.name}: 5m change ${market.priceChange5m.toFixed(1)}% (actively dumping)`);
+      recordSkip(post, 'DUMP', `5m ${market.priceChange5m.toFixed(1)}%`, market.marketCap);
       continue;
     }
 
@@ -120,6 +139,7 @@ async function fastScanCycle() {
       const sellRatio = market.sells5m / market.buys5m;
       if (sellRatio > 1.3) {
         log(`⚠ HEAVY SELLING — skipping ${post.name}: ${market.buys5m}B/${market.sells5m}S (${sellRatio.toFixed(2)}x sells)`);
+        recordSkip(post, 'HEAVY_SELLING', `${market.buys5m}B / ${market.sells5m}S (${sellRatio.toFixed(2)}x)`, market.marketCap);
         continue;
       }
     }
@@ -127,6 +147,7 @@ async function fastScanCycle() {
     // Liquidity floor — coins with shallow liq are easy rug targets
     if (market.liquidity > 0 && market.liquidity < 7_000) {
       log(`⚠ LOW LIQ — skipping ${post.name}: ${fmtUsd(market.liquidity)} liquidity (need ≥$7K)`);
+      recordSkip(post, 'LOW_LIQ', `${fmtUsd(market.liquidity)} liquidity`, market.marketCap);
       continue;
     }
 
@@ -135,6 +156,7 @@ async function fastScanCycle() {
     const bundle = await checkBundle(post.mint);
     if (!bundle.safe) {
       log(`⚠ BUNDLED — skipping ${post.name}: ${bundle.details}`);
+      recordSkip(post, 'BUNDLED', bundle.details, market.marketCap);
       continue;
     }
     if (bundle.totalChecked > 0) {
@@ -144,6 +166,7 @@ async function fastScanCycle() {
     const smartCheck = await checkSmartWallets(post.mint);
     if (smartCheck.checked > 0 && !smartCheck.held) {
       log(`⚠ NO SMART HOLDERS — skipping ${post.name}: 0/${smartCheck.checked} tracked wallets hold this token`);
+      recordSkip(post, 'NO_SMART_HOLDERS', `0/${smartCheck.checked} smart wallets hold`, market.marketCap);
       continue;
     }
     if (smartCheck.holders > 0) {
@@ -156,6 +179,7 @@ async function fastScanCycle() {
       const estFees = volumeSol * CONFIG.PUMPSWAP_FEE_RATE;
       if (estFees < CONFIG.MIN_GLOBAL_FEES_SOL) {
         log(`⚠ LOW FEES — skipping ${post.name}: est ${estFees.toFixed(2)} SOL fees (need ≥${CONFIG.MIN_GLOBAL_FEES_SOL}) — vol ${volumeSol.toFixed(1)} SOL for ${fmtUsd(market.marketCap)} MC`);
+        recordSkip(post, 'LOW_FEES', `${estFees.toFixed(2)} SOL est fees`, market.marketCap);
         continue;
       }
       log(`✅ Fee check passed: est ${estFees.toFixed(2)} SOL fees (vol ${volumeSol.toFixed(1)} SOL)`);

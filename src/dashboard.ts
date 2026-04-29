@@ -1207,6 +1207,19 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
       }
+    } else if (pathname === '/api/skipped') {
+      // Late-resolve at request time to avoid circular import on module load
+      import('./index.js').then(idx => {
+        const skipped = idx.skippedRing ?? [];
+        const byReason: Record<string, number> = {};
+        for (const s of skipped) byReason[s.reason] = (byReason[s.reason] ?? 0) + 1;
+        const recent = [...skipped].sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ totalSkipped: skipped.length, byReason, recent }, null, 2));
+      }).catch(err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/api/data') {
       try {
         const range = parseRange(url);
