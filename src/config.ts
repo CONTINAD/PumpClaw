@@ -57,7 +57,7 @@ export const CONFIG = {
 
   // Paper trading (simulated 1 SOL per call)
   PAPER_ENTRY_SOL: 1.0,
-  PAPER_STOP_LOSS_PCT: 0.70,   // stop at -30% from entry (price = entry * 0.70)
+  PAPER_STOP_LOSS_PCT: 0.78,   // stop at -22% from entry (price = entry * 0.78)
   PAPER_TP1_MULT: 2,           // TP1 at 2X — sell 50%, move SL to break-even
   PAPER_TP1_SELL: 0.50,
   PAPER_TP2_MULT: 4,           // TP2 at 4X — sell 30%

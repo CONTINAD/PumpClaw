@@ -115,6 +115,21 @@ async function fastScanCycle() {
       continue;
     }
 
+    // Buy/sell ratio — skip if sellers significantly outnumber buyers (momentum dying)
+    if (market.sells5m > 0 && market.buys5m > 0) {
+      const sellRatio = market.sells5m / market.buys5m;
+      if (sellRatio > 1.3) {
+        log(`⚠ HEAVY SELLING — skipping ${post.name}: ${market.buys5m}B/${market.sells5m}S (${sellRatio.toFixed(2)}x sells)`);
+        continue;
+      }
+    }
+
+    // Liquidity floor — coins with shallow liq are easy rug targets
+    if (market.liquidity > 0 && market.liquidity < 7_000) {
+      log(`⚠ LOW LIQ — skipping ${post.name}: ${fmtUsd(market.liquidity)} liquidity (need ≥$7K)`);
+      continue;
+    }
+
     if (tracker.hasBeenCalled(post.mint)) continue;
 
     const bundle = await checkBundle(post.mint);
