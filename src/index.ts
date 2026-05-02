@@ -72,6 +72,10 @@ function recordSkip(post: { mint: string; name: string }, reason: string, detail
   skippedRing.push({ mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now() });
   if (skippedRing.length > 200) skippedRing.shift();
 }
+
+// Last live-edit timestamp per mint (throttle Discord PATCHes to avoid rate limits)
+const lastLiveEdit = new Map<string, number>();
+const LIVE_EDIT_MIN_GAP_MS = 90_000; // edit at most every 90s, plus only on new peaks
 const lastLeaderboardPost = new Map<string, number>(Object.entries(_lbTs.leaderboard));
 let lastMonthlyLbDate = _lbTs.monthlyDate;
 
@@ -338,7 +342,13 @@ async function maintenanceCycle() {
       pairAddress: '', pairUrl: '', dexId: '', pairCreatedAt: 0,
     };
 
-    await updateWithPerformance(rec.alertMessageId, coin, entryMarket, rec.snapshots);
+    await updateWithPerformance(rec.alertMessageId, coin, entryMarket, rec.snapshots, {
+      currentPrice: current.priceUsd,
+      currentMC: current.marketCap,
+      peakPrice: rec.peakPrice,
+      peakMC: rec.peakMC,
+      peakMultiplier: rec.peakMultiplier,
+    });
   }
 
   // ─── 2. Milestone checking (2x, 3x, 5x, 10x…) ───
@@ -377,7 +387,36 @@ async function maintenanceCycle() {
           }
         }
 
+        const peakBefore = rec.peakMultiplier;
         tracker.updatePeak(rec.mint, market.priceUsd, market.marketCap);
+        const peakAfter = rec.peakMultiplier;
+        const peakChanged = peakAfter > peakBefore;
+
+        // Live-edit the alert message when peak rises (throttled to once per 90s per mint)
+        if (rec.alertMessageId && rec.alertMessageId !== 'pending' && peakChanged) {
+          const lastEdit = lastLiveEdit.get(rec.mint) ?? 0;
+          if (now - lastEdit >= LIVE_EDIT_MIN_GAP_MS) {
+            lastLiveEdit.set(rec.mint, now);
+            const coinForUpdate: PumpFunCoin = {
+              mint: rec.mint, name: rec.name, symbol: rec.symbol, image_uri: rec.imageUri, isTrendingPaid: true,
+            };
+            const entryMarketForUpdate: MarketData = {
+              mint: rec.mint, priceUsd: rec.entryPrice, priceNative: 0,
+              volume5m: rec.entryVolume5m, volume1h: 0, volume6h: 0, volume24h: 0,
+              marketCap: rec.entryMC, fdv: rec.entryMC, liquidity: 0, liquiditySol: 0,
+              buys5m: 0, sells5m: 0, buys1h: 0, sells1h: 0,
+              priceChange5m: 0, priceChange1h: 0, priceChange6h: 0, priceChange24h: 0,
+              pairAddress: '', pairUrl: '', dexId: '', pairCreatedAt: 0,
+            };
+            updateWithPerformance(rec.alertMessageId, coinForUpdate, entryMarketForUpdate, rec.snapshots, {
+              currentPrice: market.priceUsd,
+              currentMC: market.marketCap,
+              peakPrice: rec.peakPrice,
+              peakMC: rec.peakMC,
+              peakMultiplier: rec.peakMultiplier,
+            }).catch(() => {});
+          }
+        }
 
         const paperTrade = paperTrader.getTrade(rec.mint);
         if (paperTrade) {

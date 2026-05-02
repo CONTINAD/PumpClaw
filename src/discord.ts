@@ -80,6 +80,7 @@ function buildAlertEmbed(
   coin: PumpFunCoin,
   market: MarketData,
   snapshots: PerformanceSnapshot[] = [],
+  liveData?: { currentPrice: number; currentMC: number; peakPrice: number; peakMC: number; peakMultiplier: number },
 ) {
   const thumbnail = coin.image_uri || market.imageUrl;
 
@@ -126,31 +127,31 @@ function buildAlertEmbed(
   lines.push(buyRow(coin.mint));
 
   // ── Performance section ──
-  if (snapshots.length > 0) {
-    let bestPct = -Infinity;
-    let bestLabel = '';
-
+  if (snapshots.length > 0 || liveData) {
     const perfLines: string[] = [];
+
+    // Live "now" + true "peak" (from continuous 15s polling, not just snapshot points)
+    if (liveData) {
+      const currentPct = ((liveData.currentPrice - market.priceUsd) / market.priceUsd) * 100;
+      const peakPct = ((liveData.peakPrice - market.priceUsd) / market.priceUsd) * 100;
+      const curBar = currentPct >= 0 ? '🟩' : '🟥';
+      perfLines.push(`${curBar}  \`now \`  **${fmtPct(currentPct)}**  ·  MC ${fmtUsd(liveData.currentMC)}`);
+      if (peakPct > 0) {
+        perfLines.push(`🏆  \`peak\`  **${fmtPct(peakPct)}**  ·  MC ${fmtUsd(liveData.peakMC)}  ·  **${liveData.peakMultiplier.toFixed(2)}×**`);
+      }
+    }
+
     for (const snap of snapshots) {
       const label = snap.intervalMin < 60 ? `${snap.intervalMin}m` : `${snap.intervalMin / 60}h`;
       const pricePct = ((snap.price - market.priceUsd) / market.priceUsd) * 100;
       const bar = pricePct >= 0 ? '🟩' : '🟥';
       const padLabel = label.padEnd(4);
       perfLines.push(`${bar}  \`${padLabel}\`  **${fmtPct(pricePct)}**  ·  MC ${fmtUsd(snap.marketCap)}`);
-      if (pricePct > bestPct) {
-        bestPct = pricePct;
-        bestLabel = label;
-      }
     }
 
     lines.push('');
     lines.push('**━━━━━  Performance  ━━━━━**');
     lines.push(perfLines.join('\n'));
-
-    if (snapshots.length >= 2) {
-      const emoji = bestPct >= 0 ? '🏆' : '📉';
-      lines.push(`${emoji}  Best: **${fmtPct(bestPct)}** at ${bestLabel}`);
-    }
   }
 
   // ── Footer ──
@@ -559,11 +560,12 @@ export async function updateWithPerformance(
   coin: PumpFunCoin,
   entryMarket: MarketData,
   snapshots: PerformanceSnapshot[],
+  liveData?: { currentPrice: number; currentMC: number; peakPrice: number; peakMC: number; peakMultiplier: number },
 ): Promise<void> {
   // Skip performance updates on Telegram — too spammy (4 messages per call)
 
   try {
-    const body = buildAlertEmbed(coin, entryMarket, snapshots);
+    const body = buildAlertEmbed(coin, entryMarket, snapshots, liveData);
     const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}/messages/${messageId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
