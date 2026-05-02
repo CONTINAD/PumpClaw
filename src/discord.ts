@@ -126,46 +126,30 @@ function buildAlertEmbed(
   lines.push('');
   lines.push(buyRow(coin.mint));
 
-  // ── Performance section ──
-  if (snapshots.length > 0 || liveData) {
-    const perfLines: string[] = [];
-
-    // Live "now" + true "peak" (from continuous 15s polling, not just snapshot points)
-    if (liveData) {
-      const currentPct = ((liveData.currentPrice - market.priceUsd) / market.priceUsd) * 100;
-      const peakPct = ((liveData.peakPrice - market.priceUsd) / market.priceUsd) * 100;
-      const curBar = currentPct >= 0 ? '🟩' : '🟥';
-      perfLines.push(`${curBar}  \`now \`  **${fmtPct(currentPct)}**  ·  MC ${fmtUsd(liveData.currentMC)}`);
-      if (peakPct > 0) {
-        perfLines.push(`🏆  \`peak\`  **${fmtPct(peakPct)}**  ·  MC ${fmtUsd(liveData.peakMC)}  ·  **${liveData.peakMultiplier.toFixed(2)}×**`);
-      }
-    }
-
-    for (const snap of snapshots) {
-      const label = snap.intervalMin < 60 ? `${snap.intervalMin}m` : `${snap.intervalMin / 60}h`;
-      const pricePct = ((snap.price - market.priceUsd) / market.priceUsd) * 100;
-      const bar = pricePct >= 0 ? '🟩' : '🟥';
-      const padLabel = label.padEnd(4);
-      perfLines.push(`${bar}  \`${padLabel}\`  **${fmtPct(pricePct)}**  ·  MC ${fmtUsd(snap.marketCap)}`);
-    }
+  // ── Performance section (live only — no historical snapshots) ──
+  if (liveData) {
+    const currentPct = ((liveData.currentPrice - market.priceUsd) / market.priceUsd) * 100;
+    const peakPct = ((liveData.peakPrice - market.priceUsd) / market.priceUsd) * 100;
+    const curBar = currentPct >= 0 ? '🟩' : '🟥';
 
     lines.push('');
     lines.push('**━━━━━  Performance  ━━━━━**');
-    lines.push(perfLines.join('\n'));
+    lines.push(`${curBar}  \`now \`  **${fmtPct(currentPct)}**  ·  MC ${fmtUsd(liveData.currentMC)}`);
+    if (peakPct > 0) {
+      lines.push(`🏆  \`peak\`  **${fmtPct(peakPct)}**  ·  MC ${fmtUsd(liveData.peakMC)}  ·  **${liveData.peakMultiplier.toFixed(2)}×**`);
+    }
   }
 
   // ── Footer ──
-  const footerText =
-    snapshots.length >= CONFIG.PERFORMANCE_INTERVALS.length
-      ? '✅ Tracking complete'
-      : `⏱ Tracking  ·  ${snapshots.length}/${CONFIG.PERFORMANCE_INTERVALS.length} updates`;
+  const footerText = liveData
+    ? `🔴 Live  ·  Peak ${liveData.peakMultiplier.toFixed(2)}×`
+    : '⏱ Tracking';
 
-  // ── Color ──
+  // ── Color: based on current price vs entry ──
   let color = 0xffd700;
-  if (snapshots.length > 0) {
-    const latest = snapshots[snapshots.length - 1];
-    const latestPct = ((latest.price - market.priceUsd) / market.priceUsd) * 100;
-    color = colorForPct(latestPct);
+  if (liveData) {
+    const currentPct = ((liveData.currentPrice - market.priceUsd) / market.priceUsd) * 100;
+    color = colorForPct(currentPct);
   }
 
   return {
