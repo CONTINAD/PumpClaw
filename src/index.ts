@@ -148,6 +148,25 @@ async function fastScanCycle() {
       }
     }
 
+    // Trade count — require real activity, not 1 whale propping it up
+    // (≥20 buys in last 5min = a buy every 15s on average)
+    if (market.buys5m > 0 && market.buys5m < 20) {
+      log(`⚠ LOW ACTIVITY — skipping ${post.name}: only ${market.buys5m} buys in 5m`);
+      recordSkip(post, 'LOW_ACTIVITY', `${market.buys5m} buys in 5m`, market.marketCap);
+      continue;
+    }
+
+    // Volume momentum — vol5m should be at least 15% of vol1h (last 5min concentrated)
+    // If a coin had $100K vol last hour but only $5K in last 5min, momentum has died
+    if (market.volume1h > 0 && market.volume5m > 0) {
+      const concentration = market.volume5m / market.volume1h;
+      if (concentration < 0.15) {
+        log(`⚠ COOLING OFF — skipping ${post.name}: only ${(concentration*100).toFixed(0)}% of 1h vol in last 5m`);
+        recordSkip(post, 'COOLING_OFF', `${(concentration*100).toFixed(0)}% of 1h vol in last 5m`, market.marketCap);
+        continue;
+      }
+    }
+
     // Liquidity floor — coins with shallow liq are easy rug targets
     if (market.liquidity > 0 && market.liquidity < 7_000) {
       log(`⚠ LOW LIQ — skipping ${post.name}: ${fmtUsd(market.liquidity)} liquidity (need ≥$7K)`);
