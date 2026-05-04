@@ -75,7 +75,9 @@ function recordSkip(post: { mint: string; name: string }, reason: string, detail
 
 // Last live-edit timestamp per mint (throttle Discord PATCHes to avoid rate limits)
 const lastLiveEdit = new Map<string, number>();
-const LIVE_EDIT_MIN_GAP_MS = 90_000; // edit at most every 90s, plus only on new peaks
+const LIVE_EDIT_PEAK_GAP_MS = 30_000;     // on peak rise: at least 30s between edits
+const LIVE_EDIT_REFRESH_GAP_MS = 180_000; // periodic refresh: every 3 min keep "now" fresh
+const LIVE_EDIT_TRACKING_WINDOW_MS = 60 * 60 * 1000; // only auto-update for first hour
 const lastLeaderboardPost = new Map<string, number>(Object.entries(_lbTs.leaderboard));
 let lastMonthlyLbDate = _lbTs.monthlyDate;
 
@@ -408,13 +410,39 @@ async function maintenanceCycle() {
 
         const peakBefore = rec.peakMultiplier;
         tracker.updatePeak(rec.mint, market.priceUsd, market.marketCap);
+
+        // Detect spikes between polls using DexScreener's 5m priceChange.
+        // If the coin's 5m change is way higher than what we'd expect from
+        // (current price / poll-time price), it pumped & dumped between checks.
+        // Use the "shadow peak" implied by 5m high to update peak.
+        if (market.priceChange5m > 30 && rec.entryPrice > 0) {
+          // Estimate peak in last 5 min: current * (1 + change/100) ≈ what it WAS 5m ago,
+          // but the peak was likely between then and now. Use the higher of:
+          //   - current price * (1 + max(change, 0)/100) [if it's been rising]
+          //   - current price [if change is positive, peak was at least current]
+          // Simpler: if 5m change > 30%, assume there was a spike to at least
+          // current * (1 + change/200) — half the swing as a peak proxy.
+          const impliedPeak = market.priceUsd * (1 + market.priceChange5m / 200);
+          if (impliedPeak > rec.peakPrice) {
+            const impliedMC = rec.peakMC > 0 ? rec.peakMC * (impliedPeak / rec.peakPrice) : market.marketCap * (impliedPeak / market.priceUsd);
+            tracker.updatePeak(rec.mint, impliedPeak, impliedMC);
+          }
+        }
+
         const peakAfter = rec.peakMultiplier;
         const peakChanged = peakAfter > peakBefore;
 
-        // Live-edit the alert message when peak rises (throttled to once per 90s per mint)
-        if (rec.alertMessageId && rec.alertMessageId !== 'pending' && peakChanged) {
+        // Live-edit logic:
+        //   - If peak rose: update (throttled to >=30s between)
+        //   - Else if last edit >180s ago AND we're still in tracking window: refresh "now"
+        if (rec.alertMessageId && rec.alertMessageId !== 'pending' && ageMs < LIVE_EDIT_TRACKING_WINDOW_MS) {
           const lastEdit = lastLiveEdit.get(rec.mint) ?? 0;
-          if (now - lastEdit >= LIVE_EDIT_MIN_GAP_MS) {
+          const gapSinceLast = now - lastEdit;
+          const shouldUpdate =
+            (peakChanged && gapSinceLast >= LIVE_EDIT_PEAK_GAP_MS) ||
+            (gapSinceLast >= LIVE_EDIT_REFRESH_GAP_MS);
+
+          if (shouldUpdate) {
             lastLiveEdit.set(rec.mint, now);
             const coinForUpdate: PumpFunCoin = {
               mint: rec.mint, name: rec.name, symbol: rec.symbol, image_uri: rec.imageUri, isTrendingPaid: true,
