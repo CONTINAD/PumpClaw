@@ -235,7 +235,11 @@ async function fastScanCycle() {
     );
 
     // Mark as called BEFORE sending alerts — prevents duplicate sends if Discord is slow/down
-    tracker.add(coin, adjustedMarket, 'pending');
+    // Pass rich features (bundle/smart holders) so we can correlate them with outcomes later.
+    tracker.add(coin, adjustedMarket, 'pending', {
+      smartHolders: smartCheck.holders,
+      bundleSafe: bundle.safe,
+    });
     alertCount++;
 
     const discordMsgId = await sendAlert(coin, adjustedMarket);

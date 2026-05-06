@@ -1207,6 +1207,125 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
       }
+    } else if (pathname === '/api/correlations') {
+      try {
+        const calls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+        // Only include calls with rich entry data (new format)
+        const rich = calls.filter(c => c.entryLiquidity !== undefined && c.peakMultiplier > 0);
+
+        type Bin = { label: string; samples: number[]; winners: number; total: number };
+        const bin = (label: string): Bin => ({ label, samples: [], winners: 0, total: 0 });
+
+        function bucket(bins: Bin[], value: number, peak: number, bands: { label: string; min: number; max: number }[]) {
+          for (const b of bands) {
+            if (value >= b.min && value < b.max) {
+              const tgt = bins.find(x => x.label === b.label)!;
+              tgt.samples.push(peak);
+              tgt.total++;
+              if (peak >= 2) tgt.winners++;
+              break;
+            }
+          }
+        }
+
+        // Build buckets for each metric
+        const liqBands = [
+          { label: '<$5K', min: 0, max: 5000 },
+          { label: '$5-10K', min: 5000, max: 10000 },
+          { label: '$10-20K', min: 10000, max: 20000 },
+          { label: '$20-50K', min: 20000, max: 50000 },
+          { label: '$50K+', min: 50000, max: Infinity },
+        ];
+        const liqBins = liqBands.map(b => bin(b.label));
+
+        const buyRatioBands = [
+          { label: '<0.8', min: 0, max: 0.8 },
+          { label: '0.8-1.0', min: 0.8, max: 1.0 },
+          { label: '1.0-1.3', min: 1.0, max: 1.3 },
+          { label: '1.3-2.0', min: 1.3, max: 2.0 },
+          { label: '2.0+', min: 2.0, max: Infinity },
+        ];
+        const buyRatioBins = buyRatioBands.map(b => bin(b.label));
+
+        const buysCountBands = [
+          { label: '<20', min: 0, max: 20 },
+          { label: '20-50', min: 20, max: 50 },
+          { label: '50-100', min: 50, max: 100 },
+          { label: '100-200', min: 100, max: 200 },
+          { label: '200+', min: 200, max: Infinity },
+        ];
+        const buysCountBins = buysCountBands.map(b => bin(b.label));
+
+        const ageBands = [
+          { label: '<10min', min: 0, max: 10 },
+          { label: '10-30min', min: 10, max: 30 },
+          { label: '30-60min', min: 30, max: 60 },
+          { label: '1-3h', min: 60, max: 180 },
+          { label: '3h+', min: 180, max: Infinity },
+        ];
+        const ageBins = ageBands.map(b => bin(b.label));
+
+        const volMomentumBands = [
+          { label: '<10%', min: 0, max: 0.1 },
+          { label: '10-25%', min: 0.1, max: 0.25 },
+          { label: '25-50%', min: 0.25, max: 0.5 },
+          { label: '50-100%', min: 0.5, max: 1.0 },
+          { label: '100%+', min: 1.0, max: Infinity },
+        ];
+        const volMomentumBins = volMomentumBands.map(b => bin(b.label));
+
+        let smartHolderWinRate = { withSmart: { wins: 0, total: 0 }, noSmart: { wins: 0, total: 0 } };
+
+        for (const c of rich) {
+          const peak = c.peakMultiplier;
+          if (c.entryLiquidity !== undefined) bucket(liqBins, c.entryLiquidity, peak, liqBands);
+          if (c.entryBuys5m && c.entrySells5m && c.entrySells5m > 0) {
+            bucket(buyRatioBins, c.entryBuys5m / c.entrySells5m, peak, buyRatioBands);
+          }
+          if (c.entryBuys5m !== undefined) bucket(buysCountBins, c.entryBuys5m, peak, buysCountBands);
+          if (c.entryAgeMin !== undefined) bucket(ageBins, c.entryAgeMin, peak, ageBands);
+          if (c.entryVolume5m && c.entryVolume1h && c.entryVolume1h > 0) {
+            bucket(volMomentumBins, c.entryVolume5m / c.entryVolume1h, peak, volMomentumBands);
+          }
+          if (c.entrySmartHolders !== undefined) {
+            const tgt = c.entrySmartHolders > 0 ? smartHolderWinRate.withSmart : smartHolderWinRate.noSmart;
+            tgt.total++;
+            if (peak >= 2) tgt.wins++;
+          }
+        }
+
+        function summarize(bins: Bin[]) {
+          return bins.map(b => ({
+            label: b.label,
+            n: b.total,
+            winRate: b.total > 0 ? +(b.winners / b.total * 100).toFixed(1) : 0,
+            avgPeak: b.total > 0 ? +(b.samples.reduce((s, x) => s + x, 0) / b.samples.length).toFixed(2) : 0,
+            maxPeak: b.total > 0 ? Math.max(...b.samples) : 0,
+          }));
+        }
+
+        const result = {
+          totalCalls: calls.length,
+          richCalls: rich.length,
+          note: rich.length < 50
+            ? 'Need more rich-format calls (>=50) for reliable correlations. Keep the bot running.'
+            : 'Sample size sufficient. Look for buckets with significantly higher win rate / avg peak.',
+          liquidity: summarize(liqBins),
+          buySellRatio5m: summarize(buyRatioBins),
+          buysCount5m: summarize(buysCountBins),
+          tokenAge: summarize(ageBins),
+          volumeMomentum: summarize(volMomentumBins),
+          smartHolders: {
+            withSmart: { ...smartHolderWinRate.withSmart, winRate: smartHolderWinRate.withSmart.total > 0 ? +(smartHolderWinRate.withSmart.wins / smartHolderWinRate.withSmart.total * 100).toFixed(1) : 0 },
+            noSmart: { ...smartHolderWinRate.noSmart, winRate: smartHolderWinRate.noSmart.total > 0 ? +(smartHolderWinRate.noSmart.wins / smartHolderWinRate.noSmart.total * 100).toFixed(1) : 0 },
+          },
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/skipped') {
       // Late-resolve at request time to avoid circular import on module load
       import('./index.js').then(idx => {

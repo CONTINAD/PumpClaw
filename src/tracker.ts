@@ -35,6 +35,23 @@ export interface CallRecord {
   entryTime: number;
   alertMessageId: string;
 
+  // Rich entry features (all optional for back-compat with old records).
+  // Used for correlation analysis to figure out which signals predict winners.
+  entryVolume1h?: number;
+  entryVolume24h?: number;
+  entryLiquidity?: number;
+  entryBuys5m?: number;
+  entrySells5m?: number;
+  entryBuys1h?: number;
+  entrySells1h?: number;
+  entryPriceChange5m?: number;
+  entryPriceChange1h?: number;
+  entryPriceChange6h?: number;
+  entryDexId?: string;
+  entryAgeMin?: number;          // token age at call time (minutes since pair creation)
+  entrySmartHolders?: number;    // # smart wallets holding at call time
+  entryBundleSafe?: boolean;     // bundle check verdict
+
   // Performance snapshots (5m, 15m, 30m, 1h — edits original message)
   snapshots: PerformanceSnapshot[];
   nextSnapshotIndex: number;
@@ -62,7 +79,15 @@ export class PerformanceTracker {
   }
 
   /** Register a new call. Returns the CallRecord. */
-  add(coin: PumpFunCoin, market: MarketData, alertMessageId: string): CallRecord {
+  add(
+    coin: PumpFunCoin,
+    market: MarketData,
+    alertMessageId: string,
+    extra?: { smartHolders?: number; bundleSafe?: boolean },
+  ): CallRecord {
+    const ageMin = market.pairCreatedAt > 0
+      ? Math.floor((Date.now() - market.pairCreatedAt) / 60_000)
+      : undefined;
     const rec: CallRecord = {
       mint: coin.mint,
       name: coin.name,
@@ -73,6 +98,22 @@ export class PerformanceTracker {
       entryVolume5m: market.volume5m,
       entryTime: Date.now(),
       alertMessageId,
+      // Rich features for correlation
+      entryVolume1h: market.volume1h,
+      entryVolume24h: market.volume24h,
+      entryLiquidity: market.liquidity,
+      entryBuys5m: market.buys5m,
+      entrySells5m: market.sells5m,
+      entryBuys1h: market.buys1h,
+      entrySells1h: market.sells1h,
+      entryPriceChange5m: market.priceChange5m,
+      entryPriceChange1h: market.priceChange1h,
+      entryPriceChange6h: market.priceChange6h,
+      entryDexId: market.dexId,
+      entryAgeMin: ageMin,
+      entrySmartHolders: extra?.smartHolders,
+      entryBundleSafe: extra?.bundleSafe,
+      // Tracking state
       snapshots: [],
       nextSnapshotIndex: 0,
       snapshotsComplete: false,
