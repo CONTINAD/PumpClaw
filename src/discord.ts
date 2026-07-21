@@ -512,6 +512,24 @@ function mirrorToWebhook2(body: any): void {
   }).catch(() => {});
 }
 
+/** Post the bare CA as its own message so CA-scanning bots (Rick etc.) pick up the call. */
+async function sendPlainCA(mint: string): Promise<void> {
+  const body = { content: mint, allowed_mentions: { parse: [] } };
+  mirrorToWebhook2(body);
+  try {
+    const res = await fetch(CONFIG.DISCORD_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.error(`[Discord] Plain CA send failed ${res.status}: ${await res.text()}`);
+    }
+  } catch (err: any) {
+    console.error(`[Discord] Plain CA send error: ${err.message}`);
+  }
+}
+
 export async function sendAlert(
   coin: PumpFunCoin,
   market: MarketData,
@@ -532,6 +550,8 @@ export async function sendAlert(
       return null;
     }
     const data: any = await res.json();
+    // Follow up with the bare CA so Rick / call-tracker bots register the call
+    await sendPlainCA(coin.mint);
     return data.id ?? null;
   } catch (err: any) {
     console.error(`[Discord] Send error: ${err.message}`);
