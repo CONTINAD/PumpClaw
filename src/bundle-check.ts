@@ -343,11 +343,12 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
     const wideMaxCluster = enoughFresh ? findMaxCluster(7 * 24 * 60 * 60) : 0;
     const wideClusterPct = enoughFresh ? Math.round((wideMaxCluster / fundingTimes.length) * 100) : 0;
 
-    // Fail if ANY check triggers
-    const narrowFail = clusterPct >= CONFIG.BUNDLE_MAX_CLUSTER_PCT && fundingTimes.length >= 3;
-    const hourFail = hourClusterPct >= CONFIG.BUNDLE_HOUR_CLUSTER_PCT;
-    const dayFail = dayClusterPct >= CONFIG.BUNDLE_DAY_CLUSTER_PCT;
-    const wideFail = wideClusterPct >= CONFIG.BUNDLE_WIDE_CLUSTER_PCT;
+    // Fail if ANY check triggers. Each window also needs 3+ wallets in the cluster —
+    // 2 wallets funded the same day is a coincidence, a farm is never that small.
+    const narrowFail = maxCluster >= 3 && clusterPct >= CONFIG.BUNDLE_MAX_CLUSTER_PCT;
+    const hourFail = hourMaxCluster >= 3 && hourClusterPct >= CONFIG.BUNDLE_HOUR_CLUSTER_PCT;
+    const dayFail = dayMaxCluster >= 3 && dayClusterPct >= CONFIG.BUNDLE_DAY_CLUSTER_PCT;
+    const wideFail = wideMaxCluster >= 3 && wideClusterPct >= CONFIG.BUNDLE_WIDE_CLUSTER_PCT;
     const safe = !narrowFail && !hourFail && !dayFail && !wideFail && !sameFunderFail && !balanceFail && !lowBalFail;
 
     const reasons: string[] = [];
