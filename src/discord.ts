@@ -512,9 +512,34 @@ function mirrorToWebhook2(body: any): void {
   }).catch(() => {});
 }
 
-/** Post the bare CA as its own message so CA-scanning bots (Rick etc.) pick up the call. */
+/** Post the bare CA as its own message so CA-scanning bots (Rick etc.) pick up the call.
+ *  Rick ignores webhook messages, so this sends from a real bot account when
+ *  DISCORD_BOT_TOKEN + DISCORD_CALL_CHANNEL_IDS are set, falling back to the webhook. */
 async function sendPlainCA(mint: string): Promise<void> {
   const body = { content: mint, allowed_mentions: { parse: [] } };
+
+  if (CONFIG.DISCORD_BOT_TOKEN && CONFIG.DISCORD_CALL_CHANNEL_IDS.length > 0) {
+    for (const channelId of CONFIG.DISCORD_CALL_CHANNEL_IDS) {
+      try {
+        const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bot ${CONFIG.DISCORD_BOT_TOKEN}`,
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          console.error(`[Discord] Bot CA send failed (${channelId}) ${res.status}: ${await res.text()}`);
+        }
+      } catch (err: any) {
+        console.error(`[Discord] Bot CA send error (${channelId}): ${err.message}`);
+      }
+    }
+    return;
+  }
+
+  // Fallback: webhook paste (CA-tracker bots may ignore these)
   mirrorToWebhook2(body);
   try {
     const res = await fetch(CONFIG.DISCORD_WEBHOOK, {

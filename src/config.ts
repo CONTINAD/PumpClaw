@@ -9,6 +9,11 @@ export const CONFIG = {
   DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK || '',
   DISCORD_WEBHOOK_2: process.env.DISCORD_WEBHOOK_2 || 'https://discord.com/api/webhooks/1498748255478219012/A9lvI1Uo5QHkxuRQcm1yO96abLuLV99RLlRos9sULB_bk_shfyi6BpULq_eaUpQnbHt0',
   DISCORD_CALLER_ROLE_ID: process.env.DISCORD_CALLER_ROLE_ID || '1499104951912370437',
+  // Bot account used to paste the bare CA (Rick-style trackers ignore webhook messages).
+  // Comma-separated channel IDs — one per channel the CA should be pasted in.
+  DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN || '',
+  DISCORD_CALL_CHANNEL_IDS: (process.env.DISCORD_CALL_CHANNEL_IDS || '')
+    .split(',').map(s => s.trim()).filter(Boolean),
   DISCORD_BIG_MILESTONE_THRESHOLD: 10,  // ping caller role only on milestones >= this
   PUMPFUN_API: 'https://frontend-api-v3.pump.fun',
   DEXSCREENER_API: 'https://api.dexscreener.com',
