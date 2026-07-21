@@ -48,7 +48,10 @@ export const CONFIG = {
   BUNDLE_TOP_HOLDERS: 50,           // check this many top holders
   BUNDLE_TIME_WINDOW_SEC: 300,      // 5 min narrow window for clustering
   BUNDLE_MAX_CLUSTER_PCT: 40,       // skip if 40%+ of holders in narrow window
+  BUNDLE_HOUR_CLUSTER_PCT: 50,      // skip if 50%+ of fresh holders funded within same hour (Axiom "time-linked funding")
+  BUNDLE_DAY_CLUSTER_PCT: 60,       // skip if 60%+ of fresh holders funded within same 24h
   BUNDLE_WIDE_CLUSTER_PCT: 75,      // skip if 75%+ of holders funded within same 7-day window
+  BUNDLE_MIN_FRESH_WALLETS: 5,      // hour/day/wide checks need at least this many fresh-wallet samples
   BUNDLE_LOW_BAL_HOLDERS: 20,       // check this many top holders for low SOL balance
   BUNDLE_LOW_BAL_SOL: 1,            // wallets with less than this SOL are "low balance"
   BUNDLE_LOW_BAL_PCT: 40,           // skip if 40%+ of top holders have < 1 SOL

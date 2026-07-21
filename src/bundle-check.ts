@@ -76,6 +76,7 @@ interface WalletInfo {
   fundingTime: number | null;
   funder: string | null;      // who sent the first SOL tx to this wallet
   funderIsExchange: boolean;  // true if funder has 300+ txs (exchange hot wallet)
+  veteran: boolean;           // 600+ txs — real funding time unknowable, excluded from clustering
 }
 
 // Cache stores both funding time and funder source
@@ -102,7 +103,16 @@ async function getWalletInfo(wallet: string): Promise<WalletInfo> {
   }
 
   if (sigBatches.length === 0) {
-    const info: WalletInfo = { fundingTime: null, funder: null, funderIsExchange: false };
+    const info: WalletInfo = { fundingTime: null, funder: null, funderIsExchange: false, veteran: false };
+    walletInfoCache.set(wallet, info);
+    return info;
+  }
+
+  // Hit the pagination cap → veteran wallet. Its oldest fetched sig is NOT its funding
+  // tx (just its ~600th most recent), so a fake-recent funding time would poison the
+  // cluster analysis. Bundle/farm wallets are always fresh — veterans are just bots.
+  if (sigBatches.length >= MAX_SIG_LIMIT * 2) {
+    const info: WalletInfo = { fundingTime: null, funder: null, funderIsExchange: false, veteran: true };
     walletInfoCache.set(wallet, info);
     return info;
   }
@@ -119,7 +129,7 @@ async function getWalletInfo(wallet: string): Promise<WalletInfo> {
     funder = accounts.find((a: string) => a !== wallet) ?? null;
   } catch { }
 
-  const info: WalletInfo = { fundingTime: time, funder, funderIsExchange: false };
+  const info: WalletInfo = { fundingTime: time, funder, funderIsExchange: false, veteran: false };
   walletInfoCache.set(wallet, info);
 
   // Also update the old cache for backwards compat
@@ -143,6 +153,7 @@ interface BatchedWalletData {
   funders: string[];           // funder address for each wallet
   exchangeFundedCount: number; // how many holders were funded by exchange-like wallets
   totalWithFunder: number;     // how many holders we could identify a funder for
+  veteranCount: number;        // holders with 600+ txs (excluded from clustering)
 }
 
 async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletData> {
@@ -150,6 +161,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
   const funders: string[] = [];
   let exchangeFundedCount = 0;
   let totalWithFunder = 0;
+  let veteranCount = 0;
   const BATCH_SIZE = 5;
 
   for (let i = 0; i < wallets.length; i += BATCH_SIZE) {
@@ -158,6 +170,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
 
     for (const r of results) {
       if (r.status === 'fulfilled') {
+        if (r.value.veteran) veteranCount++;
         if (r.value.fundingTime !== null) fundingTimes.push(r.value.fundingTime);
         if (r.value.funder) {
           funders.push(r.value.funder);
@@ -172,7 +185,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
     }
   }
 
-  return { fundingTimes, funders, exchangeFundedCount, totalWithFunder };
+  return { fundingTimes, funders, exchangeFundedCount, totalWithFunder, veteranCount };
 }
 
 /**
@@ -266,9 +279,11 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
 
     // 3. Fetch wallet funding times + funder sources — throttled batches of 5 with caching
     const walletData = await getWalletDataBatched(ownerWallets);
-    const { fundingTimes, funders } = walletData;
+    const { fundingTimes, funders, veteranCount } = walletData;
 
-    if (fundingTimes.length < 3) {
+    // Veterans (600+ tx bots) have no reliable funding time but ARE resolved data —
+    // a sniper-heavy top 20 shouldn't fail closed, farm wallets are always fresh.
+    if (fundingTimes.length + veteranCount < 3) {
       return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length, details: 'insufficient wallet data — blocked (fail closed)' };
     }
 
@@ -314,21 +329,32 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
     };
 
     // Narrow window (5 min) — catches same-block bundles
-    const maxCluster = findMaxCluster(CONFIG.BUNDLE_TIME_WINDOW_SEC);
-    const clusterPct = Math.round((maxCluster / fundingTimes.length) * 100);
+    const maxCluster = fundingTimes.length >= 3 ? findMaxCluster(CONFIG.BUNDLE_TIME_WINDOW_SEC) : 0;
+    const clusterPct = fundingTimes.length >= 3 ? Math.round((maxCluster / fundingTimes.length) * 100) : 0;
 
-    // Wide window (7 days) — catches coordinated wallet farms
-    const WIDE_WINDOW_SEC = 7 * 24 * 60 * 60; // 7 days
-    const wideMaxCluster = findMaxCluster(WIDE_WINDOW_SEC);
-    const wideClusterPct = Math.round((wideMaxCluster / fundingTimes.length) * 100);
+    // Hour / day / wide windows — "time-linked funding" (Axiom-style). Wallet farms get
+    // funded over 10-60 min, which slips between the 5-min and 7-day windows.
+    // Only run these with a decent fresh-wallet sample so tiny samples can't false-trip.
+    const enoughFresh = fundingTimes.length >= CONFIG.BUNDLE_MIN_FRESH_WALLETS;
+    const hourMaxCluster = enoughFresh ? findMaxCluster(3600) : 0;
+    const hourClusterPct = enoughFresh ? Math.round((hourMaxCluster / fundingTimes.length) * 100) : 0;
+    const dayMaxCluster = enoughFresh ? findMaxCluster(24 * 60 * 60) : 0;
+    const dayClusterPct = enoughFresh ? Math.round((dayMaxCluster / fundingTimes.length) * 100) : 0;
+    const wideMaxCluster = enoughFresh ? findMaxCluster(7 * 24 * 60 * 60) : 0;
+    const wideClusterPct = enoughFresh ? Math.round((wideMaxCluster / fundingTimes.length) * 100) : 0;
 
     // Fail if ANY check triggers
-    const narrowFail = clusterPct >= CONFIG.BUNDLE_MAX_CLUSTER_PCT;
+    const narrowFail = clusterPct >= CONFIG.BUNDLE_MAX_CLUSTER_PCT && fundingTimes.length >= 3;
+    const hourFail = hourClusterPct >= CONFIG.BUNDLE_HOUR_CLUSTER_PCT;
+    const dayFail = dayClusterPct >= CONFIG.BUNDLE_DAY_CLUSTER_PCT;
     const wideFail = wideClusterPct >= CONFIG.BUNDLE_WIDE_CLUSTER_PCT;
-    const safe = !narrowFail && !wideFail && !sameFunderFail && !balanceFail && !lowBalFail;
+    const safe = !narrowFail && !hourFail && !dayFail && !wideFail && !sameFunderFail && !balanceFail && !lowBalFail;
 
     const reasons: string[] = [];
+    reasons.push(`${fundingTimes.length} fresh + ${veteranCount} veteran`);
     reasons.push(`${maxCluster}/${fundingTimes.length} in 5min (${clusterPct}%)`);
+    reasons.push(`${hourMaxCluster}/${fundingTimes.length} in 1h (${hourClusterPct}%)`);
+    reasons.push(`${dayMaxCluster}/${fundingTimes.length} in 24h (${dayClusterPct}%)`);
     reasons.push(`${wideMaxCluster}/${fundingTimes.length} in 7d (${wideClusterPct}%)`);
     if (funders.length >= 3) {
       reasons.push(`${sameFunderMax}/${funders.length} same funder (${sameFunderPct}%)`);
@@ -347,7 +373,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       wideClusterPct,
       wideMaxCluster,
       totalChecked: fundingTimes.length,
-      details: reasons.join(' | ') + (narrowFail ? ' [NARROW FAIL]' : '') + (wideFail ? ' [WIDE FAIL]' : '') + (sameFunderFail ? ` [SAME FUNDER: ${topFunder.slice(0,8)}...]` : '') + (balanceFail ? ' [BALANCE CLUSTER]' : '') + (lowBalFail ? ' [LOW BAL HOLDERS]' : ''),
+      details: reasons.join(' | ') + (narrowFail ? ' [NARROW FAIL]' : '') + (hourFail ? ' [TIME-LINKED 1H FAIL]' : '') + (dayFail ? ' [TIME-LINKED 24H FAIL]' : '') + (wideFail ? ' [WIDE FAIL]' : '') + (sameFunderFail ? ` [SAME FUNDER: ${topFunder.slice(0,8)}...]` : '') + (balanceFail ? ' [BALANCE CLUSTER]' : '') + (lowBalFail ? ' [LOW BAL HOLDERS]' : ''),
     };
   } catch (err: any) {
     console.error(`[Bundle] Check failed for ${mint.slice(0, 8)}...: ${err.message}`);
