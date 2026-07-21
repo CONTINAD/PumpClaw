@@ -516,7 +516,15 @@ function mirrorToWebhook2(body: any): void {
  *  Rick ignores webhook messages, so this sends from a real bot account when
  *  DISCORD_BOT_TOKEN + DISCORD_CALL_CHANNEL_IDS are set, falling back to the webhook. */
 async function sendPlainCA(mint: string): Promise<void> {
-  const body = { content: mint, allowed_mentions: { parse: [] } };
+  const content = CONFIG.CA_MESSAGE_TEMPLATE.replace('{mint}', mint);
+  // If the template tags a bot (e.g. Rick), allow exactly those user mentions to land
+  const mentionedUsers = [...content.matchAll(/<@!?(\d+)>/g)].map(m => m[1]);
+  const body = {
+    content,
+    allowed_mentions: mentionedUsers.length > 0
+      ? { parse: [], users: mentionedUsers }
+      : { parse: [] },
+  };
 
   if (CONFIG.DISCORD_BOT_TOKEN && CONFIG.DISCORD_CALL_CHANNEL_IDS.length > 0) {
     for (const channelId of CONFIG.DISCORD_CALL_CHANNEL_IDS) {

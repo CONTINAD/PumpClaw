@@ -14,6 +14,9 @@ export const CONFIG = {
   DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN || '',
   DISCORD_CALL_CHANNEL_IDS: (process.env.DISCORD_CALL_CHANNEL_IDS || '')
     .split(',').map(s => s.trim()).filter(Boolean),
+  // Message posted after each call so Rick registers it. {mint} is replaced with the CA.
+  // Rick accepts ".x <ca>" or a direct tag, e.g. "<@1081815963990761542> {mint}"
+  CA_MESSAGE_TEMPLATE: process.env.CA_MESSAGE_TEMPLATE || '.x {mint}',
   DISCORD_BIG_MILESTONE_THRESHOLD: 10,  // ping caller role only on milestones >= this
   PUMPFUN_API: 'https://frontend-api-v3.pump.fun',
   DEXSCREENER_API: 'https://api.dexscreener.com',
