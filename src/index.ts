@@ -1,10 +1,10 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { CONFIG } from './config.js';
 import { scrapeTrendingPosts } from './telegram.js';
 import { fetchCoinDetails } from './pumpfun.js';
 import { fetchBatchMarketData, fetchSingleMarketData, getSolPrice, type MarketData } from './dexscreener.js';
-import { sendAlert, updateWithPerformance, sendMilestoneAlert, sendLeaderboard, sendMonthlyLeaderboard, fmtUsd, fmtPct, type LeaderboardEntry, type MonthlyLeaderboardEntry } from './discord.js';
+import { sendAlert, updateWithPerformance, sendMilestoneAlert, sendLeaderboard, sendMonthlyLeaderboard, sendFullCallListReport, fmtUsd, fmtPct, type LeaderboardEntry, type MonthlyLeaderboardEntry } from './discord.js';
 import { PerformanceTracker, type PerformanceSnapshot } from './tracker.js';
 import { PaperTrader } from './paper-trader.js';
 import { Trader } from './trader.js';
@@ -630,12 +630,46 @@ async function positionMonitorLoop() {
 
 // ── Main ────────────────────────────────────────────────────
 
+/** One-shot: post the full last-30-days call report when SEND_MONTH_REPORT is set to a
+ *  new value (e.g. "jul2026"). A marker file in DATA_DIR keeps restarts from re-sending —
+ *  change the env value to trigger another report. */
+async function maybeSendMonthReport() {
+  const tag = process.env.SEND_MONTH_REPORT;
+  if (!tag) return;
+  const marker = join(CONFIG.DATA_DIR, `month-report-${tag}.sent`);
+  if (existsSync(marker)) return;
+
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const calls = tracker.getActiveCalls().filter(c => c.entryTime >= cutoff);
+  log(`📋 SEND_MONTH_REPORT=${tag} — sending full report for ${calls.length} calls from last 30 days`);
+
+  // Refresh ATH peaks with live prices first (dead coins keep their stored peak)
+  try {
+    const marketData = await fetchBatchMarketData(calls.map(c => c.mint));
+    for (const rec of calls) {
+      const m = marketData.get(rec.mint);
+      if (m && m.priceUsd > 0 && rec.entryPrice > 0) {
+        const mult = m.priceUsd / rec.entryPrice;
+        if (mult > rec.peakMultiplier) tracker.updatePeak(rec.mint, m.priceUsd, m.marketCap);
+      }
+    }
+  } catch (err: any) {
+    log(`⚠ Peak refresh failed (using stored peaks): ${err.message}`);
+  }
+
+  await sendFullCallListReport('Last 30 Days', calls);
+  writeFileSync(marker, new Date().toISOString());
+  log(`📋 Month report sent (${calls.length} calls)`);
+}
+
 async function main() {
   // Ensure data directory exists (important for Railway volumes)
   mkdirSync(CONFIG.DATA_DIR, { recursive: true });
 
   // Start dashboard HTTP server FIRST so Railway health check passes
   startDashboard();
+
+  maybeSendMonthReport().catch(err => log(`⚠ Month report failed: ${err.message}`));
 
   console.log('');
   console.log('╔═══════════════════════════════════════════════════╗');

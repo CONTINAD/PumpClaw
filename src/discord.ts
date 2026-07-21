@@ -724,6 +724,69 @@ export async function sendMonthlyLeaderboard(
   }
 }
 
+/** Send a full call-list report: stats header + EVERY call in the period with its ATH multiplier. */
+export async function sendFullCallListReport(label: string, calls: CallRecord[]): Promise<void> {
+  const sorted = [...calls].sort((a, b) => b.peakMultiplier - a.peakMultiplier);
+
+  const hit2x = sorted.filter(c => c.peakMultiplier >= 2).length;
+  const hit5x = sorted.filter(c => c.peakMultiplier >= 5).length;
+  const hit10x = sorted.filter(c => c.peakMultiplier >= 10).length;
+  const avgPeak = sorted.length > 0 ? sorted.reduce((s, c) => s + c.peakMultiplier, 0) / sorted.length : 0;
+
+  const post = async (body: any) => {
+    mirrorToWebhook2(body);
+    const res = await fetch(`${CONFIG.DISCORD_WEBHOOK}?wait=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) console.error(`[Discord] CallList send failed ${res.status}: ${await res.text()}`);
+    await new Promise(r => setTimeout(r, 700)); // webhook rate limit headroom
+  };
+
+  // ── Header embed with stats ──
+  const head: string[] = [];
+  head.push(`> **${sorted.length}** calls  ·  ranked by ATH from entry`);
+  head.push('');
+  head.push('```');
+  head.push(`  Hit 2X+    ${String(hit2x).padStart(4)}  (${sorted.length ? Math.round(hit2x / sorted.length * 100) : 0}%)`);
+  head.push(`  Hit 5X+    ${String(hit5x).padStart(4)}  (${sorted.length ? Math.round(hit5x / sorted.length * 100) : 0}%)`);
+  head.push(`  Hit 10X+   ${String(hit10x).padStart(4)}  (${sorted.length ? Math.round(hit10x / sorted.length * 100) : 0}%)`);
+  head.push(`  Avg Peak   ${avgPeak.toFixed(1).padStart(5)}X`);
+  head.push('```');
+  if (sorted.length > 0) {
+    head.push(`🏆  Best: **$${sorted[0].symbol}** peaked at **${sorted[0].peakMultiplier.toFixed(1)}X** (${fmtUsd(sorted[0].entryMC)} → ${fmtUsd(sorted[0].peakMC)})`);
+  }
+  await post({
+    embeds: [{
+      author: { name: 'PumpClaw', icon_url: 'https://pump.fun/icon.png' },
+      title: `📋  ${label} — Full Call History`,
+      description: head.join('\n'),
+      color: hit10x >= 3 ? 0x00ff88 : hit5x >= 5 ? 0xffd700 : 0x4d8eff,
+      timestamp: new Date().toISOString(),
+    }],
+  });
+
+  // ── Chunked list embeds (25 calls each) ──
+  const CHUNK = 25;
+  for (let i = 0; i < sorted.length; i += CHUNK) {
+    const chunk = sorted.slice(i, i + CHUNK);
+    const lines = chunk.map((c, j) => {
+      const rank = i + j + 1;
+      const bar = c.peakMultiplier >= 2 ? '🟩' : c.peakMultiplier >= 1 ? '🟨' : '🟥';
+      const peak = c.peakMultiplier >= 1 ? c.peakMultiplier.toFixed(1) : c.peakMultiplier.toFixed(2);
+      return `\`${String(rank).padStart(3)}\` ${bar} **$${c.symbol}**  ·  **${peak}X** ATH  ·  ${fmtUsd(c.entryMC)} → ${fmtUsd(c.peakMC)}`;
+    });
+    await post({
+      embeds: [{
+        description: lines.join('\n'),
+        color: 0x2f3136,
+        footer: { text: `${i + 1}–${i + chunk.length} of ${sorted.length}` },
+      }],
+    });
+  }
+}
+
 /** Send a monthly report built from raw CallRecords. */
 export async function sendMonthlyReportFromCalls(
   month: string,
