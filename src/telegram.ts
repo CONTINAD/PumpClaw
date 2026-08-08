@@ -116,10 +116,16 @@ const MSG_ID_PATTERN = /data-post="solearlytrending\/(\d+)"/g;
 export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
   let lastErr: Error | null = null;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // Attempts 1-3 rotate proxies (when configured); attempt 4 always goes DIRECT.
+  // Paid proxies expire — without this fallback, dead proxies silently kill the
+  // whole call pipeline even when the host's own IP can reach t.me fine.
+  for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-      const proxy = getNextProxy();
+      const proxy = attempt < 3 ? getNextProxy() : null;
+      if (attempt === 3 && PROXY_LIST.length > 0) {
+        console.log('[Telegram] All proxy attempts failed — falling back to direct fetch');
+      }
 
       let html: string;
       if (proxy) {
@@ -129,7 +135,7 @@ export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
         if (proxyRes.status !== 200) {
           console.error(`[Telegram] HTTP ${proxyRes.status} via proxy (attempt ${attempt + 1})`);
           lastErr = new Error(`HTTP ${proxyRes.status}`);
-          if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+          if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
           continue;
         }
         html = proxyRes.body;
@@ -146,7 +152,7 @@ export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
         if (!res.ok) {
           console.error(`[Telegram] HTTP ${res.status} (attempt ${attempt + 1})`);
           lastErr = new Error(`HTTP ${res.status}`);
-          if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+          if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
           continue;
         }
         html = await res.text();
@@ -198,11 +204,11 @@ export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
     } catch (err: any) {
       lastErr = err;
       console.error(`[Telegram] Scrape error (attempt ${attempt + 1}): ${err.message}`);
-      if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+      if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
     }
   }
 
-  console.error(`[Telegram] All 3 proxy attempts failed: ${lastErr?.message}`);
+  console.error(`[Telegram] All 4 attempts (3 proxy + 1 direct) failed: ${lastErr?.message}`);
 
   // Fallback: try direct fetch without proxy
   if (PROXY_LIST.length > 0) {
