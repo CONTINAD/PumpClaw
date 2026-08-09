@@ -10,6 +10,15 @@ import type { CallRecord } from './tracker.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 GlobalFonts.registerFromPath(join(__dirname, '..', 'assets', 'PressStart2P.ttf'), 'PixelFont');
 
+const LOGO_PATH = join(__dirname, '..', 'assets', 'pumpclaw-logo.png');
+let _logo: Awaited<ReturnType<typeof loadImage>> | null | undefined;
+async function getLogo() {
+  if (_logo === undefined) {
+    try { _logo = await loadImage(LOGO_PATH); } catch { _logo = null; }
+  }
+  return _logo;
+}
+
 const W = 1200, H = 675;
 const GREEN = '#9be826';
 const RED = '#ff5252';
@@ -59,6 +68,30 @@ function drawClaw(ctx: SKRSContext2D, x: number, y: number, scale: number, color
   ctx.restore();
 }
 
+async function drawLogoFallback(ctx: SKRSContext2D, cx: number, cy: number, cr: number): Promise<void> {
+  const logo = await getLogo();
+  if (!logo) { drawClaw(ctx, cx - 130, cy - 140, 11, 'rgba(255,215,94,0.5)'); return; }
+  ctx.save();
+  ctx.shadowColor = 'rgba(80,220,140,0.8)';
+  ctx.shadowBlur = 60;
+  ctx.beginPath();
+  ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.drawImage(logo, cx - cr, cy - cr, cr * 2, cr * 2);
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
 export interface CardData {
   rec: CallRecord;
   peakMult: number;
@@ -88,12 +121,24 @@ export async function renderPnlCard(data: CardData): Promise<Buffer> {
   ctx.roundRect(6, 6, W - 12, H - 12, 28);
   ctx.stroke();
 
-  // ── Brand (top-left) ──
-  drawClaw(ctx, 36, 30, 2.2, GOLD);
+  // ── Brand (top-left): real logo in a circle + wordmark ──
+  const logo = await getLogo();
+  if (logo) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(64, 60, 30, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.clip();
+    ctx.drawImage(logo, 34, 30, 60, 60);
+    ctx.restore();
+  } else {
+    drawClaw(ctx, 36, 30, 2.2, GOLD);
+  }
   ctx.font = '22px PixelFont';
   ctx.fillStyle = GOLD;
   ctx.textAlign = 'left';
-  ctx.fillText('PumpClaw', 104, 68);
+  ctx.fillText('PumpClaw', 110, 68);
 
   // ── Coin image (left, circular w/ glow) ──
   const cx = 300, cy = 400, cr = 190;
@@ -120,9 +165,9 @@ export async function renderPnlCard(data: CardData): Promise<Buffer> {
       ctx.beginPath();
       ctx.arc(cx, cy, cr, 0, Math.PI * 2);
       ctx.stroke();
-    } catch { drawClaw(ctx, cx - 130, cy - 140, 11, 'rgba(255,215,94,0.5)'); }
+    } catch { await drawLogoFallback(ctx, cx, cy, cr); }
   } else {
-    drawClaw(ctx, cx - 130, cy - 140, 11, 'rgba(255,215,94,0.5)');
+    await drawLogoFallback(ctx, cx, cy, cr);
   }
 
   // ── Right column (right-aligned) ──
