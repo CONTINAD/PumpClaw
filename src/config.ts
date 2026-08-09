@@ -19,9 +19,13 @@ export const CONFIG = {
   DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN || '',
   DISCORD_CALL_CHANNEL_IDS: (process.env.DISCORD_CALL_CHANNEL_IDS || '')
     .split(',').map(s => s.trim()).filter(Boolean),
-  // Message posted after each call so Rick registers it. {mint} is replaced with the CA.
-  // Rick needs to be tagged to scan a bot's message — CA followed by the Rick @.
-  CA_MESSAGE_TEMPLATE: process.env.CA_MESSAGE_TEMPLATE || '{mint} <@1081815963990761542>',
+  // Message posted after each call. {mint} is replaced with the CA.
+  CA_MESSAGE_TEMPLATE: process.env.CA_MESSAGE_TEMPLATE || '{mint}',
+  // Separate webhook for trade activity (entries/exits) so the calls channel stays clean
+  TRADES_WEBHOOK: process.env.TRADES_WEBHOOK || 'https://discord.com/api/webhooks/1536130988722098186/qDIDNixc4jzM1175SN9_9aj3XvwWo4qk4MQJ2bhbJFyappAnnCMtucME6T943eLPhvaE',
+  // Discord application (slash commands — /mog PnL card)
+  DISCORD_APP_ID: process.env.DISCORD_APP_ID || '1528962115778642090',
+  DISCORD_APP_PUBLIC_KEY: process.env.DISCORD_APP_PUBLIC_KEY || '',
   DISCORD_BIG_MILESTONE_THRESHOLD: 10,  // ping caller role only on milestones >= this
   PUMPFUN_API: 'https://frontend-api-v3.pump.fun',
   DEXSCREENER_API: 'https://api.dexscreener.com',

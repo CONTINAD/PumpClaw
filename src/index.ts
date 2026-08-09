@@ -14,6 +14,7 @@ import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
 import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
+import { registerSlashCommands } from './interactions.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
 // ── Leaderboard timestamp persistence ───────────────────────
@@ -670,6 +671,7 @@ async function main() {
   startDashboard();
 
   maybeSendMonthReport().catch(err => log(`⚠ Month report failed: ${err.message}`));
+  registerSlashCommands().catch(() => {});
 
   console.log('');
   console.log('╔═══════════════════════════════════════════════════╗');

@@ -6,6 +6,7 @@ import { createHash } from 'crypto';
 import { CONFIG, saveSettingsOverrides } from './config.js';
 import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldings } from './wallet.js';
 import { taskManager, type TradeTask } from './tasks.js';
+import { verifyInteractionSignature, handleInteraction } from './interactions.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import type { CallRecord } from './tracker.js';
 
@@ -2038,6 +2039,29 @@ export function startDashboard(port?: number): void {
   const server = createServer((req, res) => {
     const url = req.url ?? '/';
     const pathname = url.split('?')[0];
+
+    // POST /interactions — Discord slash commands (/mog). Signature over the RAW body.
+    if (req.method === 'POST' && pathname === '/interactions') {
+      let raw = '';
+      req.on('data', (c: Buffer) => { raw += c; if (raw.length > 128_000) req.destroy(); });
+      req.on('end', () => {
+        const sig = String(req.headers['x-signature-ed25519'] ?? '');
+        const ts = String(req.headers['x-signature-timestamp'] ?? '');
+        if (!verifyInteractionSignature(sig, ts, raw)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid request signature' }));
+          return;
+        }
+        handleInteraction(JSON.parse(raw)).then(out => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(out));
+        }).catch(err => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ type: 4, data: { content: 'Card failed: ' + err.message, flags: 64 } }));
+        });
+      });
+      return;
+    }
 
     // POST /settings | /tasks | /task — collect body then handle
     if (req.method === 'POST' && (pathname === '/settings' || pathname === '/tasks' || pathname === '/task')) {

@@ -169,7 +169,7 @@ class TaskManager {
     // Every task skipped (usually balance) — tell the owner in Discord, max once per 30 min
     if (bought === 0 && Date.now() - this.lastNoFillAlert > 30 * 60 * 1000) {
       this.lastNoFillAlert = Date.now();
-      sendOpsAlert(`Call **$${symbol}** fired but **0/${tasks.length} task(s) bought** — most likely low wallet balance. Check the Tasks page.`).catch(() => {});
+      sendOpsAlert(`Call **$${symbol}** fired but **0/${tasks.length} task(s) bought** — most likely low wallet balance. Check the Tasks page.`, CONFIG.TRADES_WEBHOOK).catch(() => {});
     }
     return bought;
   }
