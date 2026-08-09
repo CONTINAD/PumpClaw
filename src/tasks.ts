@@ -12,6 +12,7 @@ import { CONFIG } from './config.js';
 import { Trader, type RealExit, type RealPosition } from './trader.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, type Strategy } from './strategy.js';
 import { walletSource, getWallet } from './wallet.js';
+import { sendTradeActivity, sendOpsAlert } from './discord.js';
 
 const TASKS_FILE = `${CONFIG.DATA_DIR}/tasks.json`;
 
@@ -142,7 +143,9 @@ class TaskManager {
     return this.all().filter(t => t.enabled);
   }
 
-  /** Buy on all enabled tasks in parallel. */
+  private lastNoFillAlert = 0;
+
+  /** Buy on all enabled tasks in parallel. Posts each fill to Discord. */
   async buyAll(mint: string, symbol: string, name: string, price: number, mc: number): Promise<number> {
     const tasks = this.enabledTasks();
     if (tasks.length === 0) return 0;
@@ -151,19 +154,42 @@ class TaskManager {
     );
     let bought = 0;
     results.forEach((r, i) => {
-      if (r.status === 'fulfilled' && r.value) bought++;
-      else if (r.status === 'rejected') console.error(`[Tasks] Buy error (${tasks[i].name}): ${r.reason?.message}`);
+      if (r.status === 'fulfilled' && r.value) {
+        bought++;
+        const pos = r.value;
+        sendTradeActivity(
+          tasks[i].name, 'buy', symbol, mint,
+          `**${pos.entrySol} SOL** at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC`,
+          pos.entryTx,
+        ).catch(() => {});
+      } else if (r.status === 'rejected') {
+        console.error(`[Tasks] Buy error (${tasks[i].name}): ${r.reason?.message}`);
+      }
     });
+    // Every task skipped (usually balance) — tell the owner in Discord, max once per 30 min
+    if (bought === 0 && Date.now() - this.lastNoFillAlert > 30 * 60 * 1000) {
+      this.lastNoFillAlert = Date.now();
+      sendOpsAlert(`Call **$${symbol}** fired but **0/${tasks.length} task(s) bought** — most likely low wallet balance. Check the Tasks page.`).catch(() => {});
+    }
     return bought;
   }
 
-  /** Check price triggers for one mint across all tasks. Returns exits tagged by task. */
+  /** Check price triggers for one mint across all tasks. Returns exits tagged by task
+   *  and posts each executed sell to Discord. */
   async checkAll(mint: string, price: number, mc: number): Promise<TaskExitEvent[]> {
     const events: TaskExitEvent[] = [];
     for (const task of this.all()) {
       try {
         const exits = await this.traderFor(task).checkPosition(mint, price, mc);
-        for (const exit of exits) events.push({ task, exit });
+        for (const exit of exits) {
+          events.push({ task, exit });
+          const pos = this.traderFor(task).getPosition(mint);
+          sendTradeActivity(
+            task.name, 'sell', pos?.symbol ?? mint.slice(0, 8), mint,
+            `${exit.label} at **${exit.multiplierAtExit.toFixed(2)}X** → **+${exit.solReceived.toFixed(4)} SOL**`,
+            exit.txSignature,
+          ).catch(() => {});
+        }
       } catch (err: any) {
         console.error(`[Tasks] Check error (${task.name}/${mint.slice(0, 8)}): ${err.message}`);
       }

@@ -563,6 +563,34 @@ async function sendPlainCA(mint: string): Promise<void> {
   }
 }
 
+/** Compact trade-execution notice (task-tagged) so real buys/sells are visible in
+ *  Discord, not just Railway logs. No role ping — informational. */
+export async function sendTradeActivity(
+  taskName: string,
+  kind: 'buy' | 'sell',
+  symbol: string,
+  mint: string,
+  detail: string,
+  tx?: string,
+): Promise<void> {
+  const emoji = kind === 'buy' ? '🟦' : '💰';
+  const verb = kind === 'buy' ? 'Bought' : 'Sold';
+  const txLink = tx && tx.length > 40 ? `  ·  [tx](https://solscan.io/tx/${tx})` : '';
+  const body = {
+    embeds: [{
+      description: `${emoji} **[${taskName}]** ${verb} **$${symbol}** — ${detail}${txLink}`,
+      color: kind === 'buy' ? 0x3b82f6 : 0x9b59b6,
+    }],
+  };
+  try {
+    await fetch(CONFIG.DISCORD_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch { /* best effort */ }
+}
+
 /** Plain ops warning to the main webhook — for infra failures the owner must see
  *  (e.g. RPC key maxed out silently blocking all calls). Caller handles cooldown. */
 export async function sendOpsAlert(message: string): Promise<void> {

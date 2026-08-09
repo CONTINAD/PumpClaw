@@ -1030,6 +1030,47 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   </div>
 </div>
 
+<!-- ── running tasks ── -->
+<div class="card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;margin:16px 0">
+  <h3 style="font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">🤖 Trading Tasks <span id="tk-status" style="margin-left:auto;font-size:11px;float:right;text-transform:none;letter-spacing:0;color:var(--text3)"></span></h3>
+  <div id="tk-body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;font-size:13px"><span style="color:var(--text3)">Loading…</span></div>
+</div>
+<script>
+(function () {
+  async function tick() {
+    const body = document.getElementById('tk-body');
+    const st = document.getElementById('tk-status');
+    try {
+      const res = await fetch('/api/tasks-summary');
+      if (res.status === 401) {
+        body.innerHTML = '<span style="color:var(--text3)">🔒 <a href="/settings" style="color:#3b82f6">Log in</a> to view tasks</span>';
+        return;
+      }
+      const d = await res.json();
+      if (!d.tasks.length) {
+        body.innerHTML = '<span style="color:var(--text3)">No tasks — <a href="/tasks" style="color:#3b82f6">create one</a></span>';
+        return;
+      }
+      st.textContent = d.tasks.filter(t => t.enabled).length + '/' + d.tasks.length + ' running';
+      body.innerHTML = d.tasks.map(t =>
+        '<a href="/task?id=' + t.id + '" style="text-decoration:none;color:var(--text);background:var(--bg1);border:1px solid var(--border);border-left:3px solid ' + (t.enabled ? '#10b981' : '#4a5570') + ';border-radius:8px;padding:10px 12px;display:block">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center"><b>' + t.name + '</b>' +
+        '<span style="font-size:11px;color:' + (t.enabled ? '#10b981' : 'var(--text3)') + '">' + (t.enabled ? '● RUNNING' : '○ paused') + '</span></div>' +
+        '<div style="font-size:11px;color:var(--text2);margin:4px 0">' + t.strategy + '</div>' +
+        '<div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px">' +
+        '<span>◎ ' + (t.balance === null ? '—' : t.balance.toFixed(3)) + '</span>' +
+        '<span style="color:' + (t.pnl >= 0 ? '#10b981' : '#ef4444') + '">' + (t.pnl >= 0 ? '+' : '') + t.pnl + ' ◎</span>' +
+        '<span style="color:var(--text2)">' + t.open + ' open · ' + t.wins + '/' + t.closed + 'W</span></div></a>'
+      ).join('');
+    } catch (e) {
+      body.innerHTML = '<span style="color:var(--text3)">tasks unavailable — retrying</span>';
+    }
+  }
+  tick();
+  setInterval(tick, 20000);
+})();
+</script>
+
 <!-- ── live trades ── -->
 <div class="card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;margin:16px 0">
   <h3 style="font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
@@ -1820,6 +1861,11 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
   </form>
 
   <div class="card" style="max-width:none">
+    <h3>📊 Stats</h3>
+    <div id="stats-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;font-size:13px"><span style="color:var(--text3)">Loading…</span></div>
+    <canvas id="pnl-spark" height="60" style="width:100%;margin-top:12px"></canvas>
+  </div>
+  <div class="card" style="max-width:none">
     <h3>💼 Wallet holdings — on-chain, live <span id="h-status" style="margin-left:8px;font-size:11px;text-transform:none;letter-spacing:0;color:var(--text3)">loading…</span></h3>
     <div id="h-body" style="font-size:13px;color:var(--text3)">Loading…</div>
   </div>
@@ -1842,6 +1888,34 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
               if (m && (!prices[m] || (+pair.volume?.h24 || 0) > prices[m].vol)) prices[m] = { price: +pair.priceUsd, vol: +pair.volume?.h24 || 0 };
             }
           } catch (e) {}
+        }
+        // ── stats tiles + sparkline ──
+        if (d.stats) {
+          const s2 = d.stats;
+          const tile = (label, val, col) => '<div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--text3);text-transform:uppercase">' + label + '</div><div style="font-size:17px;font-weight:700;color:' + (col || 'var(--text)') + '">' + val + '</div></div>';
+          document.getElementById('stats-tiles').innerHTML =
+            tile('Realized PnL', (s2.realizedPnl >= 0 ? '+' : '') + s2.realizedPnl + ' ◎', s2.realizedPnl >= 0 ? '#10b981' : '#ef4444') +
+            tile('Win rate', s2.winPct + '% (' + s2.wins + '/' + s2.closed + ')') +
+            tile('Open now', d.open.length) +
+            tile('Best peak', s2.bestPeak + 'X', '#f59e0b') +
+            tile('Total deployed', s2.totalIn + ' ◎');
+          const cv = document.getElementById('pnl-spark');
+          if (cv && s2.curve.length > 1) {
+            const ctx = cv.getContext('2d');
+            const W = cv.width = cv.offsetWidth, H = cv.height;
+            const mn = Math.min(0, ...s2.curve), mx = Math.max(0, ...s2.curve), rng = (mx - mn) || 1;
+            ctx.clearRect(0, 0, W, H);
+            const zy = H - 6 - ((0 - mn) / rng) * (H - 12);
+            ctx.strokeStyle = '#1a2035'; ctx.beginPath(); ctx.moveTo(0, zy); ctx.lineTo(W, zy); ctx.stroke();
+            ctx.strokeStyle = s2.curve[s2.curve.length - 1] >= 0 ? '#10b981' : '#ef4444';
+            ctx.lineWidth = 1.6; ctx.beginPath();
+            s2.curve.forEach((v, i) => {
+              const x = (i / (s2.curve.length - 1)) * (W - 4) + 2;
+              const y = H - 6 - ((v - mn) / rng) * (H - 12);
+              i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+          }
         }
         let html = '<div style="margin-bottom:10px;font-size:14px;color:var(--text)">◎ <b>' + (d.sol === null ? '—' : d.sol.toFixed(4)) + ' SOL</b></div>';
         if (!d.holdings.length) {
@@ -2016,6 +2090,34 @@ export function startDashboard(port?: number): void {
       return;
     }
 
+    if (pathname === '/api/tasks-summary') {
+      if (!authOk(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'auth required' }));
+        return;
+      }
+      (async () => {
+        const tasks = taskManager.all();
+        const balances = await Promise.all(tasks.map(t =>
+          getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
+        const out = tasks.map((t, i) => {
+          const s = taskSummary(t);
+          return {
+            id: t.id, name: t.name, enabled: t.enabled,
+            strategy: describeStrategy(t.strategy),
+            balance: balances[i],
+            pnl: +s.pnl.toFixed(3), open: s.open, wins: s.wins, closed: s.closed,
+          };
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ tasks: out }));
+      })().catch(err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
+      return;
+    }
+
     if (pathname === '/api/task') {
       if (!authOk(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -2047,11 +2149,26 @@ export function startDashboard(port?: number): void {
           entryTime: pp.entryTime, remainingPct: pp.remainingPct, totalSolReturned: pp.totalSolReturned,
           trailingStopPrice: pp.trailingStopPrice, peakMultiplier: pp.peakMultiplier,
         }));
+        // Stats + cumulative realized PnL curve from closed positions
+        const closed = positions.filter(pp => pp.status === 'closed').sort((a, b) => (a.closedTime ?? 0) - (b.closedTime ?? 0));
+        let cum = 0;
+        const curve = closed.map(pp => { cum += pp.finalPnlSol ?? 0; return +cum.toFixed(4); });
+        const wins = closed.filter(pp => (pp.finalPnlSol ?? 0) > 0).length;
+        const best = closed.reduce((mx, pp) => Math.max(mx, pp.peakMultiplier ?? 1), 0);
+        const stats = {
+          realizedPnl: +cum.toFixed(4),
+          closed: closed.length,
+          wins,
+          winPct: closed.length ? Math.round(wins / closed.length * 100) : 0,
+          bestPeak: +best.toFixed(2),
+          totalIn: +closed.reduce((s2, pp) => s2 + pp.entrySol, 0).toFixed(3),
+          curve,
+        };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           id: task.id, name: task.name, enabled: task.enabled,
           strategy: describeStrategy(task.strategy),
-          sol,
+          sol, stats,
           holdings: holdings.map(h => ({ ...h, symbol: symByMint[h.mint] ?? null, isOpen: openMints.has(h.mint) })),
           open,
         }));
