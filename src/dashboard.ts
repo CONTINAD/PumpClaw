@@ -299,6 +299,242 @@ const C = {
   PINK: '#ec4899',
 };
 
+// ── Strategy Lab ────────────────────────────────────────────
+// Paper-trades EVERY recorded call through multiple exit strategies (peak-multiplier
+// model: price rises entry→peak then falls until the exit triggers). Same model the
+// -45% trailing switch was backtested with. Ignores path dips + slippage.
+
+function stratLadder(P: number, tps: [number, number][], trailDrop: number, sl = 0.75): number {
+  let proceeds = 0, remaining = 1, hitAny = false;
+  for (const [mult, frac] of tps) {
+    if (P >= mult) { proceeds += frac * mult; remaining -= frac; hitAny = true; } else break;
+  }
+  const allHit = P >= tps[tps.length - 1][0];
+  if (remaining > 1e-9) {
+    const exitMult = allHit ? Math.max(P * (1 - trailDrop), 1.0) : hitAny ? 1.0 : sl;
+    proceeds += remaining * exitMult;
+  }
+  return proceeds;
+}
+function stratTrailing(P: number, drop: number): number {
+  return Math.max(P * (1 - drop), 1 - drop);
+}
+function stratHybrid(P: number, tpMult: number, tpFrac: number, drop: number): number {
+  if (P >= tpMult) return tpFrac * tpMult + (1 - tpFrac) * Math.max(P * (1 - drop), 1 - drop);
+  return stratTrailing(P, drop);
+}
+
+const STRATEGIES: { key: string; name: string; color: string; fn: (P: number) => number }[] = [
+  { key: 'live',    name: '−45% trailing (LIVE)',         color: C.GREEN,  fn: P => stratTrailing(P, 0.45) },
+  { key: 'trail35', name: '−35% trailing',                color: C.CYAN,   fn: P => stratTrailing(P, 0.35) },
+  { key: 'trail55', name: '−55% trailing',                color: C.BLUE,   fn: P => stratTrailing(P, 0.55) },
+  { key: 'ladder',  name: 'TP ladder 1.5/2.5/4 (paper)',  color: C.ORANGE, fn: P => stratLadder(P, [[1.5, 0.4], [2.5, 0.3], [4, 0.2]], 0.45) },
+  { key: 'hyb3',    name: '40% @ 3X + trail −45%',        color: C.PURPLE, fn: P => stratHybrid(P, 3, 0.4, 0.45) },
+  { key: 'hyb2',    name: '50% @ 2X + trail −45%',        color: C.PINK,   fn: P => stratHybrid(P, 2, 0.5, 0.45) },
+];
+
+function buildStrategyData(range: TimeRange = 'all') {
+  let calls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+  calls = calls.filter(c => (c.peakMultiplier ?? 0) > 0);
+  if (range !== 'all') {
+    const cutoff = Date.now() - RANGE_MS[range];
+    calls = calls.filter(c => c.entryTime >= cutoff);
+  }
+  calls.sort((a, b) => a.entryTime - b.entryTime);
+  const n = calls.length;
+
+  const summaries: any[] = [];
+  const curves: Record<string, number[]> = {};
+  for (const s of STRATEGIES) {
+    let cum = 0, wins = 0, worst = Infinity, best = -Infinity, total = 0;
+    const curve: number[] = [];
+    for (const c of calls) {
+      const ret = s.fn(c.peakMultiplier);
+      total += ret;
+      cum += ret - 1;
+      curve.push(+cum.toFixed(3));
+      if (ret > 1.02) wins++;
+      if (ret < worst) worst = ret;
+      if (ret > best) best = ret;
+    }
+    curves[s.key] = curve;
+    summaries.push({
+      key: s.key, name: s.name, color: s.color,
+      avgPerCall: n > 0 ? +(total / n).toFixed(3) : 0,
+      totalPnl: +cum.toFixed(1),
+      winPct: n > 0 ? +(wins / n * 100).toFixed(0) : 0,
+      worst: n > 0 ? +worst.toFixed(2) : 0,
+      best: n > 0 ? +best.toFixed(1) : 0,
+    });
+  }
+  summaries.sort((a, b) => b.avgPerCall - a.avgPerCall);
+
+  const peaksAxis = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 7, 10, 15, 20, 30, 50, 75, 100, 125];
+  const payoutCurves = STRATEGIES.map(s => ({
+    key: s.key, name: s.name, color: s.color,
+    payouts: peaksAxis.map(P => +s.fn(P).toFixed(2)),
+  }));
+
+  const recent = [...calls].slice(-30).reverse().map(c => ({
+    symbol: c.symbol,
+    date: new Date(c.entryTime).toISOString().slice(5, 16).replace('T', ' '),
+    peak: +c.peakMultiplier.toFixed(2),
+    rets: STRATEGIES.map(s => +s.fn(c.peakMultiplier).toFixed(2)),
+  }));
+
+  return {
+    totalCalls: n,
+    avgPeak: n > 0 ? +(calls.reduce((s, c) => s + c.peakMultiplier, 0) / n).toFixed(2) : 0,
+    labels: calls.map(c => new Date(c.entryTime).toISOString().slice(5, 10)),
+    summaries, curves, peaksAxis, payoutCurves, recent,
+    strategyNames: STRATEGIES.map(s => ({ key: s.key, name: s.name, color: s.color })),
+  };
+}
+
+function buildStrategyHTML(d: ReturnType<typeof buildStrategyData>, activeRange: TimeRange = 'all'): string {
+  const tiles = d.summaries.map((s: any) => `
+    <div class="tile" style="border-top:2px solid ${s.color}">
+      <div class="tile-name">${s.name}</div>
+      <div class="tile-big" style="color:${s.color}">${s.avgPerCall}X</div>
+      <div class="tile-sub">avg per call · <b>${s.totalPnl > 0 ? '+' : ''}${s.totalPnl} SOL</b> total (1 SOL/call)</div>
+      <div class="tile-sub">${s.winPct}% wins · worst ${s.worst}X · best ${s.best}X</div>
+    </div>`).join('');
+
+  const summaryRows = d.summaries.map((s: any, i: number) => `
+    <tr>
+      <td>${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : ''} <span style="color:${s.color}">●</span> ${s.name}</td>
+      <td class="mono"><b>${s.avgPerCall}X</b></td>
+      <td class="mono">${s.totalPnl > 0 ? '+' : ''}${s.totalPnl}</td>
+      <td class="mono">${s.winPct}%</td>
+      <td class="mono">${s.worst}X</td>
+      <td class="mono">${s.best}X</td>
+    </tr>`).join('');
+
+  const recentRows = d.recent.map((r: any) => `
+    <tr>
+      <td><b>$${r.symbol}</b></td>
+      <td class="mono" style="color:var(--text2)">${r.date}</td>
+      <td class="mono"><b>${r.peak}X</b></td>
+      ${r.rets.map((x: number, i: number) => `<td class="mono" style="color:${x >= 1.02 ? C.GREEN : x <= 0.98 ? C.RED : 'var(--text2)'}">${x}X</td>`).join('')}
+    </tr>`).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="60">
+<title>PumpClaw Strategy Lab</title>
+<script src="/chart.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#06080d;--bg1:#0a0e17;--bg2:#0f1420;--bg3:#151b28;--border:#1a2035;--border2:#242e44;--text:#c8d3e6;--text2:#7a879e;--text3:#4a5570}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px}
+.mono{font-family:'SF Mono',Menlo,Consolas,monospace}
+.topbar{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--bg1)}
+.topbar h1{font-size:17px}
+.topbar a{color:var(--text2);text-decoration:none;font-size:13px}
+.topbar a:hover{color:var(--text)}
+.wrap{max-width:1200px;margin:0 auto;padding:20px 22px}
+.tf{display:flex;gap:4px;margin:14px 0}
+.tf a{padding:4px 12px;border-radius:6px;color:var(--text2);text-decoration:none;font-size:12px;border:1px solid var(--border)}
+.tf a.active{background:var(--bg3);color:var(--text);border-color:var(--border2)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:16px 0}
+.tile{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px}
+.tile-name{font-size:12px;color:var(--text2);margin-bottom:6px}
+.tile-big{font-size:26px;font-weight:700}
+.tile-sub{font-size:11px;color:var(--text3);margin-top:4px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;margin:16px 0}
+.card h3{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--text3);text-align:left;padding:6px 10px;font-size:11px;text-transform:uppercase}
+td{padding:6px 10px;border-top:1px solid var(--border)}
+.note{font-size:11px;color:var(--text3);margin:10px 0 30px}
+canvas{max-height:340px}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>🧪 Strategy Lab</h1>
+  <a href="/?range=${activeRange}">← Dashboard</a>
+</div>
+<div class="wrap">
+  <div class="tf">
+    ${(['24h', '7d', 'all'] as TimeRange[]).map(r =>
+      `<a href="/strategies?range=${r}" class="${activeRange === r ? 'active' : ''}">${RANGE_LABELS[r]}</a>`).join('')}
+    <span style="margin-left:auto;font-size:12px;color:var(--text3)">${d.totalCalls} calls · avg peak ${d.avgPeak}X · auto-refresh 60s</span>
+  </div>
+
+  <div class="tiles">${tiles}</div>
+
+  <div class="card">
+    <h3>Cumulative PnL — 1 SOL per call, every strategy on every call</h3>
+    <canvas id="equity"></canvas>
+  </div>
+
+  <div class="card">
+    <h3>Payout vs coin peak — what 1 SOL returns when a call peaks at X</h3>
+    <canvas id="payout"></canvas>
+  </div>
+
+  <div class="card">
+    <h3>Strategy summary</h3>
+    <table>
+      <tr><th>Strategy</th><th>Avg/call</th><th>Total PnL (SOL)</th><th>Win%</th><th>Worst</th><th>Best</th></tr>
+      ${summaryRows}
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Last ${d.recent.length} calls — payout per strategy</h3>
+    <table>
+      <tr><th>Coin</th><th>Called</th><th>Peak</th>${d.strategyNames.map((s: any) => `<th style="color:${s.color}">${s.name.split(' ')[0]} ${s.name.includes('LIVE') ? '(live)' : s.key === 'ladder' ? '(paper)' : ''}</th>`).join('')}</tr>
+      ${recentRows}
+    </table>
+  </div>
+
+  <div class="note">Model: price rises entry→peak, then falls until the exit fires. Assumes fills at exact stop levels — ignores dips on the way up, slippage, and fees. Live trading fills will be worse on collapsing microcaps. Paper trader (real fills simulation) runs the ladder as the control.</div>
+</div>
+
+<script>
+const D = ${JSON.stringify({ labels: d.labels, curves: d.curves, names: d.strategyNames, peaksAxis: d.peaksAxis, payoutCurves: d.payoutCurves })};
+const gridC = '#1a2035', tickC = '#7a879e';
+const common = { responsive: true, plugins: { legend: { labels: { color: tickC, boxWidth: 12, font: { size: 11 } } } } };
+
+new Chart(document.getElementById('equity'), {
+  type: 'line',
+  data: {
+    labels: D.labels,
+    datasets: D.names.map(s => ({
+      label: s.name, data: D.curves[s.key], borderColor: s.color,
+      borderWidth: s.key === 'live' ? 2.5 : 1.5, pointRadius: 0, tension: 0.15,
+    })),
+  },
+  options: { ...common, scales: {
+    x: { ticks: { color: tickC, maxTicksLimit: 12 }, grid: { color: gridC } },
+    y: { ticks: { color: tickC, callback: v => v + ' SOL' }, grid: { color: gridC } },
+  } },
+});
+
+new Chart(document.getElementById('payout'), {
+  type: 'line',
+  data: {
+    labels: D.peaksAxis.map(p => p + 'X'),
+    datasets: D.payoutCurves.map(s => ({
+      label: s.name, data: s.payouts, borderColor: s.color,
+      borderWidth: s.key === 'live' ? 2.5 : 1.5, pointRadius: 2, tension: 0.15,
+    })),
+  },
+  options: { ...common, scales: {
+    x: { ticks: { color: tickC }, grid: { color: gridC }, title: { display: true, text: 'coin peak from entry', color: tickC } },
+    y: { type: 'logarithmic', ticks: { color: tickC, callback: v => v + 'X' }, grid: { color: gridC } },
+  } },
+});
+</script>
+</body>
+</html>`;
+}
+
 function buildHTML(data: ReturnType<typeof buildDashboardData>, activeRange: TimeRange = 'all'): string {
   const d = data;
   const o = d.overview;
@@ -777,6 +1013,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     ${(['1h','6h','12h','24h','7d','all'] as TimeRange[]).map(r =>
       `<a href="/?range=${r}" class="${activeRange===r?'active':''}">${RANGE_LABELS[r]}</a>`
     ).join('')}
+    <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
   </div>
 </div>
 
@@ -1206,6 +1443,24 @@ export function startDashboard(port?: number): void {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
+      }
+    } else if (pathname === '/strategies') {
+      try {
+        const range = parseRange(url);
+        const html = buildStrategyHTML(buildStrategyData(range), range);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building strategy lab: ' + err.message + '\n' + err.stack);
+      }
+    } else if (pathname === '/api/strategies') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(buildStrategyData(parseRange(url)), null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
       }
     } else if (pathname === '/api/correlations') {
       try {
