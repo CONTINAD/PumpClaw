@@ -17,7 +17,7 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 // ── Rate limiter for Jupiter quote API ──
 // Jupiter free tier allows ~30 req/min. We space out non-buy quote calls.
 let _lastQuoteTime = 0;
-const QUOTE_MIN_GAP_MS = 2500; // 2.5s between price-check quotes
+const QUOTE_MIN_GAP_MS = 1200; // ~50 quotes/min — near Jupiter lite-tier ceiling
 
 async function rateLimitedQuote(): Promise<void> {
   const now = Date.now();

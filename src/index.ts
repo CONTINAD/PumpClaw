@@ -586,8 +586,8 @@ async function positionMonitorLoop() {
       continue;
     }
 
-    // 1 position = 2s, 2 = 3s, 3 = 4s, etc. (base 2s + 1s per extra position)
-    const delay = CONFIG.TRADE_MONITOR_INTERVAL_MS + (openPositions.length - 1) * 1000;
+    // Flat cadence — Jupiter quote pacing self-throttles, no need to add per-position lag
+    const delay = CONFIG.TRADE_MONITOR_INTERVAL_MS;
     await new Promise(r => setTimeout(r, delay));
 
     try {
@@ -627,6 +627,32 @@ async function positionMonitorLoop() {
       }
     } catch (err: any) {
       console.error(`[Monitor] Error: ${err.message}`);
+    }
+  }
+}
+
+// ── DexScreener sweep (5s) — coarse but BATCHED price check across ALL open
+//    positions (real + shadow) in one API call. Catches fast dumps between
+//    Jupiter rounds and gives the shadow fleet fine-grained exit fidelity. ──
+
+async function dexSweepLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 5_000));
+    try {
+      const open = taskManager.openPositions();
+      if (open.length === 0) continue;
+      const mints = [...new Set(open.map(({ pos }) => pos.mint))];
+      const data = await fetchBatchMarketData(mints);
+      for (const mint of mints) {
+        const m = data.get(mint);
+        if (!m || m.priceUsd <= 0) continue;
+        const events = await taskManager.checkAll(mint, m.priceUsd, m.marketCap);
+        for (const { task, exit } of events) {
+          log(`${task.paper ? '📄 SHADOW' : '💰 REAL'} EXIT [${task.name}]: ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL`);
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Sweep] Error: ${err.message}`);
     }
   }
 }
@@ -754,10 +780,13 @@ async function main() {
 
 
 
-  // Launch the fast position monitor in parallel
+  // Launch the fast position monitor + batched price sweep in parallel
   if (CONFIG.TRADE_ENABLED) {
     positionMonitorLoop().catch(err => {
       console.error(`[Monitor] Fatal: ${err.message}`);
+    });
+    dexSweepLoop().catch(err => {
+      console.error(`[Sweep] Fatal: ${err.message}`);
     });
   }
 

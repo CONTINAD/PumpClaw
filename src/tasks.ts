@@ -202,9 +202,23 @@ class TaskManager {
     return bought;
   }
 
+  // Mints currently mid-check — the Jupiter loop and the DexScreener sweep overlap,
+  // and a concurrent double-check could double-fire an exit (paper fills especially).
+  private checking = new Set<string>();
+
   /** Check price triggers for one mint across all tasks. Returns exits tagged by task
    *  and posts each executed sell to Discord. */
   async checkAll(mint: string, price: number, mc: number): Promise<TaskExitEvent[]> {
+    if (this.checking.has(mint)) return [];
+    this.checking.add(mint);
+    try {
+      return await this._checkAllInner(mint, price, mc);
+    } finally {
+      this.checking.delete(mint);
+    }
+  }
+
+  private async _checkAllInner(mint: string, price: number, mc: number): Promise<TaskExitEvent[]> {
     const events: TaskExitEvent[] = [];
     for (const task of this.all()) {
       try {
