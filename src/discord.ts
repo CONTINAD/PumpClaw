@@ -563,6 +563,21 @@ async function sendPlainCA(mint: string): Promise<void> {
   }
 }
 
+/** Plain ops warning to the main webhook — for infra failures the owner must see
+ *  (e.g. RPC key maxed out silently blocking all calls). Caller handles cooldown. */
+export async function sendOpsAlert(message: string): Promise<void> {
+  try {
+    await fetch(CONFIG.DISCORD_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: `🚨 **PumpClaw ops:** ${message}`,
+        allowed_mentions: { parse: [] },
+      }),
+    });
+  } catch { /* best effort */ }
+}
+
 export async function sendAlert(
   coin: PumpFunCoin,
   market: MarketData,

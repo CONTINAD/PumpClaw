@@ -6,6 +6,10 @@ const DATA_DIR = process.env.DATA_DIR || join(__dirname, '..', 'data');
 
 export const CONFIG = {
   HELIUS_RPC: process.env.HELIUS_RPC || '',
+  // Backup RPC endpoints (comma-separated) tried when the primary fails — e.g. a spare
+  // Helius/Alchemy/QuickNode key. Empty = no fallback.
+  RPC_FALLBACKS: (process.env.RPC_FALLBACKS || '')
+    .split(',').map(s => s.trim()).filter(Boolean),
   DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK || '',
   DISCORD_WEBHOOK_2: process.env.DISCORD_WEBHOOK_2 || 'https://discord.com/api/webhooks/1498748255478219012/A9lvI1Uo5QHkxuRQcm1yO96abLuLV99RLlRos9sULB_bk_shfyi6BpULq_eaUpQnbHt0',
   DISCORD_CALLER_ROLE_ID: process.env.DISCORD_CALLER_ROLE_ID || '1499104951912370437',

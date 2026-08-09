@@ -1,4 +1,5 @@
 import { CONFIG } from './config.js';
+import { sendOpsAlert } from './discord.js';
 
 export interface BundleResult {
   safe: boolean;
@@ -28,15 +29,35 @@ function cacheSet(wallet: string, time: number): void {
   walletFundingCache.set(wallet, time);
 }
 
+// Primary + fallback endpoints. Sticky index: once an endpoint works we keep using
+// it instead of re-burning a dead primary on every single request.
+const RPC_ENDPOINTS = [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean);
+let rpcEndpointIdx = 0;
+
 async function rpc(method: string, params: any[]): Promise<any> {
-  const res = await fetch(CONFIG.HELIUS_RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
-  const data: any = await res.json();
-  if (data.error) throw new Error(`RPC ${method}: ${data.error.message}`);
-  return data.result;
+  let lastErr: Error | null = null;
+  for (let i = 0; i < Math.max(RPC_ENDPOINTS.length, 1); i++) {
+    const idx = (rpcEndpointIdx + i) % RPC_ENDPOINTS.length;
+    try {
+      const res = await fetch(RPC_ENDPOINTS[idx], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      // Non-JSON bodies ("max usage reached", HTML error pages) must surface readably
+      const text = await res.text();
+      let data: any;
+      try { data = JSON.parse(text); } catch {
+        throw new Error(`RPC ${method}: non-JSON response "${text.slice(0, 60)}"`);
+      }
+      if (data.error) throw new Error(`RPC ${method}: ${data.error.message}`);
+      rpcEndpointIdx = idx;
+      return data.result;
+    } catch (err: any) {
+      lastErr = err;
+    }
+  }
+  throw lastErr ?? new Error(`RPC ${method}: no endpoints configured`);
 }
 
 /**
@@ -205,7 +226,10 @@ export async function checkBundle(mint: string): Promise<BundleResult> {
   // Retry once on failure (rate limits, transient errors)
   for (let attempt = 1; attempt <= 2; attempt++) {
     const result = await _checkBundleInner(mint);
-    if (result !== null) return result;
+    if (result !== null) {
+      consecutiveRpcFails = 0; // RPC worked — clear the alarm counter
+      return result;
+    }
     if (attempt < 2) {
       console.log(`[Bundle] Retrying ${mint.slice(0, 8)}... in 3s (attempt ${attempt} failed)`);
       await new Promise(r => setTimeout(r, 3000));
@@ -214,7 +238,26 @@ export async function checkBundle(mint: string): Promise<BundleResult> {
 
   // Fail CLOSED — if we can't verify, don't buy
   console.error(`[Bundle] Check failed after 2 attempts for ${mint.slice(0, 8)}... — blocking alert`);
+  noteRpcFailure();
   return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: 0, details: 'RPC failed — blocked (fail closed)' };
+}
+
+// ── RPC failure alarm ───────────────────────────────────────
+// Fail-closed is correct per-coin, but a dead RPC key means EVERY coin gets silently
+// blocked (this caused a multi-day call drought once). After 3 consecutive RPC-failed
+// blocks, yell in Discord — at most once every 6 hours.
+let consecutiveRpcFails = 0;
+let lastRpcAlarmAt = 0;
+
+function noteRpcFailure(): void {
+  consecutiveRpcFails++;
+  if (consecutiveRpcFails >= 3 && Date.now() - lastRpcAlarmAt > 6 * 60 * 60 * 1000) {
+    lastRpcAlarmAt = Date.now();
+    sendOpsAlert(
+      `Bundle-check RPC has failed ${consecutiveRpcFails} times in a row — **ALL calls are being blocked** (fail closed). ` +
+      `Check the Helius key usage/billing, or add a backup key via the RPC_FALLBACKS env var.`,
+    ).catch(() => {});
+  }
 }
 
 async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
