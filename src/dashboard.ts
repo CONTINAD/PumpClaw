@@ -1,8 +1,10 @@
 import { readFileSync, writeFileSync, statSync, existsSync } from 'fs';
-import { createServer } from 'http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { CONFIG } from './config.js';
+import { createHash } from 'crypto';
+import { CONFIG, saveSettingsOverrides } from './config.js';
+import { getWallet, getSolBalance, setWalletFromKey, walletSource } from './wallet.js';
 import type { CallRecord } from './tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1014,8 +1016,70 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
       `<a href="/?range=${r}" class="${activeRange===r?'active':''}">${RANGE_LABELS[r]}</a>`
     ).join('')}
     <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
+    <a href="/settings" style="border-color:var(--border2)">⚙️ Settings</a>
   </div>
 </div>
+
+<!-- ── live trades ── -->
+<div class="card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;margin:16px 0">
+  <h3 style="font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#10b981;animation:pulse 2s infinite"></span>
+    Live Trades <span id="lt-status" style="margin-left:auto;font-size:11px;text-transform:none;letter-spacing:0;color:var(--text3)">loading…</span>
+  </h3>
+  <div id="lt-body" style="font-size:13px;color:var(--text3)">Loading…</div>
+</div>
+<script>
+(function () {
+  const fmtSol = n => (n >= 0 ? '+' : '') + n.toFixed(3) + ' SOL';
+  async function tick() {
+    try {
+      const live = await (await fetch('/api/live')).json();
+      const st = document.getElementById('lt-status');
+      const body = document.getElementById('lt-body');
+      st.textContent = (live.tradeEnabled ? 'LIVE MODE ON' : 'live mode OFF') +
+        ' · ' + (live.strategy === 'trailing' ? ('-' + Math.round(live.trailingDrop * 100) + '% trailing') : 'TP ladder') +
+        (live.balance !== null ? (' · wallet ' + live.balance.toFixed(3) + ' SOL') : ' · wallet unfunded');
+      if (!live.open.length) {
+        body.innerHTML = '<span style="color:var(--text3)">No open positions' +
+          (live.tradeEnabled ? ' — next call auto-buys ' + Math.round(live.entryPct * 100) + '% of wallet.' : ' — live mode is off (Settings).') + '</span>';
+        return;
+      }
+      const mints = live.open.map(p => p.mint).join(',');
+      let prices = {};
+      try {
+        const dex = await (await fetch('https://api.dexscreener.com/latest/dex/tokens/' + mints)).json();
+        for (const pair of (dex.pairs || [])) {
+          const m = pair.baseToken && pair.baseToken.address;
+          if (m && (!prices[m] || +pair.volume?.h24 > +prices[m].vol)) prices[m] = { price: +pair.priceUsd, vol: +pair.volume?.h24 || 0 };
+        }
+      } catch (e) {}
+      let rows = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+        '<tr>' + ['Coin', 'Now', 'Peak', 'Stop at', 'Est. PnL', 'Age'].map(h => '<th style="color:var(--text3);text-align:left;padding:4px 8px;font-size:11px;text-transform:uppercase">' + h + '</th>').join('') + '</tr>';
+      for (const p of live.open) {
+        const cur = prices[p.mint] ? prices[p.mint].price / p.entryPrice : null;
+        const stopMult = p.trailingStopPrice > 0 ? p.trailingStopPrice / p.entryPrice : null;
+        const est = cur !== null ? (p.totalSolReturned + p.entrySol * p.remainingPct * cur - p.entrySol) : null;
+        const col = cur === null ? 'var(--text2)' : cur >= 1 ? '#10b981' : '#ef4444';
+        const age = Math.floor((Date.now() - p.entryTime) / 60000);
+        rows += '<tr>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border)"><b>$' + p.symbol + '</b> <span style="color:var(--text3);font-size:11px">' + (p.remainingPct < 1 ? Math.round(p.remainingPct * 100) + '% left' : '') + '</span></td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);color:' + col + ';font-weight:700">' + (cur === null ? '—' : cur.toFixed(2) + 'X') + '</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border)">' + p.peakMultiplier.toFixed(2) + 'X</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text2)">' + (stopMult === null ? '—' : stopMult.toFixed(2) + 'X') + '</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);color:' + (est === null ? 'var(--text2)' : est >= 0 ? '#10b981' : '#ef4444') + '">' + (est === null ? '—' : fmtSol(est)) + '</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text3)">' + (age < 60 ? age + 'm' : Math.floor(age / 60) + 'h ' + (age % 60) + 'm') + '</td>' +
+          '</tr>';
+      }
+      body.innerHTML = rows + '</table>';
+    } catch (e) {
+      document.getElementById('lt-status').textContent = 'refresh failed — retrying';
+    }
+  }
+  tick();
+  setInterval(tick, 10000);
+})();
+</script>
+<style>@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}</style>
 
 <!-- ── hero PnL ── -->
 <div class="hero">
@@ -1416,6 +1480,179 @@ function formatExitReasonJS(reason: string): string {
 // Pre-load Chart.js once at startup
 const chartJsSource = readFileSync(join(__dirname, 'chart.min.js'), 'utf-8');
 
+// ── Settings page (password-gated live-trading controls) ────
+
+function authHash(): string | null {
+  const pw = process.env.DASH_PASSWORD;
+  return pw ? createHash('sha256').update(pw).digest('hex') : null;
+}
+
+function authOk(req: IncomingMessage): boolean {
+  const expect = authHash();
+  if (!expect) return false;
+  const m = (req.headers.cookie ?? '').match(/dash_auth=([a-f0-9]{64})/);
+  return !!m && m[1] === expect;
+}
+
+const SETTINGS_STYLE = `
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#06080d;--bg1:#0a0e17;--bg2:#0f1420;--bg3:#151b28;--border:#1a2035;--border2:#242e44;--text:#c8d3e6;--text2:#7a879e;--text3:#4a5570;--green:#10b981;--red:#ef4444}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px}
+.topbar{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--bg1)}
+.topbar h1{font-size:17px}.topbar a{color:var(--text2);text-decoration:none;font-size:13px}
+.wrap{max-width:640px;margin:0 auto;padding:24px 22px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;margin:16px 0}
+.card h3{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:14px}
+label{display:block;font-size:12px;color:var(--text2);margin:14px 0 4px}
+input,select{width:100%;padding:9px 12px;background:var(--bg1);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:14px}
+input:focus,select:focus{outline:none;border-color:#3b82f6}
+button{margin-top:18px;width:100%;padding:11px;background:#10b981;color:#04110b;font-weight:700;border:0;border-radius:8px;font-size:14px;cursor:pointer}
+button:hover{filter:brightness(1.1)}
+.toggle-row{display:flex;align-items:center;gap:10px;margin:14px 0 4px}
+.toggle-row input{width:auto;transform:scale(1.3)}
+.msg{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
+.msg.ok{background:#10b98122;border:1px solid #10b98155;color:#6ee7b7}
+.msg.err{background:#ef444422;border:1px solid #ef444455;color:#fca5a5}
+.kv{font-size:12px;color:var(--text2);margin:4px 0}.kv b{color:var(--text)}
+.warn{font-size:11px;color:var(--text3);margin-top:12px;line-height:1.5}
+.mono{font-family:'SF Mono',Menlo,monospace}`;
+
+function settingsShell(inner: string): string {
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PumpClaw Settings</title><style>${SETTINGS_STYLE}</style></head><body>
+<div class="topbar"><h1>⚙️ Live Trading Settings</h1><a href="/">← Dashboard</a></div>
+<div class="wrap">${inner}</div></body></html>`;
+}
+
+async function buildSettingsHTML(msg?: { ok: boolean; text: string }): Promise<string> {
+  if (!authHash()) {
+    return settingsShell(`<div class="card"><h3>Settings disabled</h3>
+      <p style="font-size:13px;line-height:1.6">Set a <b class="mono">DASH_PASSWORD</b> environment variable in Railway to enable this page.
+      The dashboard URL is public — without a password, anyone who finds it could control live trading.</p></div>`);
+  }
+
+  const src = walletSource();
+  let addr = '', balance: number | null = null;
+  if (src !== 'none') {
+    try { addr = getWallet().publicKey.toBase58(); balance = await getSolBalance(); } catch {}
+  }
+  const msgHtml = msg ? `<div class="msg ${msg.ok ? 'ok' : 'err'}">${msg.text}</div>` : '';
+
+  return settingsShell(`
+  ${msgHtml}
+  <div class="card">
+    <h3>Wallet</h3>
+    <div class="kv">Source: <b>${src === 'env' ? 'WALLET_PRIVATE_KEY env var (managed in Railway)' : src === 'file' ? 'stored on volume' : 'none — paste a key below or fund the auto-generated one'}</b></div>
+    ${addr ? `<div class="kv">Address: <b class="mono">${addr}</b></div>` : ''}
+    ${balance !== null ? `<div class="kv">Balance: <b>${balance.toFixed(4)} SOL</b></div>` : ''}
+  </div>
+  <form method="POST" action="/settings">
+    <div class="card">
+      <h3>Live trading</h3>
+      <div class="toggle-row">
+        <input type="checkbox" id="en" name="trade_enabled" value="1" ${CONFIG.TRADE_ENABLED ? 'checked' : ''}>
+        <label for="en" style="margin:0;font-size:14px;color:var(--text)">Live trading enabled</label>
+      </div>
+      <label>Exit strategy</label>
+      <select name="strategy">
+        <option value="trailing" ${CONFIG.TRADE_EXIT_STRATEGY === 'trailing' ? 'selected' : ''}>Always-on trailing stop (no TPs)</option>
+        <option value="ladder" ${CONFIG.TRADE_EXIT_STRATEGY === 'ladder' ? 'selected' : ''}>TP ladder 1.5X/2.5X/4X</option>
+      </select>
+      <label>Trailing stop — % drop from ATH (5–90)</label>
+      <input type="number" name="trailing_drop" min="5" max="90" step="1" value="${Math.round(CONFIG.TRADE_TRAILING_DROP * 100)}">
+      <label>Entry size — % of wallet balance per trade (1–100)</label>
+      <input type="number" name="entry_pct" min="1" max="100" step="1" value="${Math.round(CONFIG.TRADE_ENTRY_PCT * 100)}">
+      <label>Minimum entry (SOL)</label>
+      <input type="number" name="min_entry" min="0.01" step="0.01" value="${CONFIG.TRADE_MIN_ENTRY_SOL}">
+      <label>Max slippage — % (1–99)</label>
+      <input type="number" name="slippage" min="1" max="99" step="1" value="${Math.round(CONFIG.TRADE_SLIPPAGE_BPS / 100)}">
+    </div>
+    <div class="card">
+      <h3>Replace wallet (optional)</h3>
+      <label>Private key (base58, write-only — never shown back)</label>
+      <input type="password" name="wallet_key" autocomplete="off" placeholder="${src === 'env' ? 'disabled: env var takes priority' : 'paste to replace the trading wallet'}" ${src === 'env' ? 'disabled' : ''}>
+      <div class="warn">Use a burner wallet funded only with what you're prepared to lose. The key is stored on the Railway volume and never displayed. Changes apply instantly — no restart.</div>
+    </div>
+    <button type="submit">Save settings</button>
+  </form>`);
+}
+
+function settingsLoginHTML(err?: string): string {
+  return settingsShell(`
+  ${err ? `<div class="msg err">${err}</div>` : ''}
+  <form method="POST" action="/settings">
+    <div class="card">
+      <h3>Unlock settings</h3>
+      <label>Password (DASH_PASSWORD)</label>
+      <input type="password" name="password" autofocus autocomplete="current-password">
+      <button type="submit">Unlock</button>
+    </div>
+  </form>`);
+}
+
+function parseFormBody(body: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of body.split('&')) {
+    const [k, v] = pair.split('=');
+    if (k) out[decodeURIComponent(k)] = decodeURIComponent((v ?? '').replace(/\+/g, ' '));
+  }
+  return out;
+}
+
+async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
+  const form = parseFormBody(body);
+  const expect = authHash();
+  if (!expect) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(await buildSettingsHTML());
+    return;
+  }
+
+  // Login attempt
+  if ('password' in form && !authOk(req)) {
+    if (createHash('sha256').update(form.password).digest('hex') === expect) {
+      res.writeHead(302, {
+        'Set-Cookie': `dash_auth=${expect}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`,
+        'Location': '/settings',
+      });
+      res.end();
+    } else {
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(settingsLoginHTML('Wrong password'));
+    }
+    return;
+  }
+
+  if (!authOk(req)) {
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(settingsLoginHTML());
+    return;
+  }
+
+  // Save settings
+  try {
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+    saveSettingsOverrides({
+      TRADE_ENABLED: form.trade_enabled === '1',
+      TRADE_EXIT_STRATEGY: form.strategy === 'ladder' ? 'ladder' : 'trailing',
+      TRADE_TRAILING_DROP: clamp(parseFloat(form.trailing_drop) || 45, 5, 90) / 100,
+      TRADE_ENTRY_PCT: clamp(parseFloat(form.entry_pct) || 10, 1, 100) / 100,
+      TRADE_MIN_ENTRY_SOL: clamp(parseFloat(form.min_entry) || 0.05, 0.01, 100),
+      TRADE_SLIPPAGE_BPS: Math.round(clamp(parseFloat(form.slippage) || 30, 1, 99) * 100),
+    });
+    let text = 'Settings saved — live immediately.';
+    if (form.wallet_key && form.wallet_key.trim()) {
+      const addr = setWalletFromKey(form.wallet_key);
+      text += ` Wallet replaced: ${addr.slice(0, 8)}…${addr.slice(-6)}`;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(await buildSettingsHTML({ ok: true, text }));
+  } catch (err: any) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(await buildSettingsHTML({ ok: false, text: err.message }));
+  }
+}
+
 function parseRange(url: string): TimeRange {
   const match = url.match(/[?&]range=([^&]+)/);
   const val = match?.[1] ?? 'all';
@@ -1429,6 +1666,65 @@ export function startDashboard(port?: number): void {
   const server = createServer((req, res) => {
     const url = req.url ?? '/';
     const pathname = url.split('?')[0];
+
+    // POST /settings — collect body then handle (login or save)
+    if (req.method === 'POST' && pathname === '/settings') {
+      let body = '';
+      req.on('data', (c: Buffer) => { body += c; if (body.length > 64_000) req.destroy(); });
+      req.on('end', () => {
+        handleSettingsPost(req, res, body).catch(err => {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Settings error: ' + err.message);
+        });
+      });
+      return;
+    }
+
+    if (pathname === '/settings') {
+      const render = authOk(req) || !authHash()
+        ? buildSettingsHTML()
+        : Promise.resolve(settingsLoginHTML());
+      render.then(html => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      }).catch(err => {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Settings error: ' + err.message);
+      });
+      return;
+    }
+
+    if (pathname === '/api/live') {
+      (async () => {
+        const positions: RealPosition[] = loadJSON(join(CONFIG.DATA_DIR, 'positions.json'));
+        const open = positions.filter(p => p.status === 'open').map(p => ({
+          mint: p.mint, symbol: p.symbol, entrySol: p.entrySol, entryPrice: p.entryPrice,
+          entryMC: p.entryMC, entryTime: p.entryTime, remainingPct: p.remainingPct,
+          totalSolReturned: p.totalSolReturned, trailingStopPrice: p.trailingStopPrice,
+          peakMultiplier: p.peakMultiplier, exits: p.exits.length,
+        }));
+        let walletAddr: string | null = null, balance: number | null = null;
+        try {
+          if (walletSource() !== 'none') {
+            walletAddr = getWallet().publicKey.toBase58();
+            balance = await getSolBalance();
+          }
+        } catch { /* RPC hiccup — omit balance */ }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          walletAddr, balance,
+          tradeEnabled: CONFIG.TRADE_ENABLED,
+          strategy: CONFIG.TRADE_EXIT_STRATEGY,
+          trailingDrop: CONFIG.TRADE_TRAILING_DROP,
+          entryPct: CONFIG.TRADE_ENTRY_PCT,
+          open,
+        }));
+      })().catch(err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
+      return;
+    }
 
     if (pathname === '/chart.js') {
       res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=86400' });

@@ -38,6 +38,31 @@ export function getWallet(): Keypair {
   return _wallet;
 }
 
+/** Where the active wallet comes from (settings UI shows this). */
+export function walletSource(): 'env' | 'file' | 'none' {
+  if (process.env.WALLET_PRIVATE_KEY) return 'env';
+  if (existsSync(WALLET_FILE)) return 'file';
+  return 'none';
+}
+
+/** Replace the trading wallet from a bs58 private key (dashboard settings page).
+ *  Write-only: validates, persists to the volume, swaps the in-memory keypair.
+ *  Returns the public address. Throws if the env var takes priority. */
+export function setWalletFromKey(bs58Key: string): string {
+  if (process.env.WALLET_PRIVATE_KEY) {
+    throw new Error('WALLET_PRIVATE_KEY env var is set and takes priority — remove it in Railway to manage the wallet from here.');
+  }
+  const kp = Keypair.fromSecretKey(bs58.decode(bs58Key.trim()));
+  mkdirSync(dirname(WALLET_FILE), { recursive: true });
+  writeFileSync(WALLET_FILE, JSON.stringify({
+    publicKey: kp.publicKey.toBase58(),
+    secretKey: Array.from(kp.secretKey),
+  }, null, 2));
+  _wallet = kp;
+  console.log(`[Wallet] Wallet replaced via settings: ${kp.publicKey.toBase58()}`);
+  return kp.publicKey.toBase58();
+}
+
 /** Get a shared Solana RPC connection. */
 export function getConnection(): Connection {
   if (!_connection) {

@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || join(__dirname, '..', 'data');
@@ -105,3 +106,34 @@ export const CONFIG = {
   TRADE_TRAILING_DROP: 0.45,           // -45% from ATH (trailing mode: from entry; ladder: after TP3)
   TRADE_MONITOR_INTERVAL_MS: 2_000,   // check open positions every 2s
 };
+
+// ── Runtime settings overrides (dashboard /settings page) ───
+// Persisted to DATA_DIR/settings.json and applied over CONFIG at boot AND live
+// in-process on save (dashboard + trader share the process, so changes take
+// effect immediately without a restart).
+
+const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
+export const SETTINGS_KEYS = [
+  'TRADE_ENABLED', 'TRADE_EXIT_STRATEGY', 'TRADE_ENTRY_PCT',
+  'TRADE_MIN_ENTRY_SOL', 'TRADE_TRAILING_DROP', 'TRADE_SLIPPAGE_BPS',
+] as const;
+
+export function loadSettingsOverrides(): void {
+  try {
+    const raw = JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8'));
+    for (const k of SETTINGS_KEYS) if (k in raw) (CONFIG as any)[k] = raw[k];
+    console.log(`[Config] Applied settings overrides: ${Object.keys(raw).join(', ')}`);
+  } catch { /* no overrides yet */ }
+}
+
+export function saveSettingsOverrides(patch: Record<string, any>): void {
+  let cur: Record<string, any> = {};
+  try { cur = JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8')); } catch {}
+  for (const k of SETTINGS_KEYS) {
+    if (k in patch) { cur[k] = patch[k]; (CONFIG as any)[k] = patch[k]; }
+  }
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(SETTINGS_FILE, JSON.stringify(cur, null, 2));
+}
+
+loadSettingsOverrides();
