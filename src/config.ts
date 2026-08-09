@@ -94,10 +94,14 @@ export const CONFIG = {
   TRADE_SLIPPAGE_BPS: 3000,            // 30% slippage
   TRADE_PRIORITY_FEE_LAMPORTS: 100_000, // 0.0001 SOL priority fee
   TRADE_MIN_SOL_BALANCE: 0.05,         // don't trade if wallet SOL below this
-  TRADE_STOP_LOSS_PCT: 0.75,           // stop at -25% from entry
-  TRADE_TP1_MULT: 1.5, TRADE_TP1_SELL: 0.40,   // sell 40% at 1.5X
-  TRADE_TP2_MULT: 2.5, TRADE_TP2_SELL: 0.30,   // sell 30% at 2.5X
-  TRADE_TP3_MULT: 4,   TRADE_TP3_SELL: 0.20,   // sell 20% at 4X
-  TRADE_TRAILING_DROP: 0.35,           // -35% from ATH on remaining 10%
+  // Exit strategy: 'trailing' = always-on -45% trailing stop from entry, no TPs —
+  // backtested 1.76X avg/call on 306 recorded calls vs 1.26X for the TP ladder
+  // (fat tails: the 10X+ runners pay for everything). 'ladder' = legacy TP levels.
+  TRADE_EXIT_STRATEGY: (process.env.TRADE_EXIT_STRATEGY || 'trailing') as 'trailing' | 'ladder',
+  TRADE_STOP_LOSS_PCT: 0.75,           // ladder mode: stop at -25% from entry
+  TRADE_TP1_MULT: 1.5, TRADE_TP1_SELL: 0.40,   // ladder: sell 40% at 1.5X
+  TRADE_TP2_MULT: 2.5, TRADE_TP2_SELL: 0.30,   // ladder: sell 30% at 2.5X
+  TRADE_TP3_MULT: 4,   TRADE_TP3_SELL: 0.20,   // ladder: sell 20% at 4X
+  TRADE_TRAILING_DROP: 0.45,           // -45% from ATH (trailing mode: from entry; ladder: after TP3)
   TRADE_MONITOR_INTERVAL_MS: 2_000,   // check open positions every 2s
 };

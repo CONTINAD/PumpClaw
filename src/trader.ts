@@ -168,7 +168,11 @@ export class Trader {
       entryTime: Date.now(),
       entryTx: result.txSignature,
       tokensReceived: result.outputAmount,
-      stopLossPrice: currentPrice * CONFIG.TRADE_STOP_LOSS_PCT,
+      // trailing mode: the trailing stop IS the stop — the fixed SL must sit at the same
+      // level or it would fire first (-25% < -45%) and neuter the wide trailing stop
+      stopLossPrice: CONFIG.TRADE_EXIT_STRATEGY === 'trailing'
+        ? currentPrice * (1 - CONFIG.TRADE_TRAILING_DROP)
+        : currentPrice * CONFIG.TRADE_STOP_LOSS_PCT,
       beStopArmed: false,
       remainingPct: 1.0,
       tokensRemaining: result.outputAmount,
@@ -178,9 +182,11 @@ export class Trader {
       tp2Hit: false,
       tp3Hit: false,
       peakMultiplier: 1,
-      trailingActive: false,
-      trailingHighPrice: 0,
-      trailingStopPrice: 0,
+      // trailing mode: trailing stop is live from entry — initial stop at -45% of entry,
+      // ratchets up with every new ATH. Ladder mode arms it after TP3 as before.
+      trailingActive: CONFIG.TRADE_EXIT_STRATEGY === 'trailing',
+      trailingHighPrice: CONFIG.TRADE_EXIT_STRATEGY === 'trailing' ? currentPrice : 0,
+      trailingStopPrice: CONFIG.TRADE_EXIT_STRATEGY === 'trailing' ? currentPrice * (1 - CONFIG.TRADE_TRAILING_DROP) : 0,
       status: 'open',
     };
 
@@ -291,10 +297,12 @@ export class Trader {
       return null;
     };
 
-    // ── Take profit levels ──
+    // ── Take profit levels (ladder mode only — trailing mode has no TPs, the
+    //    always-on trailing stop from entry handles every exit) ──
+    const ladderMode = CONFIG.TRADE_EXIT_STRATEGY === 'ladder';
 
     // TP1 @ 2X: sell 40%, arm break-even stop
-    if (!pos.tp1Hit && mult >= CONFIG.TRADE_TP1_MULT) {
+    if (ladderMode && !pos.tp1Hit && mult >= CONFIG.TRADE_TP1_MULT) {
       pos.tp1Hit = true;
       await executeSell('tp1', `TP1 ${CONFIG.TRADE_TP1_MULT}X`, CONFIG.TRADE_TP1_SELL);
       if (!pos.beStopArmed) {
@@ -304,13 +312,13 @@ export class Trader {
     }
 
     // TP2 @ 3X: sell 30%
-    if (!pos.tp2Hit && mult >= CONFIG.TRADE_TP2_MULT) {
+    if (ladderMode && !pos.tp2Hit && mult >= CONFIG.TRADE_TP2_MULT) {
       pos.tp2Hit = true;
       await executeSell('tp2', `TP2 ${CONFIG.TRADE_TP2_MULT}X`, CONFIG.TRADE_TP2_SELL);
     }
 
     // TP3 @ 5X: sell 20%, activate trailing stop
-    if (!pos.tp3Hit && mult >= CONFIG.TRADE_TP3_MULT) {
+    if (ladderMode && !pos.tp3Hit && mult >= CONFIG.TRADE_TP3_MULT) {
       pos.tp3Hit = true;
       await executeSell('tp3', `TP3 ${CONFIG.TRADE_TP3_MULT}X`, CONFIG.TRADE_TP3_SELL);
       pos.trailingActive = true;
@@ -327,9 +335,10 @@ export class Trader {
     // ── Stop checks ──
     if (pos.remainingPct >= 0.001) {
       if (pos.trailingActive && currentPrice <= pos.trailingStopPrice) {
-        await executeSell('trailing_stop', 'Trailing Stop', pos.remainingPct);
-      } else if ((pos.peakMultiplier ?? 1) >= 1.5 && mult <= 1.0) {
-        // Profit protection: was up 50%+ but dumped back to break-even
+        await executeSell('trailing_stop', `Trailing Stop −${(CONFIG.TRADE_TRAILING_DROP * 100).toFixed(0)}% (ATH ${(pos.trailingHighPrice / pos.entryPrice).toFixed(1)}X)`, pos.remainingPct);
+      } else if (ladderMode && (pos.peakMultiplier ?? 1) >= 1.5 && mult <= 1.0) {
+        // Profit protection (ladder only): was up 50%+ but dumped back to break-even.
+        // In trailing mode this would be a hidden TP that contradicts letting winners breathe.
         await executeSell('profit_protect', `Profit Protect (peaked ${pos.peakMultiplier.toFixed(1)}X)`, pos.remainingPct);
       } else if (currentPrice <= pos.stopLossPrice) {
         const reason = pos.beStopArmed ? 'be_stop' : 'stop_loss';
