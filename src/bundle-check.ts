@@ -183,7 +183,9 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
   let exchangeFundedCount = 0;
   let totalWithFunder = 0;
   let veteranCount = 0;
-  const BATCH_SIZE = 5;
+  // 10-wallet batches with short gaps — sized for a paid Helius plan. The old
+  // 5/300ms pacing added ~20s of latency per call under the free tier's limits.
+  const BATCH_SIZE = 10;
 
   for (let i = 0; i < wallets.length; i += BATCH_SIZE) {
     const batch = wallets.slice(i, i + BATCH_SIZE);
@@ -202,7 +204,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
     }
 
     if (i + BATCH_SIZE < wallets.length) {
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 100));
     }
   }
 
@@ -231,8 +233,8 @@ export async function checkBundle(mint: string): Promise<BundleResult> {
       return result;
     }
     if (attempt < 2) {
-      console.log(`[Bundle] Retrying ${mint.slice(0, 8)}... in 3s (attempt ${attempt} failed)`);
-      await new Promise(r => setTimeout(r, 3000));
+      console.log(`[Bundle] Retrying ${mint.slice(0, 8)}... in 1.5s (attempt ${attempt} failed)`);
+      await new Promise(r => setTimeout(r, 1500));
     }
   }
 

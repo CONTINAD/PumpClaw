@@ -768,7 +768,7 @@ async function main() {
         log(`❌ Scan error: ${err.message}`);
         if (err.stack) console.error(err.stack);
       }
-      await new Promise(r => setTimeout(r, 15_000));
+      await new Promise(r => setTimeout(r, 10_000));
     }
   };
 
