@@ -7,8 +7,9 @@ import { fetchBatchMarketData, fetchSingleMarketData, getSolPrice, type MarketDa
 import { sendAlert, updateWithPerformance, sendMilestoneAlert, sendLeaderboard, sendMonthlyLeaderboard, sendFullCallListReport, fmtUsd, fmtPct, type LeaderboardEntry, type MonthlyLeaderboardEntry } from './discord.js';
 import { PerformanceTracker, type PerformanceSnapshot } from './tracker.js';
 import { PaperTrader } from './paper-trader.js';
-import { Trader } from './trader.js';
+import { taskManager } from './tasks.js';
 import { getWallet, getSolBalance } from './wallet.js';
+import { describeStrategy } from './strategy.js';
 import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
 import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
@@ -54,7 +55,6 @@ const _lbTs = loadLbTimestamps();
 
 const tracker = new PerformanceTracker();
 const paperTrader = new PaperTrader();
-const trader = new Trader();
 const seenTgMsgIds = new Set<string>();
 let lastMilestoneCheck = 0;
 
@@ -252,12 +252,12 @@ async function fastScanCycle() {
 
     // Execute real buy via Jupiter
     if (CONFIG.TRADE_ENABLED) {
-      log(`[Trader] 🔄 Attempting buy for $${coin.symbol}...`);
-      const realPos = await trader.buy(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap);
-      if (realPos) {
-        log(`💰 REAL BUY: $${coin.symbol} — ${realPos.entrySol} SOL → ${realPos.tokensReceived} tokens (tx: ${realPos.entryTx.slice(0, 16)}...)`);
+      log(`[Trader] 🔄 Fan-out buy for $${coin.symbol} across ${taskManager.enabledTasks().length} task(s)...`);
+      const boughtCount = await taskManager.buyAll(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap);
+      if (boughtCount > 0) {
+        log(`💰 REAL BUY: $${coin.symbol} — filled on ${boughtCount}/${taskManager.enabledTasks().length} task(s)`);
       } else {
-        log(`⚠ BUY SKIPPED/FAILED for $${coin.symbol} — check [Trader] logs above for reason`);
+        log(`⚠ BUY SKIPPED/FAILED for $${coin.symbol} on all tasks — check [Trader] logs above`);
       }
     }
   }
@@ -337,9 +337,9 @@ async function maintenanceCycle() {
     }
 
     if (CONFIG.TRADE_ENABLED) {
-      const realExits = await trader.checkPosition(rec.mint, current.priceUsd, current.marketCap);
-      for (const exit of realExits) {
-        log(`💰 REAL EXIT: $${rec.symbol} — ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL (tx: ${exit.txSignature.slice(0, 16)}...)`);
+      const events = await taskManager.checkAll(rec.mint, current.priceUsd, current.marketCap);
+      for (const { task, exit } of events) {
+        log(`💰 REAL EXIT [${task.name}]: $${rec.symbol} — ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL (tx: ${exit.txSignature.slice(0, 16)}...)`);
       }
     }
 
@@ -478,9 +478,9 @@ async function maintenanceCycle() {
         }
 
         if (CONFIG.TRADE_ENABLED) {
-          const realExits = await trader.checkPosition(rec.mint, market.priceUsd, market.marketCap);
-          for (const exit of realExits) {
-            log(`💰 REAL EXIT: $${rec.symbol} — ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL (tx: ${exit.txSignature.slice(0, 16)}...)`);
+          const events = await taskManager.checkAll(rec.mint, market.priceUsd, market.marketCap);
+          for (const { task, exit } of events) {
+            log(`💰 REAL EXIT [${task.name}]: $${rec.symbol} — ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL (tx: ${exit.txSignature.slice(0, 16)}...)`);
           }
         }
 
@@ -577,7 +577,7 @@ async function positionMonitorLoop() {
       continue;
     }
 
-    const openPositions = trader.getOpenPositions();
+    const openPositions = taskManager.openPositions();
     if (openPositions.length === 0) {
       await new Promise(r => setTimeout(r, CONFIG.TRADE_MONITOR_INTERVAL_MS));
       continue;
@@ -588,7 +588,7 @@ async function positionMonitorLoop() {
     await new Promise(r => setTimeout(r, delay));
 
     try {
-      for (const pos of openPositions) {
+      for (const { task, pos } of openPositions) {
         // Use Jupiter quote for real-time pricing (no DexScreener lag)
         const solValue = await jupiterQuoteSol(pos.mint, pos.tokensRemaining);
         if (solValue === null) continue;
@@ -602,9 +602,9 @@ async function positionMonitorLoop() {
         const currentMC = mult * pos.entryMC;
         const pct = (mult - 1) * 100;
 
-        const realExits = await trader.checkPosition(pos.mint, currentPrice, currentMC);
-        for (const exit of realExits) {
-          log(`💰 REAL EXIT: $${pos.symbol} — ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL (tx: ${exit.txSignature.slice(0, 16)}...)`);
+        const events = await taskManager.checkAll(pos.mint, currentPrice, currentMC);
+        for (const { task: xTask, exit } of events) {
+          log(`💰 REAL EXIT [${xTask.name}]: $${pos.symbol} — ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL (tx: ${exit.txSignature.slice(0, 16)}...)`);
         }
 
         // Also update paper trade if exists
@@ -619,7 +619,7 @@ async function positionMonitorLoop() {
         // Log position status every ~30s to avoid spam
         if (Date.now() % 30000 < delay + 1000) {
           const emoji = pct >= 0 ? '📈' : '📉';
-          log(`${emoji} $${pos.symbol} position: ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% (${mult.toFixed(2)}X) — ${(pos.remainingPct * 100).toFixed(0)}% open — val ${solValue.toFixed(4)} SOL`);
+          log(`${emoji} [${task.name}] $${pos.symbol}: ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% (${mult.toFixed(2)}X) — ${(pos.remainingPct * 100).toFixed(0)}% open — val ${solValue.toFixed(4)} SOL`);
         }
       }
     } catch (err: any) {
@@ -689,24 +689,20 @@ async function main() {
   console.log(`  Data File:      ${CONFIG.DATA_FILE}`);
   console.log('');
 
-  // Trading info
+  // Trading info — one line per task
   if (CONFIG.TRADE_ENABLED) {
-    const wallet = getWallet();
-    let balance = 0;
-    try { balance = await getSolBalance(); } catch {}
-    console.log('  ── Real Trading ──────────────────────────────');
-    console.log(`  Wallet:         ${wallet.publicKey.toBase58()}`);
-    console.log(`  Balance:        ${balance.toFixed(4)} SOL`);
-    console.log(`  Entry Size:     ${(CONFIG.TRADE_ENTRY_PCT * 100).toFixed(0)}% of balance (${(balance * CONFIG.TRADE_ENTRY_PCT).toFixed(4)} SOL)`);
-    console.log(`  Slippage:       ${CONFIG.TRADE_SLIPPAGE_BPS / 100}%`);
-    console.log(`  Priority Fee:   ${CONFIG.TRADE_PRIORITY_FEE_LAMPORTS / 1e9} SOL`);
-    console.log(`  TP Ladder:      ${CONFIG.TRADE_TP1_MULT}X/${CONFIG.TRADE_TP2_MULT}X/${CONFIG.TRADE_TP3_MULT}X (${CONFIG.TRADE_TP1_SELL * 100}%/${CONFIG.TRADE_TP2_SELL * 100}%/${CONFIG.TRADE_TP3_SELL * 100}%)`);
-    console.log(`  Stop Loss:      -${Math.round((1 - CONFIG.TRADE_STOP_LOSS_PCT) * 100)}% (moves to BE after TP1)`);
-    console.log(`  Trailing:       -${CONFIG.TRADE_TRAILING_DROP * 100}% from ATH after TP3`);
-    console.log(`  Open Positions: ${trader.getOpenPositions().length}`);
-    if (balance < CONFIG.TRADE_MIN_SOL_BALANCE) {
-      console.log(`  ⚠️  LOW BALANCE — fund wallet to enable trading!`);
+    console.log('  ── Real Trading (tasks) ──────────────────────');
+    for (const task of taskManager.all()) {
+      const kp = taskManager.keypairFor(task);
+      let balance = 0;
+      try { balance = await getSolBalance(kp); } catch {}
+      console.log(`  ${task.enabled ? '🟢' : '⚪'} ${task.name.padEnd(16)} ${kp.publicKey.toBase58().slice(0, 8)}…  ${balance.toFixed(4)} SOL  ${describeStrategy(task.strategy)}`);
     }
+    if (taskManager.all().length === 0) {
+      console.log('  (no tasks — create one at /tasks on the dashboard)');
+    }
+    const wallet = getWallet();
+    console.log(`  Open Positions: ${taskManager.openPositions().length} across ${taskManager.all().length} task(s)`);
     console.log('');
   } else {
     console.log('  Trading:        DISABLED (paper only)');

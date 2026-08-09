@@ -1,10 +1,12 @@
-import { readFileSync, writeFileSync, statSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from 'fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { CONFIG, saveSettingsOverrides } from './config.js';
 import { getWallet, getSolBalance, setWalletFromKey, walletSource } from './wallet.js';
+import { taskManager, type TradeTask } from './tasks.js';
+import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import type { CallRecord } from './tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -83,7 +85,14 @@ const RANGE_LABELS: Record<TimeRange, string> = {
 function buildDashboardData(range: TimeRange = 'all') {
   let calls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
   let trades: PaperTrade[] = loadJSON(join(CONFIG.DATA_DIR, 'trades.json'));
-  let positions: RealPosition[] = loadJSON(join(CONFIG.DATA_DIR, 'positions.json'));
+  // Aggregate real positions across ALL task books (positions.json + positions-<taskId>.json)
+  let positions: RealPosition[] = [];
+  try {
+    const posFiles = readdirSync(CONFIG.DATA_DIR).filter(f => /^positions(-[a-z0-9]+)?\.json$/.test(f));
+    for (const f of posFiles) positions.push(...loadJSON<RealPosition>(join(CONFIG.DATA_DIR, f)));
+  } catch {
+    positions = loadJSON(join(CONFIG.DATA_DIR, 'positions.json'));
+  }
 
   // Filter by time range
   if (range !== 'all') {
@@ -1016,6 +1025,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
       `<a href="/?range=${r}" class="${activeRange===r?'active':''}">${RANGE_LABELS[r]}</a>`
     ).join('')}
     <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
+    <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
     <a href="/settings" style="border-color:var(--border2)">⚙️ Settings</a>
   </div>
 </div>
@@ -1037,11 +1047,11 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
       const st = document.getElementById('lt-status');
       const body = document.getElementById('lt-body');
       st.textContent = (live.tradeEnabled ? 'LIVE MODE ON' : 'live mode OFF') +
-        ' · ' + (live.strategy === 'trailing' ? ('-' + Math.round(live.trailingDrop * 100) + '% trailing') : 'TP ladder') +
-        (live.balance !== null ? (' · wallet ' + live.balance.toFixed(3) + ' SOL') : ' · wallet unfunded');
+        ' · ' + live.enabledCount + '/' + live.taskCount + ' tasks' +
+        (live.balance !== null ? (' · combined ' + live.balance.toFixed(3) + ' SOL') : '');
       if (!live.open.length) {
         body.innerHTML = '<span style="color:var(--text3)">No open positions' +
-          (live.tradeEnabled ? ' — next call auto-buys ' + Math.round(live.entryPct * 100) + '% of wallet.' : ' — live mode is off (Settings).') + '</span>';
+          (live.tradeEnabled && live.enabledCount > 0 ? ' — ' + live.enabledCount + ' task(s) armed for the next call.' : ' — no tasks running (Tasks page).') + '</span>';
         return;
       }
       const mints = live.open.map(p => p.mint).join(',');
@@ -1054,7 +1064,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
         }
       } catch (e) {}
       let rows = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-        '<tr>' + ['Coin', 'Now', 'Peak', 'Stop at', 'Est. PnL', 'Age'].map(h => '<th style="color:var(--text3);text-align:left;padding:4px 8px;font-size:11px;text-transform:uppercase">' + h + '</th>').join('') + '</tr>';
+        '<tr>' + ['Task', 'Coin', 'Now', 'Peak', 'Stop at', 'Est. PnL', 'Age'].map(h => '<th style="color:var(--text3);text-align:left;padding:4px 8px;font-size:11px;text-transform:uppercase">' + h + '</th>').join('') + '</tr>';
       for (const p of live.open) {
         const cur = prices[p.mint] ? prices[p.mint].price / p.entryPrice : null;
         const stopMult = p.trailingStopPrice > 0 ? p.trailingStopPrice / p.entryPrice : null;
@@ -1062,6 +1072,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
         const col = cur === null ? 'var(--text2)' : cur >= 1 ? '#10b981' : '#ef4444';
         const age = Math.floor((Date.now() - p.entryTime) / 60000);
         rows += '<tr>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text2);font-size:11px">' + (p.taskName || 'main') + '</td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border)"><b>$' + p.symbol + '</b> <span style="color:var(--text3);font-size:11px">' + (p.remainingPct < 1 ? Math.round(p.remainingPct * 100) + '% left' : '') + '</span></td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border);color:' + col + ';font-weight:700">' + (cur === null ? '—' : cur.toFixed(2) + 'X') + '</td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border)">' + p.peakMultiplier.toFixed(2) + 'X</td>' +
@@ -1517,11 +1528,13 @@ button:hover{filter:brightness(1.1)}
 .warn{font-size:11px;color:var(--text3);margin-top:12px;line-height:1.5}
 .mono{font-family:'SF Mono',Menlo,monospace}`;
 
-function settingsShell(inner: string): string {
+function settingsShell(inner: string, self = '/settings'): string {
+  const title = self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
+  const wide = self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PumpClaw Settings</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>⚙️ Live Trading Settings</h1><a href="/">← Dashboard</a></div>
-<div class="wrap">${inner}</div></body></html>`;
+<title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
 async function buildSettingsHTML(msg?: { ok: boolean; text: string }): Promise<string> {
@@ -1653,6 +1666,236 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
   }
 }
 
+
+// ── Tasks pages (sneaker-bot style: N wallets × N strategies) ──
+
+function taskSummary(task: TradeTask) {
+  const positions = taskManager.traderFor(task).getAllPositions();
+  const closed = positions.filter(p => p.status === 'closed');
+  const open = positions.filter(p => p.status === 'open');
+  const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
+  const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
+  return { open: open.length, closed: closed.length, pnl, wins };
+}
+
+async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<string> {
+  const tasks = taskManager.all();
+  const balances = await Promise.all(tasks.map(t =>
+    getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
+
+  const rows = tasks.map((t, i) => {
+    const addr = taskManager.keypairFor(t).publicKey.toBase58();
+    const s = taskSummary(t);
+    const bal = balances[i];
+    return `<tr>
+      <td><span style="color:${t.enabled ? '#10b981' : '#4a5570'}">●</span> <a href="/task?id=${t.id}" style="color:var(--text);font-weight:700">${t.name}</a></td>
+      <td class="mono" style="font-size:11px;color:var(--text2)">${addr.slice(0, 6)}…${addr.slice(-4)}</td>
+      <td class="mono">${bal === null ? '—' : bal.toFixed(3) + ' ◎'}</td>
+      <td style="font-size:12px;color:var(--text2)">${describeStrategy(t.strategy)}</td>
+      <td class="mono" style="color:${s.pnl >= 0 ? '#10b981' : '#ef4444'}">${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(3)} ◎</td>
+      <td class="mono">${s.open} open · ${s.wins}/${s.closed} wins</td>
+      <td>
+        <form method="POST" action="/task" style="display:inline">
+          <input type="hidden" name="id" value="${t.id}"><input type="hidden" name="action" value="toggle">
+          <button type="submit" style="margin:0;width:auto;padding:4px 10px;font-size:11px;background:${t.enabled ? '#1a2035' : '#10b981'};color:${t.enabled ? '#c8d3e6' : '#04110b'}">${t.enabled ? 'Pause' : 'Start'}</button>
+        </form>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const presetOpts = Object.entries(STRATEGY_PRESETS)
+    .map(([k, v]) => `<option value="${k}">${v.name} — ${v.desc}</option>`).join('');
+
+  return settingsShell(`
+  ${msg ? `<div class="msg ${msg.ok ? 'ok' : 'err'}">${msg.text}</div>` : ''}
+  <div class="card" style="max-width:none">
+    <h3>Trading tasks · master switch ${CONFIG.TRADE_ENABLED ? '<span style="color:#10b981">ON</span>' : '<span style="color:#ef4444">OFF (Settings)</span>'}</h3>
+    ${tasks.length === 0 ? '<p style="font-size:13px;color:var(--text2)">No tasks yet — create the first one below. Each task is one wallet + one strategy, buying every call independently.</p>' : `
+    <div style="overflow-x:auto"><table>
+      <tr><th>Task</th><th>Wallet</th><th>Balance</th><th>Strategy</th><th>Realized PnL</th><th>Positions</th><th></th></tr>
+      ${rows}
+    </table></div>`}
+  </div>
+  <form method="POST" action="/tasks">
+    <div class="card">
+      <h3>New task</h3>
+      <label>Name (e.g. "Alex aggressive", "Jake safe")</label>
+      <input name="name" maxlength="40" placeholder="Task name">
+      <label>Wallet private key (base58, write-only)</label>
+      <input type="password" name="wallet_key" autocomplete="off" placeholder="burner wallet key — funds at risk are this wallet's balance only">
+      <label>Strategy preset (tune every knob after creating)</label>
+      <select name="preset">${presetOpts}</select>
+      <label>Entry size — % of this wallet per trade</label>
+      <input type="number" name="entry_pct" min="1" max="100" value="10">
+      <button type="submit">Create task</button>
+      <div class="warn">The key is stored on the Railway volume so the bot can sign trades. Anyone with this dashboard's password controls every task — use burners, fund only what each strategy is meant to risk.</div>
+    </div>
+  </form>`, '/tasks');
+}
+
+function tpRowsHTML(s: Strategy): string {
+  const rows: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const tp = s.tps[i];
+    rows.push(`<div style="display:flex;gap:8px;margin:4px 0">
+      <input type="number" step="0.1" min="1.05" name="tp_mult_${i}" placeholder="mult (e.g. 2)" value="${tp ? tp.mult : ''}" style="flex:1">
+      <input type="number" step="1" min="1" max="100" name="tp_sell_${i}" placeholder="sell %" value="${tp ? Math.round(tp.sellPct * 100) : ''}" style="flex:1">
+    </div>`);
+  }
+  return rows.join('');
+}
+
+async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: string }): Promise<string> {
+  const addr = taskManager.keypairFor(task).publicKey.toBase58();
+  let bal: number | null = null;
+  try { bal = await getSolBalance(taskManager.keypairFor(task)); } catch {}
+  const s = task.strategy;
+  const sum = taskSummary(task);
+  const positions = taskManager.traderFor(task).getAllPositions().sort((a, b) => b.entryTime - a.entryTime).slice(0, 40);
+
+  const posRows = positions.map(p => {
+    const pnl = p.status === 'closed' ? (p.finalPnlSol ?? 0) : (p.totalSolReturned - p.entrySol * (1 - p.remainingPct));
+    return `<tr>
+      <td><b>$${p.symbol}</b> ${p.status === 'open' ? '<span style="color:#10b981;font-size:10px">LIVE</span>' : ''}</td>
+      <td class="mono" style="font-size:11px;color:var(--text2)">${new Date(p.entryTime).toISOString().slice(5, 16).replace('T', ' ')}</td>
+      <td class="mono">${p.entrySol.toFixed(3)} ◎</td>
+      <td class="mono">${(p.peakMultiplier ?? 1).toFixed(2)}X</td>
+      <td class="mono">${p.exits.length} exit(s)</td>
+      <td class="mono" style="color:${p.status === 'open' ? 'var(--text2)' : pnl >= 0 ? '#10b981' : '#ef4444'}">${p.status === 'open' ? Math.round(p.remainingPct * 100) + '% open' : (pnl >= 0 ? '+' : '') + pnl.toFixed(3) + ' ◎'}</td>
+    </tr>`;
+  }).join('');
+
+  const presetOpts = ['custom', ...Object.keys(STRATEGY_PRESETS)]
+    .map(k => `<option value="${k}" ${s.preset === k ? 'selected' : ''}>${k === 'custom' ? 'Custom' : STRATEGY_PRESETS[k].name}</option>`).join('');
+
+  return settingsShell(`
+  ${msg ? `<div class="msg ${msg.ok ? 'ok' : 'err'}">${msg.text}</div>` : ''}
+  <div class="card">
+    <h3>${task.enabled ? '🟢' : '⚪'} ${task.name}</h3>
+    <div class="kv">Wallet: <b class="mono">${addr}</b></div>
+    <div class="kv">Balance: <b>${bal === null ? '—' : bal.toFixed(4) + ' SOL'}</b> · Realized PnL: <b style="color:${sum.pnl >= 0 ? '#10b981' : '#ef4444'}">${sum.pnl >= 0 ? '+' : ''}${sum.pnl.toFixed(3)} SOL</b> · ${sum.open} open · ${sum.wins}/${sum.closed} wins</div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <form method="POST" action="/task"><input type="hidden" name="id" value="${task.id}"><input type="hidden" name="action" value="toggle">
+        <button type="submit" style="margin:0;width:auto;padding:8px 16px;background:${task.enabled ? '#1a2035' : '#10b981'};color:${task.enabled ? '#c8d3e6' : '#04110b'}">${task.enabled ? '⏸ Pause task' : '▶ Start task'}</button></form>
+      <form method="POST" action="/task" onsubmit="return confirm('Delete task ${task.name}? Position history is kept on disk.')">
+        <input type="hidden" name="id" value="${task.id}"><input type="hidden" name="action" value="delete">
+        <button type="submit" style="margin:0;width:auto;padding:8px 16px;background:#2a1215;color:#fca5a5">Delete</button></form>
+    </div>
+  </div>
+
+  <form method="POST" action="/task">
+    <input type="hidden" name="id" value="${task.id}"><input type="hidden" name="action" value="strategy">
+    <div class="card">
+      <h3>Strategy — edits apply to open positions on the next price tick</h3>
+      <label>Name</label>
+      <input name="name" value="${task.name}" maxlength="40">
+      <label>Preset (picking one resets the fields below)</label>
+      <select name="preset">${presetOpts}</select>
+      <label>Take-profit levels — multiplier + % of original position to sell (blank = unused)</label>
+      ${tpRowsHTML(s)}
+      <label>Trailing stop — % drop from ATH</label>
+      <input type="number" name="trailing_drop" min="5" max="90" value="${Math.round(s.trailingDrop * 100)}">
+      <label>Trailing active</label>
+      <select name="trailing_from">
+        <option value="entry" ${s.trailingFrom === 'entry' ? 'selected' : ''}>From entry (trailing IS the stop)</option>
+        <option value="afterLastTp" ${s.trailingFrom === 'afterLastTp' ? 'selected' : ''}>After last TP (ladder-style)</option>
+      </select>
+      <label>Stop loss % below entry (ladder-style only)</label>
+      <input type="number" name="stop_loss" min="1" max="95" value="${Math.round((1 - s.stopLossPct) * 100)}">
+      <div class="toggle-row"><input type="checkbox" id="be" name="break_even" value="1" ${s.breakEvenAfterTp1 ? 'checked' : ''}><label for="be" style="margin:0;font-size:13px;color:var(--text)">Move stop to break-even after first TP</label></div>
+      <label>Entry — % of wallet per trade</label>
+      <input type="number" name="entry_pct" min="1" max="100" value="${Math.round(s.entryPct * 100)}">
+      <label>Min entry (SOL) / Max entry (SOL, 0 = uncapped)</label>
+      <div style="display:flex;gap:8px">
+        <input type="number" name="min_entry" step="0.01" min="0.01" value="${s.minEntrySol}" style="flex:1">
+        <input type="number" name="max_entry" step="0.01" min="0" value="${s.maxEntrySol}" style="flex:1">
+      </div>
+      <label>Slippage % / Priority fee (SOL)</label>
+      <div style="display:flex;gap:8px">
+        <input type="number" name="slippage" min="1" max="99" value="${Math.round(s.slippageBps / 100)}" style="flex:1">
+        <input type="number" name="priority_fee" step="0.00001" min="0" value="${s.priorityFeeLamports / 1e9}" style="flex:1">
+      </div>
+      <button type="submit">Save strategy</button>
+    </div>
+  </form>
+
+  <div class="card" style="max-width:none">
+    <h3>Positions (last 40)</h3>
+    ${positions.length === 0 ? '<p style="font-size:13px;color:var(--text2)">None yet — next call buys automatically while the task is running.</p>' : `
+    <div style="overflow-x:auto"><table>
+      <tr><th>Coin</th><th>Entry time</th><th>Size</th><th>Peak</th><th>Exits</th><th>PnL / state</th></tr>
+      ${posRows}
+    </table></div>`}
+  </div>`, `/task?id=${task.id}`);
+}
+
+function strategyFromForm(form: Record<string, string>, current?: Strategy): Partial<Strategy> {
+  // Preset switch: if a non-custom preset picked and it differs from current, take the preset wholesale
+  if (form.preset && form.preset !== 'custom' && STRATEGY_PRESETS[form.preset] && form.preset !== current?.preset) {
+    const s = STRATEGY_PRESETS[form.preset].make();
+    if (form.entry_pct) s.entryPct = Math.min(1, Math.max(0.01, parseFloat(form.entry_pct) / 100));
+    return s;
+  }
+  const tps: { mult: number; sellPct: number }[] = [];
+  for (let i = 0; i < 6; i++) {
+    const m = parseFloat(form[`tp_mult_${i}`]), sp = parseFloat(form[`tp_sell_${i}`]);
+    if (Number.isFinite(m) && Number.isFinite(sp) && m > 1 && sp > 0) tps.push({ mult: m, sellPct: sp / 100 });
+  }
+  return {
+    preset: 'custom',
+    tps,
+    trailingDrop: parseFloat(form.trailing_drop) / 100,
+    trailingFrom: form.trailing_from === 'afterLastTp' ? 'afterLastTp' : 'entry',
+    stopLossPct: 1 - parseFloat(form.stop_loss) / 100,
+    breakEvenAfterTp1: form.break_even === '1',
+    entryPct: parseFloat(form.entry_pct) / 100,
+    minEntrySol: parseFloat(form.min_entry),
+    maxEntrySol: parseFloat(form.max_entry),
+    slippageBps: parseFloat(form.slippage) * 100,
+    priorityFeeLamports: parseFloat(form.priority_fee) * 1e9,
+  };
+}
+
+async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathname: string, body: string): Promise<void> {
+  if (!authOk(req)) {
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(settingsLoginHTML());
+    return;
+  }
+  const form = parseFormBody(body);
+  const html = async (page: 'list' | string, msg: { ok: boolean; text: string }) => {
+    const out = page === 'list'
+      ? await buildTasksHTML(msg)
+      : await buildTaskDetailHTML(taskManager.get(page)!, msg);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(out);
+  };
+  try {
+    if (pathname === '/tasks') {
+      const task = taskManager.create(form.name, form.wallet_key, strategyFromForm(form));
+      await html('list', { ok: true, text: `Task "${task.name}" created and running — it buys the next call.` });
+      return;
+    }
+    const task = taskManager.get(form.id);
+    if (!task) { await html('list', { ok: false, text: 'Task not found' }); return; }
+    if (form.action === 'toggle') {
+      taskManager.update(task.id, { enabled: !task.enabled });
+      await html('list', { ok: true, text: `"${task.name}" ${task.enabled ? 'running' : 'paused'}.` });
+    } else if (form.action === 'delete') {
+      const name = task.name;
+      taskManager.remove(task.id);
+      await html('list', { ok: true, text: `"${name}" deleted (position history kept on disk).` });
+    } else if (form.action === 'strategy') {
+      taskManager.update(task.id, { name: form.name, strategy: strategyFromForm(form, task.strategy) });
+      await html(task.id, { ok: true, text: 'Strategy saved — applies to open positions on the next tick.' });
+    } else {
+      await html('list', { ok: false, text: 'Unknown action' });
+    }
+  } catch (err: any) {
+    await html('list', { ok: false, text: err.message });
+  }
+}
+
 function parseRange(url: string): TimeRange {
   const match = url.match(/[?&]range=([^&]+)/);
   const val = match?.[1] ?? 'all';
@@ -1667,15 +1910,39 @@ export function startDashboard(port?: number): void {
     const url = req.url ?? '/';
     const pathname = url.split('?')[0];
 
-    // POST /settings — collect body then handle (login or save)
-    if (req.method === 'POST' && pathname === '/settings') {
+    // POST /settings | /tasks | /task — collect body then handle
+    if (req.method === 'POST' && (pathname === '/settings' || pathname === '/tasks' || pathname === '/task')) {
       let body = '';
       req.on('data', (c: Buffer) => { body += c; if (body.length > 64_000) req.destroy(); });
       req.on('end', () => {
-        handleSettingsPost(req, res, body).catch(err => {
+        const handler = pathname === '/settings'
+          ? handleSettingsPost(req, res, body)
+          : handleTasksPost(req, res, pathname, body);
+        handler.catch(err => {
           res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Settings error: ' + err.message);
+          res.end('Error: ' + err.message);
         });
+      });
+      return;
+    }
+
+    if (pathname === '/tasks' || pathname === '/task') {
+      if (!authOk(req)) {
+        res.writeHead(authHash() ? 401 : 200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(authHash() ? settingsLoginHTML() : settingsShell('<div class="card"><h3>Tasks disabled</h3><p style="font-size:13px">Set DASH_PASSWORD in Railway to enable task management.</p></div>', '/tasks'));
+        return;
+      }
+      const idMatch = url.match(/[?&]id=([a-z0-9]+)/);
+      const task = pathname === '/task' && idMatch ? taskManager.get(idMatch[1]) : undefined;
+      const render = pathname === '/task'
+        ? (task ? buildTaskDetailHTML(task) : buildTasksHTML({ ok: false, text: 'Task not found' }))
+        : buildTasksHTML();
+      render.then(html => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      }).catch(err => {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Tasks error: ' + err.message);
       });
       return;
     }
@@ -1696,27 +1963,30 @@ export function startDashboard(port?: number): void {
 
     if (pathname === '/api/live') {
       (async () => {
-        const positions: RealPosition[] = loadJSON(join(CONFIG.DATA_DIR, 'positions.json'));
-        const open = positions.filter(p => p.status === 'open').map(p => ({
+        const open = taskManager.openPositions().map(({ task, pos: p }) => ({
+          taskId: task.id, taskName: task.name,
           mint: p.mint, symbol: p.symbol, entrySol: p.entrySol, entryPrice: p.entryPrice,
           entryMC: p.entryMC, entryTime: p.entryTime, remainingPct: p.remainingPct,
           totalSolReturned: p.totalSolReturned, trailingStopPrice: p.trailingStopPrice,
           peakMultiplier: p.peakMultiplier, exits: p.exits.length,
         }));
-        let walletAddr: string | null = null, balance: number | null = null;
+        let balance: number | null = null;
         try {
-          if (walletSource() !== 'none') {
-            walletAddr = getWallet().publicKey.toBase58();
-            balance = await getSolBalance();
-          }
-        } catch { /* RPC hiccup — omit balance */ }
+          // combined balance across enabled task wallets
+          const bals = await Promise.all(taskManager.enabledTasks().map(t =>
+            getSolBalance(taskManager.keypairFor(t)).catch(() => 0)));
+          balance = bals.reduce((s, b) => s + b, 0);
+        } catch { /* omit */ }
+        const tasks = taskManager.all();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          walletAddr, balance,
+          balance,
           tradeEnabled: CONFIG.TRADE_ENABLED,
-          strategy: CONFIG.TRADE_EXIT_STRATEGY,
-          trailingDrop: CONFIG.TRADE_TRAILING_DROP,
-          entryPct: CONFIG.TRADE_ENTRY_PCT,
+          taskCount: tasks.length,
+          enabledCount: tasks.filter(t => t.enabled).length,
+          entryPct: tasks[0]?.strategy.entryPct ?? 0.1,
+          trailingDrop: tasks[0]?.strategy.trailingDrop ?? 0.45,
+          strategy: 'per-task',
           open,
         }));
       })().catch(err => {

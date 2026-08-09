@@ -72,17 +72,17 @@ export function getConnection(): Connection {
 }
 
 /** Get the bot wallet's SOL balance. */
-export async function getSolBalance(): Promise<number> {
+export async function getSolBalance(keypair?: Keypair): Promise<number> {
   const conn = getConnection();
-  const wallet = getWallet();
+  const wallet = keypair ?? getWallet();
   const lamports = await conn.getBalance(wallet.publicKey);
   return lamports / LAMPORTS_PER_SOL;
 }
 
 /** Get token balance (raw smallest units) for the bot wallet. Checks both SPL Token and Token-2022. */
-export async function getTokenBalance(mint: string): Promise<number> {
+export async function getTokenBalance(mint: string, keypair?: Keypair): Promise<number> {
   const conn = getConnection();
-  const wallet = getWallet();
+  const wallet = keypair ?? getWallet();
   const mintPk = new PublicKey(mint);
 
   // Try standard SPL Token first, then Token-2022
@@ -119,9 +119,9 @@ export async function getTokenBalanceUi(mint: string): Promise<number> {
 }
 
 /** Close token account to reclaim rent SOL. Checks both SPL Token and Token-2022. */
-export async function closeTokenAccount(mint: string): Promise<string | null> {
+export async function closeTokenAccount(mint: string, keypair?: Keypair): Promise<string | null> {
   const conn = getConnection();
-  const wallet = getWallet();
+  const wallet = keypair ?? getWallet();
   const mintPk = new PublicKey(mint);
 
   for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {

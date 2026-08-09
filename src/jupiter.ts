@@ -1,6 +1,14 @@
-import { VersionedTransaction } from '@solana/web3.js';
+import { VersionedTransaction, type Keypair } from '@solana/web3.js';
 import { getWallet, getConnection } from './wallet.js';
 import { CONFIG } from './config.js';
+
+/** Per-call swap options — task wallets pass their own keypair + params.
+ *  Omitted fields fall back to the legacy singleton wallet / global CONFIG. */
+export interface SwapOpts {
+  keypair?: Keypair;
+  slippageBps?: number;
+  priorityFeeLamports?: number;
+}
 
 const JUPITER_QUOTE = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUPITER_SWAP = 'https://lite-api.jup.ag/swap/v1/swap';
@@ -70,6 +78,7 @@ async function getQuote(
 async function getSwapTransaction(
   quoteResponse: any,
   userPublicKey: string,
+  priorityFeeLamports?: number,
 ): Promise<string> {
   const res = await fetch(JUPITER_SWAP, {
     method: 'POST',
@@ -80,7 +89,7 @@ async function getSwapTransaction(
       userPublicKey,
       dynamicComputeUnitLimit: true,
       dynamicSlippage: false,
-      prioritizationFeeLamports: CONFIG.TRADE_PRIORITY_FEE_LAMPORTS,
+      prioritizationFeeLamports: priorityFeeLamports ?? CONFIG.TRADE_PRIORITY_FEE_LAMPORTS,
     }),
   });
 
@@ -93,9 +102,10 @@ async function getSwapTransaction(
   return data.swapTransaction;
 }
 
-/** Sign and send a Jupiter swap transaction. */
-async function signAndSend(swapTxBase64: string): Promise<string> {
-  const wallet = getWallet();
+/** Sign and send a Jupiter swap transaction. skipPreflight for faster submission —
+ *  Jupiter already simulated the route, preflight only adds latency on hot coins. */
+async function signAndSend(swapTxBase64: string, keypair?: Keypair): Promise<string> {
+  const wallet = keypair ?? getWallet();
   const connection = getConnection();
 
   const txBuf = Buffer.from(swapTxBase64, 'base64');
@@ -104,7 +114,7 @@ async function signAndSend(swapTxBase64: string): Promise<string> {
 
   const rawTx = tx.serialize();
   const txSig = await connection.sendRawTransaction(rawTx, {
-    skipPreflight: false,
+    skipPreflight: true,
     maxRetries: 2,
   });
 
@@ -124,19 +134,19 @@ async function signAndSend(swapTxBase64: string): Promise<string> {
  * @param mint - Token mint address
  * @param solAmount - Amount of SOL to spend
  */
-export async function jupiterBuy(mint: string, solAmount: number): Promise<SwapResult> {
+export async function jupiterBuy(mint: string, solAmount: number, opts: SwapOpts = {}): Promise<SwapResult> {
   const lamports = Math.floor(solAmount * 1e9);
-  const wallet = getWallet();
+  const wallet = opts.keypair ?? getWallet();
 
   console.log(`[Jupiter] Getting quote: ${solAmount} SOL → $${mint.slice(0, 8)}...`);
-  const quote = await getQuote(WSOL_MINT, mint, lamports, CONFIG.TRADE_SLIPPAGE_BPS);
+  const quote = await getQuote(WSOL_MINT, mint, lamports, opts.slippageBps ?? CONFIG.TRADE_SLIPPAGE_BPS);
 
   const priceImpact = parseFloat(quote.priceImpactPct ?? '0');
   console.log(`[Jupiter] Quote: ${quote.outAmount} tokens, impact: ${(priceImpact * 100).toFixed(2)}%`);
 
-  const swapTx = await getSwapTransaction(quote, wallet.publicKey.toBase58());
+  const swapTx = await getSwapTransaction(quote, wallet.publicKey.toBase58(), opts.priorityFeeLamports);
   console.log(`[Jupiter] Sending buy tx...`);
-  const txSig = await signAndSend(swapTx);
+  const txSig = await signAndSend(swapTx, opts.keypair);
   console.log(`[Jupiter] ✅ Buy confirmed: ${txSig}`);
 
   return {
@@ -220,19 +230,19 @@ export async function jupiterGetPrice(mint: string, solPriceUsd?: number): Promi
  * @param mint - Token mint address
  * @param tokenAmount - Raw token amount (smallest units) to sell
  */
-export async function jupiterSell(mint: string, tokenAmount: number): Promise<SwapResult> {
-  const wallet = getWallet();
+export async function jupiterSell(mint: string, tokenAmount: number, opts: SwapOpts = {}): Promise<SwapResult> {
+  const wallet = opts.keypair ?? getWallet();
 
   console.log(`[Jupiter] Getting quote: ${tokenAmount} tokens → SOL`);
-  const quote = await getQuote(mint, WSOL_MINT, tokenAmount, CONFIG.TRADE_SLIPPAGE_BPS);
+  const quote = await getQuote(mint, WSOL_MINT, tokenAmount, opts.slippageBps ?? CONFIG.TRADE_SLIPPAGE_BPS);
 
   const priceImpact = parseFloat(quote.priceImpactPct ?? '0');
   const solOut = parseInt(quote.outAmount) / 1e9;
   console.log(`[Jupiter] Quote: ${solOut.toFixed(6)} SOL out, impact: ${(priceImpact * 100).toFixed(2)}%`);
 
-  const swapTx = await getSwapTransaction(quote, wallet.publicKey.toBase58());
+  const swapTx = await getSwapTransaction(quote, wallet.publicKey.toBase58(), opts.priorityFeeLamports);
   console.log(`[Jupiter] Sending sell tx...`);
-  const txSig = await signAndSend(swapTx);
+  const txSig = await signAndSend(swapTx, opts.keypair);
   console.log(`[Jupiter] ✅ Sell confirmed: ${txSig}`);
 
   return {
