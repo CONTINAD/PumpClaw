@@ -7,6 +7,7 @@ import { createPublicKey, verify as cryptoVerify } from 'crypto';
 import { readFileSync } from 'fs';
 import { CONFIG } from './config.js';
 import { fmtUsd } from './discord.js';
+import { renderPnlCard } from './pnl-card.js';
 import type { CallRecord } from './tracker.js';
 
 // ── Signature verification (Ed25519, no external deps) ──────
@@ -106,14 +107,55 @@ async function buildMogCard(ca: string): Promise<any> {
   };
 }
 
+/** Render the PNG card and attach it to the deferred interaction response. */
+async function followUpWithCard(token: string, mint: string): Promise<void> {
+  const url = `https://discord.com/api/v10/webhooks/${CONFIG.DISCORD_APP_ID}/${token}/messages/@original`;
+  try {
+    const rec = loadCalls().find(c => c.mint === mint)!;
+
+    // Live refresh for peak (best effort)
+    let currentMC = 0, currentPrice = 0;
+    try {
+      const res = await fetch(`${CONFIG.DEXSCREENER_API}/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(2500) });
+      const d: any = await res.json();
+      const pair = (d.pairs ?? []).sort((a: any, b: any) => (+b.volume?.h24 || 0) - (+a.volume?.h24 || 0))[0];
+      if (pair) { currentMC = +pair.marketCap || +pair.fdv || 0; currentPrice = +pair.priceUsd || 0; }
+    } catch {}
+
+    const peakMult = Math.max(rec.peakMultiplier ?? 1, currentPrice > 0 && rec.entryPrice > 0 ? currentPrice / rec.entryPrice : 0);
+    const peakMC = Math.max(rec.peakMC ?? 0, currentMC);
+
+    const png = await renderPnlCard({ rec, peakMult, peakMC, imageUrl: rec.imageUri });
+
+    const fd = new FormData();
+    fd.append('payload_json', JSON.stringify({ attachments: [{ id: 0, filename: 'pumpclaw-pnl.png' }] }));
+    fd.append('files[0]', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'pumpclaw-pnl.png');
+    const res = await fetch(url, { method: 'PATCH', body: fd });
+    if (!res.ok) console.error(`[Interactions] Card follow-up failed ${res.status}: ${await res.text()}`);
+  } catch (err: any) {
+    console.error(`[Interactions] Card render error: ${err.message}`);
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: `Card generation failed: ${err.message}` }),
+    }).catch(() => {});
+  }
+}
+
 /** Handle a verified interaction payload. Returns the JSON response body. */
 export async function handleInteraction(payload: any): Promise<any> {
   if (payload.type === 1) return { type: 1 }; // PING → PONG
 
   if (payload.type === 2 && payload.data?.name === 'mog') {
-    const ca = payload.data.options?.find((o: any) => o.name === 'ca')?.value ?? '';
-    const card = await buildMogCard(String(ca));
-    return { type: 4, data: card }; // CHANNEL_MESSAGE_WITH_SOURCE
+    const ca = String(payload.data.options?.find((o: any) => o.name === 'ca')?.value ?? '');
+    const mint = ca.trim().replace(/[^A-Za-z0-9]/g, '');
+    const rec = loadCalls().find(c => c.mint === mint);
+    if (!rec) {
+      return { type: 4, data: { content: `❌ \`${mint.slice(0, 12)}…\` isn't a PumpClaw call — /mog only flexes coins we called.`, flags: 64 } };
+    }
+    // Defer, then attach the rendered PNG (image responses can't be inlined)
+    followUpWithCard(payload.token, mint).catch(() => {});
+    return { type: 5 }; // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
   }
 
   return { type: 4, data: { content: 'Unknown command', flags: 64 } };
