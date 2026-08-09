@@ -82,6 +82,7 @@ export class Trader {
     private taskId: string = 'main',
     private keypair: Keypair | null = null,
     private getStrategy: () => Strategy = () => STRATEGY_PRESETS.trailing45.make(),
+    private paper: boolean = false,
   ) {
     this.positionsFile = taskId === 'main'
       ? `${CONFIG.DATA_DIR}/positions.json`
@@ -114,6 +115,44 @@ export class Trader {
     if (existing && existing.status === 'open') {
       console.log(`[Trader] Already have open position for $${symbol}, skipping`);
       return null;
+    }
+
+    // Paper task: simulate a flat 1 SOL fill at current price — no wallet, no Jupiter.
+    // Same position book + exit engine as real trades, so the PATH (dips included)
+    // is what decides the outcome. This is the ground truth the peak-model lab lacks.
+    if (this.paper) {
+      const entrySol = 1.0;
+      const strat0 = this.getStrategy();
+      const tokens = currentPrice > 0 ? entrySol / currentPrice : 0;
+      if (tokens <= 0) return null;
+      const position: RealPosition = {
+        mint, symbol, name,
+        entrySol,
+        entryPrice: currentPrice,
+        entryMC: currentMC,
+        entryTime: Date.now(),
+        entryTx: 'paper',
+        tokensReceived: tokens,
+        stopLossPrice: strat0.trailingFrom === 'entry'
+          ? currentPrice * (1 - strat0.trailingDrop)
+          : currentPrice * strat0.stopLossPct,
+        beStopArmed: false,
+        remainingPct: 1.0,
+        tokensRemaining: tokens,
+        exits: [],
+        totalSolReturned: 0,
+        tpHits: strat0.tps.map(() => false),
+        tp1Hit: false, tp2Hit: false, tp3Hit: false,
+        peakMultiplier: 1,
+        trailingActive: strat0.trailingFrom === 'entry',
+        trailingHighPrice: strat0.trailingFrom === 'entry' ? currentPrice : 0,
+        trailingStopPrice: strat0.trailingFrom === 'entry' ? currentPrice * (1 - strat0.trailingDrop) : 0,
+        status: 'open',
+      };
+      this.positions.set(mint, position);
+      this.save();
+      console.log(`[Trader:${this.taskId}] 📄 Paper buy $${symbol} @ ${currentPrice}`);
+      return position;
     }
 
     // Check SOL balance and calculate entry size
@@ -246,6 +285,24 @@ export class Trader {
     ): Promise<RealExit | null> => {
       const isFullExit = pctOfOriginal >= pos.remainingPct - 0.001;
       const actualPct = Math.min(pctOfOriginal, pos.remainingPct);
+
+      if (this.paper) {
+        // Simulated fill at the trigger price minus a flat 2% haircut for slippage realism
+        const solReceived = pos.entrySol * actualPct * mult * 0.98;
+        const exit: RealExit = {
+          reason, label, multiplierAtExit: mult, pctSold: actualPct,
+          tokensSold: pos.tokensReceived * actualPct, solReceived,
+          txSignature: 'paper', timestamp: Date.now(),
+        };
+        pos.exits.push(exit);
+        pos.totalSolReturned += solReceived;
+        pos.remainingPct = Math.max(0, pos.remainingPct - actualPct);
+        pos.tokensRemaining = Math.max(0, pos.tokensRemaining - exit.tokensSold);
+        newExits.push(exit);
+        console.log(`[Trader:${this.taskId}] 📄 Paper sell $${pos.symbol} ${label} at ${mult.toFixed(2)}X → ${solReceived.toFixed(3)} SOL`);
+        return exit;
+      }
+
       const tokensToSell = Math.floor(pos.tokensReceived * actualPct);
 
       if (tokensToSell <= 0) return null;
@@ -383,7 +440,7 @@ export class Trader {
       pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
 
       // Close token account to reclaim rent SOL (fire and forget)
-      closeTokenAccount(mint, this.kp()).catch(err =>
+      if (!this.paper) closeTokenAccount(mint, this.kp()).catch(err =>
         console.log(`[Trader] Token account close skipped for $${pos.symbol}: ${err.message}`),
       );
     }

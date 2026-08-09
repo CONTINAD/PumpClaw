@@ -578,7 +578,9 @@ async function positionMonitorLoop() {
       continue;
     }
 
-    const openPositions = taskManager.openPositions();
+    // Real positions only — paper/shadow positions are priced by the DexScreener
+    // maintenance loops; Jupiter quotes need raw token amounts real fills provide.
+    const openPositions = taskManager.openPositions().filter(({ task }) => !task.paper);
     if (openPositions.length === 0) {
       await new Promise(r => setTimeout(r, CONFIG.TRADE_MONITOR_INTERVAL_MS));
       continue;

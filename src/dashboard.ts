@@ -1054,7 +1054,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
       }
       st.textContent = d.tasks.filter(t => t.enabled).length + '/' + d.tasks.length + ' running';
       body.innerHTML = d.tasks.map(t =>
-        '<a href="/task?id=' + t.id + '" style="text-decoration:none;color:var(--text);background:var(--bg1);border:1px solid var(--border);border-left:3px solid ' + (t.enabled ? '#10b981' : '#4a5570') + ';border-radius:8px;padding:10px 12px;display:block">' +
+        '<a href="/task?id=' + t.id + '" style="text-decoration:none;color:var(--text);background:var(--bg1);border:1px solid var(--border);border-left:3px solid ' + (t.paper ? '#8b5cf6' : t.enabled ? '#10b981' : '#4a5570') + ';border-radius:8px;padding:10px 12px;display:block">' +
         '<div style="display:flex;justify-content:space-between;align-items:center"><b>' + t.name + '</b>' +
         '<span style="font-size:11px;color:' + (t.enabled ? '#10b981' : 'var(--text3)') + '">' + (t.enabled ? '● RUNNING' : '○ paused') + '</span></div>' +
         '<div style="font-size:11px;color:var(--text2);margin:4px 0">' + t.strategy + '</div>' +
@@ -1730,7 +1730,7 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
     const s = taskSummary(t);
     const bal = balances[i];
     return `<tr>
-      <td><span style="color:${t.enabled ? '#10b981' : '#4a5570'}">●</span> <a href="/task?id=${t.id}" style="color:var(--text);font-weight:700">${t.name}</a></td>
+      <td><span style="color:${t.enabled ? '#10b981' : '#4a5570'}">●</span> <a href="/task?id=${t.id}" style="color:var(--text);font-weight:700">${t.name}</a>${t.paper ? ' <span style="font-size:10px;color:#8b5cf6">PAPER</span>' : ''}</td>
       <td class="mono" style="font-size:11px;color:var(--text2)">${addr.slice(0, 6)}…${addr.slice(-4)}</td>
       <td class="mono">${bal === null ? '—' : bal.toFixed(3) + ' ◎'}</td>
       <td style="font-size:12px;color:var(--text2)">${describeStrategy(t.strategy)}</td>
@@ -2127,9 +2127,9 @@ export function startDashboard(port?: number): void {
         const out = tasks.map((t, i) => {
           const s = taskSummary(t);
           return {
-            id: t.id, name: t.name, enabled: t.enabled,
+            id: t.id, name: t.name, enabled: t.enabled, paper: !!t.paper,
             strategy: describeStrategy(t.strategy),
-            balance: balances[i],
+            balance: t.paper ? null : balances[i],
             pnl: +s.pnl.toFixed(3), open: s.open, wins: s.wins, closed: s.closed,
           };
         });

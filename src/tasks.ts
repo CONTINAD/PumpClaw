@@ -23,6 +23,7 @@ export interface TradeTask {
   enabled: boolean;
   strategy: Strategy;
   createdAt: number;
+  paper?: boolean;       // shadow task: simulated fills on live prices, no wallet needed
 }
 
 export interface TaskExitEvent { task: TradeTask; exit: RealExit }
@@ -34,6 +35,28 @@ class TaskManager {
   constructor() {
     this.load();
     this.migrateLegacy();
+    this.seedShadowFleet();
+  }
+
+  /** One shadow (paper) task per strategy preset — path-aware ground truth for the
+   *  Strategy Lab's peak-model estimates. Runs every call on live prices, no funds. */
+  private seedShadowFleet(): void {
+    if (this.all().some(t => t.paper)) return;
+    for (const [key, preset] of Object.entries(STRATEGY_PRESETS)) {
+      const id = `shadow-${key}`;
+      const task: TradeTask = {
+        id,
+        name: `📄 ${preset.name}`,
+        walletKey: bs58.encode(Keypair.generate().secretKey), // throwaway, never funded
+        enabled: true,
+        strategy: preset.make(),
+        createdAt: Date.now(),
+        paper: true,
+      };
+      this.tasks.set(id, task);
+    }
+    this.save();
+    console.log(`[Tasks] Seeded shadow fleet: ${Object.keys(STRATEGY_PRESETS).length} paper tasks (one per preset)`);
   }
 
   // ── Persistence ──
@@ -93,7 +116,7 @@ class TaskManager {
   traderFor(task: TradeTask): Trader {
     let tr = this.traders.get(task.id);
     if (!tr) {
-      tr = new Trader(task.id, this.keypairFor(task), () => this.tasks.get(task.id)?.strategy ?? task.strategy);
+      tr = new Trader(task.id, this.keypairFor(task), () => this.tasks.get(task.id)?.strategy ?? task.strategy, !!task.paper);
       this.traders.set(task.id, tr);
     }
     return tr;
@@ -152,24 +175,29 @@ class TaskManager {
     const results = await Promise.allSettled(
       tasks.map(t => this.traderFor(t).buy(mint, symbol, name, price, mc)),
     );
-    let bought = 0;
+    let bought = 0, realBought = 0;
     results.forEach((r, i) => {
       if (r.status === 'fulfilled' && r.value) {
         bought++;
-        const pos = r.value;
-        sendTradeActivity(
-          tasks[i].name, 'buy', symbol, mint,
-          `**${pos.entrySol} SOL** at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC`,
-          pos.entryTx,
-        ).catch(() => {});
+        if (!tasks[i].paper) {
+          realBought++;
+          const pos = r.value;
+          sendTradeActivity(
+            tasks[i].name, 'buy', symbol, mint,
+            `**${pos.entrySol} SOL** at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC`,
+            pos.entryTx,
+          ).catch(() => {});
+        }
       } else if (r.status === 'rejected') {
         console.error(`[Tasks] Buy error (${tasks[i].name}): ${r.reason?.message}`);
       }
     });
-    // Every task skipped (usually balance) — tell the owner in Discord, max once per 30 min
-    if (bought === 0 && Date.now() - this.lastNoFillAlert > 30 * 60 * 1000) {
+    // Every REAL task skipped (usually balance) — tell the owner, max once per 30 min.
+    // Paper fills don't count: shadow tasks always fill and would mask a broke wallet.
+    const realTasks = tasks.filter(t => !t.paper).length;
+    if (realTasks > 0 && realBought === 0 && Date.now() - this.lastNoFillAlert > 30 * 60 * 1000) {
       this.lastNoFillAlert = Date.now();
-      sendOpsAlert(`Call **$${symbol}** fired but **0/${tasks.length} task(s) bought** — most likely low wallet balance. Check the Tasks page.`, CONFIG.TRADES_WEBHOOK).catch(() => {});
+      sendOpsAlert(`Call **$${symbol}** fired but **0/${realTasks} real task(s) bought** — most likely low wallet balance. Check the Tasks page.`, CONFIG.TRADES_WEBHOOK).catch(() => {});
     }
     return bought;
   }
@@ -183,6 +211,7 @@ class TaskManager {
         const exits = await this.traderFor(task).checkPosition(mint, price, mc);
         for (const exit of exits) {
           events.push({ task, exit });
+          if (task.paper) continue; // shadow fills stay off Discord — dashboard only
           const pos = this.traderFor(task).getPosition(mint);
           sendTradeActivity(
             task.name, 'sell', pos?.symbol ?? mint.slice(0, 8), mint,
