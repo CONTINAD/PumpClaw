@@ -118,6 +118,34 @@ export async function getTokenBalanceUi(mint: string): Promise<number> {
   return 0;
 }
 
+export interface TokenHolding {
+  mint: string;
+  amountRaw: number;
+  uiAmount: number;
+  decimals: number;
+}
+
+/** Every SPL token this wallet actually holds on-chain (both token programs).
+ *  This is ground truth — position records can drift on failed sells/dust. */
+export async function getTokenHoldings(keypair?: Keypair): Promise<TokenHolding[]> {
+  const conn = getConnection();
+  const owner = (keypair ?? getWallet()).publicKey;
+  const out: TokenHolding[] = [];
+  for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    try {
+      const res = await conn.getParsedTokenAccountsByOwner(owner, { programId });
+      for (const { account } of res.value) {
+        const info: any = (account.data as any).parsed?.info;
+        const amt = info?.tokenAmount;
+        if (amt && (amt.uiAmount ?? 0) > 0) {
+          out.push({ mint: info.mint, amountRaw: parseInt(amt.amount), uiAmount: amt.uiAmount, decimals: amt.decimals });
+        }
+      }
+    } catch { /* program scan failed — skip */ }
+  }
+  return out;
+}
+
 /** Close token account to reclaim rent SOL. Checks both SPL Token and Token-2022. */
 export async function closeTokenAccount(mint: string, keypair?: Keypair): Promise<string | null> {
   const conn = getConnection();

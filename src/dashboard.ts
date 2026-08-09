@@ -4,7 +4,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { CONFIG, saveSettingsOverrides } from './config.js';
-import { getWallet, getSolBalance, setWalletFromKey, walletSource } from './wallet.js';
+import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldings } from './wallet.js';
 import { taskManager, type TradeTask } from './tasks.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import type { CallRecord } from './tracker.js';
@@ -1820,6 +1820,61 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
   </form>
 
   <div class="card" style="max-width:none">
+    <h3>💼 Wallet holdings — on-chain, live <span id="h-status" style="margin-left:8px;font-size:11px;text-transform:none;letter-spacing:0;color:var(--text3)">loading…</span></h3>
+    <div id="h-body" style="font-size:13px;color:var(--text3)">Loading…</div>
+  </div>
+  <script>
+  (function () {
+    const TASK_ID = ${JSON.stringify(task.id)};
+    async function tick() {
+      try {
+        const d = await (await fetch('/api/task?id=' + TASK_ID)).json();
+        const st = document.getElementById('h-status');
+        const body = document.getElementById('h-body');
+        st.textContent = (d.enabled ? 'running' : 'paused') + ' · ' + d.strategy + ' · refreshes 15s';
+        const mints = [...new Set([...d.holdings.map(h => h.mint), ...d.open.map(p => p.mint)])].slice(0, 30);
+        let prices = {};
+        if (mints.length) {
+          try {
+            const dex = await (await fetch('https://api.dexscreener.com/latest/dex/tokens/' + mints.join(','))).json();
+            for (const pair of (dex.pairs || [])) {
+              const m = pair.baseToken && pair.baseToken.address;
+              if (m && (!prices[m] || (+pair.volume?.h24 || 0) > prices[m].vol)) prices[m] = { price: +pair.priceUsd, vol: +pair.volume?.h24 || 0 };
+            }
+          } catch (e) {}
+        }
+        let html = '<div style="margin-bottom:10px;font-size:14px;color:var(--text)">◎ <b>' + (d.sol === null ? '—' : d.sol.toFixed(4)) + ' SOL</b></div>';
+        if (!d.holdings.length) {
+          html += '<span style="color:var(--text3)">No token holdings — SOL only. Positions appear here the moment a buy fills.</span>';
+        } else {
+          html += '<table style="width:100%;border-collapse:collapse;font-size:13px"><tr>' +
+            ['Token', 'Amount', 'Price', 'Value', ''].map(h => '<th style="color:var(--text3);text-align:left;padding:4px 8px;font-size:11px;text-transform:uppercase">' + h + '</th>').join('') + '</tr>';
+          let totalUsd = 0;
+          for (const h of d.holdings) {
+            const pr = prices[h.mint];
+            const val = pr ? h.uiAmount * pr.price : null;
+            if (val) totalUsd += val;
+            html += '<tr>' +
+              '<td style="padding:5px 8px;border-top:1px solid var(--border)"><b>' + (h.symbol ? '$' + h.symbol : h.mint.slice(0, 6) + '…' + h.mint.slice(-4)) + '</b>' + (h.isOpen ? ' <span style="color:#10b981;font-size:10px">LIVE POSITION</span>' : (h.symbol ? ' <span style="color:var(--text3);font-size:10px">not tracked</span>' : '')) + '</td>' +
+              '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border)">' + h.uiAmount.toLocaleString(undefined, { maximumFractionDigits: 0 }) + '</td>' +
+              '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text2)">' + (pr ? '$' + pr.price.toExponential(2) : '—') + '</td>' +
+              '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border);color:' + (val ? '#10b981' : 'var(--text3)') + '">' + (val ? '$' + val.toFixed(2) : 'no price') + '</td>' +
+              '<td style="padding:5px 8px;border-top:1px solid var(--border)"><a style="font-size:11px;color:#3b82f6" href="https://dexscreener.com/solana/' + h.mint + '" target="_blank">chart</a></td>' +
+              '</tr>';
+          }
+          html += '</table><div style="margin-top:8px;font-size:12px;color:var(--text2)">Token value: <b style="color:var(--text)">$' + totalUsd.toFixed(2) + '</b></div>';
+        }
+        body.innerHTML = html;
+      } catch (e) {
+        document.getElementById('h-status').textContent = 'refresh failed — retrying';
+      }
+    }
+    tick();
+    setInterval(tick, 15000);
+  })();
+  </script>
+
+  <div class="card" style="max-width:none">
     <h3>Positions (last 40)</h3>
     ${positions.length === 0 ? '<p style="font-size:13px;color:var(--text2)">None yet — next call buys automatically while the task is running.</p>' : `
     <div style="overflow-x:auto"><table>
@@ -1957,6 +2012,52 @@ export function startDashboard(port?: number): void {
       }).catch(err => {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Settings error: ' + err.message);
+      });
+      return;
+    }
+
+    if (pathname === '/api/task') {
+      if (!authOk(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'auth required' }));
+        return;
+      }
+      const idm = url.match(/[?&]id=([a-z0-9]+)/);
+      const task = idm ? taskManager.get(idm[1]) : undefined;
+      if (!task) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'task not found' }));
+        return;
+      }
+      (async () => {
+        const kp = taskManager.keypairFor(task);
+        const [sol, holdings] = await Promise.all([
+          getSolBalance(kp).catch(() => null),
+          getTokenHoldings(kp).catch(() => []),
+        ]);
+        const positions = taskManager.traderFor(task).getAllPositions();
+        const symByMint: Record<string, string> = {};
+        const openMints = new Set<string>();
+        for (const pos of positions) {
+          symByMint[pos.mint] = pos.symbol;
+          if (pos.status === 'open') openMints.add(pos.mint);
+        }
+        const open = positions.filter(pp => pp.status === 'open').map(pp => ({
+          mint: pp.mint, symbol: pp.symbol, entrySol: pp.entrySol, entryPrice: pp.entryPrice,
+          entryTime: pp.entryTime, remainingPct: pp.remainingPct, totalSolReturned: pp.totalSolReturned,
+          trailingStopPrice: pp.trailingStopPrice, peakMultiplier: pp.peakMultiplier,
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: task.id, name: task.name, enabled: task.enabled,
+          strategy: describeStrategy(task.strategy),
+          sol,
+          holdings: holdings.map(h => ({ ...h, symbol: symByMint[h.mint] ?? null, isOpen: openMints.has(h.mint) })),
+          open,
+        }));
+      })().catch(err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
       });
       return;
     }
