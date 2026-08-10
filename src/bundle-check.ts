@@ -1,5 +1,6 @@
 import { CONFIG } from './config.js';
 import { sendOpsAlert } from './discord.js';
+import { checkWalletGraph } from './wallet-graph.js';
 
 export interface BundleResult {
   safe: boolean;
@@ -330,13 +331,26 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length, details: 'insufficient wallet data — blocked (fail closed)' };
     }
 
-    // All-veteran top holders = every funding-time window is 0/0 and reads as clean.
-    // Farm wallets that trade constantly are indistinguishable from real traders here,
-    // so a coin nobody can be verified on is unverified, not safe.
-    if (CONFIG.BUNDLE_BLOCK_UNVERIFIABLE && fundingTimes.length < CONFIG.BUNDLE_MIN_VERIFIABLE) {
+    // Wallet-graph check — reads the actual transfer topology (who funded whom).
+    // This is the only check that sees farms built from constantly-active wallets.
+    const graph = CONFIG.GRAPH_CHECK_ENABLED
+      ? await checkWalletGraph(ownerWallets)
+      : { checked: 0, hubPct: 0, hubAddress: '', peerLinkPct: 0, suspicious: false, details: '' };
+
+    if (graph.suspicious) {
       return {
         safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length,
-        details: `unverifiable — only ${fundingTimes.length} fresh wallet(s) of ${ownerWallets.length} holders (${veteranCount} high-activity) [UNVERIFIABLE]`,
+        details: `${fundingTimes.length} fresh + ${veteranCount} veteran | ${graph.details}`,
+      };
+    }
+
+    // All-veteran top holders = every funding-time window is 0/0 and reads as clean.
+    // A clean wallet graph rescues these (real sniper-heavy launches); only block when
+    // we have neither funding-time data NOR graph data to judge on.
+    if (CONFIG.BUNDLE_BLOCK_UNVERIFIABLE && fundingTimes.length < CONFIG.BUNDLE_MIN_VERIFIABLE && graph.checked < 3) {
+      return {
+        safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length,
+        details: `unverifiable — ${fundingTimes.length} fresh of ${ownerWallets.length} holders (${veteranCount} high-activity), no graph data [UNVERIFIABLE]`,
       };
     }
 
@@ -406,6 +420,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
 
     const reasons: string[] = [];
     reasons.push(`${fundingTimes.length} fresh + ${veteranCount} veteran`);
+    if (graph.checked >= 3) reasons.push(graph.details);
     reasons.push(`${maxCluster}/${fundingTimes.length} in 5min (${clusterPct}%)`);
     reasons.push(`${hourMaxCluster}/${fundingTimes.length} in 1h (${hourClusterPct}%)`);
     reasons.push(`${dayMaxCluster}/${fundingTimes.length} in 24h (${dayClusterPct}%)`);

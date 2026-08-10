@@ -71,6 +71,11 @@ export const CONFIG = {
   // Tradeoff: also blocks legit sniper-heavy launches — set false to allow them.
   BUNDLE_BLOCK_UNVERIFIABLE: true,
   BUNDLE_MIN_VERIFIABLE: 3,         // need this many fresh wallets to trust a PASS
+  // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
+  // which funding-time clustering cannot see.
+  GRAPH_CHECK_ENABLED: true,
+  GRAPH_HUB_PCT: 30,                // block if one address funded 30%+ of top holders
+  GRAPH_PEER_PCT: 30,               // block if 30%+ of holders funded each other
   BUNDLE_LOW_BAL_HOLDERS: 20,       // check this many top holders for low SOL balance
   BUNDLE_LOW_BAL_SOL: 1,            // wallets with less than this SOL are "low balance"
   BUNDLE_LOW_BAL_PCT: 40,           // skip if 40%+ of top holders have < 1 SOL
