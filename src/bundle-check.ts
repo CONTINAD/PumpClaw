@@ -326,10 +326,18 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
     const walletData = await getWalletDataBatched(ownerWallets);
     const { fundingTimes, funders, veteranCount } = walletData;
 
-    // Veterans (600+ tx bots) have no reliable funding time but ARE resolved data —
-    // a sniper-heavy top 20 shouldn't fail closed, farm wallets are always fresh.
     if (fundingTimes.length + veteranCount < 3) {
       return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length, details: 'insufficient wallet data — blocked (fail closed)' };
+    }
+
+    // All-veteran top holders = every funding-time window is 0/0 and reads as clean.
+    // Farm wallets that trade constantly are indistinguishable from real traders here,
+    // so a coin nobody can be verified on is unverified, not safe.
+    if (CONFIG.BUNDLE_BLOCK_UNVERIFIABLE && fundingTimes.length < CONFIG.BUNDLE_MIN_VERIFIABLE) {
+      return {
+        safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length,
+        details: `unverifiable — only ${fundingTimes.length} fresh wallet(s) of ${ownerWallets.length} holders (${veteranCount} high-activity) [UNVERIFIABLE]`,
+      };
     }
 
     // 4a. Same-funder check: if too many holders were funded by the same source wallet
