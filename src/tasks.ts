@@ -26,7 +26,8 @@ export interface TradeTask {
   createdAt: number;
   paper?: boolean;       // shadow task: simulated fills on live prices, no wallet needed
   source?: string;       // legacy single-source field (migrated into `sources`)
-  sources?: string[];    // call sources this task buys from — can follow several at once
+  sources?: string[];    // EXTRA call sources followed on top of PumpClaw's own calls
+  noPumpclaw?: boolean;  // explicit opt-out of PumpClaw's own scanner (default: follow it)
 }
 
 export interface TaskExitEvent { task: TradeTask; exit: RealExit }
@@ -136,7 +137,8 @@ class TaskManager {
       enabled: true,
       strategy: sanitizeStrategy(strategy),
       createdAt: Date.now(),
-      sources: sources?.length ? sources : [PUMPCLAW_SOURCE_ID],
+      sources: (sources ?? []).filter(s => s !== PUMPCLAW_SOURCE_ID),
+      noPumpclaw: sources ? !sources.includes(PUMPCLAW_SOURCE_ID) : false,
     };
     this.tasks.set(id, task);
     this.save();
@@ -159,10 +161,11 @@ class TaskManager {
     if (patch.name !== undefined) task.name = patch.name.slice(0, 40) || task.name;
     if (patch.enabled !== undefined) task.enabled = patch.enabled;
     if (patch.sources !== undefined) {
-      task.sources = patch.sources.length ? patch.sources : [PUMPCLAW_SOURCE_ID];
-      task.source = undefined; // superseded by the multi-source list
+      task.sources = patch.sources.filter(s => s !== PUMPCLAW_SOURCE_ID);
+      task.noPumpclaw = !patch.sources.includes(PUMPCLAW_SOURCE_ID);
+      task.source = undefined; // superseded by the list + opt-out flag
     } else if (patch.source !== undefined) {
-      task.sources = [patch.source];
+      task.sources = patch.source === PUMPCLAW_SOURCE_ID ? [] : [patch.source];
       task.source = undefined;
     }
     if (patch.strategy !== undefined) task.strategy = sanitizeStrategy({ ...task.strategy, ...patch.strategy });
@@ -182,10 +185,13 @@ class TaskManager {
   }
 
   // ── Trading fan-out ──
-  /** Sources a task follows (legacy `source` string still honoured). */
+  /** Sources a task follows. PumpClaw's own scanner is the base feed every task
+   *  gets unless explicitly opted out — adding an external caller ADDS a lane,
+   *  it never silently unsubscribes you from your own bot's calls. */
   sourcesFor(task: TradeTask): string[] {
-    if (task.sources?.length) return task.sources;
-    return [task.source ?? PUMPCLAW_SOURCE_ID];
+    const extras = (task.sources?.length ? task.sources : task.source ? [task.source] : [])
+      .filter(s => s !== PUMPCLAW_SOURCE_ID);
+    return [...(task.noPumpclaw ? [] : [PUMPCLAW_SOURCE_ID]), ...extras];
   }
 
   enabledTasks(sourceId: string = PUMPCLAW_SOURCE_ID): TradeTask[] {

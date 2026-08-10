@@ -1795,7 +1795,7 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
       <input name="name" maxlength="40" placeholder="Task name">
       <label>Wallet private key (base58, write-only)</label>
       <input type="password" name="wallet_key" autocomplete="off" placeholder="burner wallet key — funds at risk are this wallet's balance only">
-      <label>Buy calls from (pick any number — a task can follow several callers)</label>
+      <label>Buy calls from (PumpClaw's own calls are on by default — external callers add lanes)</label>
       ${sourceCheckboxes([PUMPCLAW_SOURCE_ID])}
       <label>Strategy preset (tune every knob after creating)</label>
       <select name="preset">${presetOpts}</select>
@@ -1865,7 +1865,7 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
       <h3>Strategy — edits apply to open positions on the next price tick</h3>
       <label>Name</label>
       <input name="name" value="${task.name}" maxlength="40">
-      <label>Buy calls from — tick every caller this task should follow</label>
+      <label>Buy calls from — tick every caller this task should follow (unticking PumpClaw stops your own calls)</label>
       ${sourceCheckboxes(taskManager.sourcesFor(task))}
       <label>Preset (picking one resets the fields below)</label>
       <select name="preset">${presetOpts}</select>
