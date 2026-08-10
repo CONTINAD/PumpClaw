@@ -25,7 +25,8 @@ export interface TradeTask {
   strategy: Strategy;
   createdAt: number;
   paper?: boolean;       // shadow task: simulated fills on live prices, no wallet needed
-  source?: string;       // call source id — 'pumpclaw' (default) or an external source
+  source?: string;       // legacy single-source field (migrated into `sources`)
+  sources?: string[];    // call sources this task buys from — can follow several at once
 }
 
 export interface TaskExitEvent { task: TradeTask; exit: RealExit }
@@ -125,7 +126,7 @@ class TaskManager {
   }
 
   // ── CRUD (dashboard) ──
-  create(name: string, bs58Key: string, strategy: Partial<Strategy>, source?: string): TradeTask {
+  create(name: string, bs58Key: string, strategy: Partial<Strategy>, sources?: string[]): TradeTask {
     const kp = Keypair.fromSecretKey(bs58.decode(bs58Key.trim())); // validates the key
     const id = randomBytes(4).toString('hex');
     const task: TradeTask = {
@@ -135,15 +136,15 @@ class TaskManager {
       enabled: true,
       strategy: sanitizeStrategy(strategy),
       createdAt: Date.now(),
-      source: source || PUMPCLAW_SOURCE_ID,
+      sources: sources?.length ? sources : [PUMPCLAW_SOURCE_ID],
     };
     this.tasks.set(id, task);
     this.save();
-    console.log(`[Tasks] Created "${task.name}" (${kp.publicKey.toBase58().slice(0, 8)}…) — ${task.strategy.preset} — source:${task.source}`);
+    console.log(`[Tasks] Created "${task.name}" (${kp.publicKey.toBase58().slice(0, 8)}…) — ${task.strategy.preset} — sources:${(task.sources ?? []).join('+')}`);
     return task;
   }
 
-  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string; walletKey?: string }): TradeTask {
+  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string; sources?: string[]; walletKey?: string }): TradeTask {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`No task ${id}`);
     if (patch.walletKey) {
@@ -157,7 +158,13 @@ class TaskManager {
     }
     if (patch.name !== undefined) task.name = patch.name.slice(0, 40) || task.name;
     if (patch.enabled !== undefined) task.enabled = patch.enabled;
-    if (patch.source !== undefined) task.source = patch.source;
+    if (patch.sources !== undefined) {
+      task.sources = patch.sources.length ? patch.sources : [PUMPCLAW_SOURCE_ID];
+      task.source = undefined; // superseded by the multi-source list
+    } else if (patch.source !== undefined) {
+      task.sources = [patch.source];
+      task.source = undefined;
+    }
     if (patch.strategy !== undefined) task.strategy = sanitizeStrategy({ ...task.strategy, ...patch.strategy });
     this.save();
     return task;
@@ -175,8 +182,14 @@ class TaskManager {
   }
 
   // ── Trading fan-out ──
+  /** Sources a task follows (legacy `source` string still honoured). */
+  sourcesFor(task: TradeTask): string[] {
+    if (task.sources?.length) return task.sources;
+    return [task.source ?? PUMPCLAW_SOURCE_ID];
+  }
+
   enabledTasks(sourceId: string = PUMPCLAW_SOURCE_ID): TradeTask[] {
-    return this.all().filter(t => t.enabled && (t.source ?? PUMPCLAW_SOURCE_ID) === sourceId);
+    return this.all().filter(t => t.enabled && this.sourcesFor(t).includes(sourceId));
   }
 
   /** Every enabled task regardless of source (dashboards, banners). */

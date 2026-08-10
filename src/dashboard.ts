@@ -1713,19 +1713,31 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
 
 // ── Tasks pages (sneaker-bot style: N wallets × N strategies) ──
 
-function sourceOptions(selected?: string): string {
-  const cur = selected ?? PUMPCLAW_SOURCE_ID;
-  const opts = [`<option value="${PUMPCLAW_SOURCE_ID}" ${cur === PUMPCLAW_SOURCE_ID ? 'selected' : ''}>PumpClaw scanner (own calls)</option>`];
+function sourceCheckboxes(selected: string[]): string {
+  const rows = [
+    `<div class="toggle-row"><input type="checkbox" id="src_${PUMPCLAW_SOURCE_ID}" name="source_${PUMPCLAW_SOURCE_ID}" value="1" ${selected.includes(PUMPCLAW_SOURCE_ID) ? 'checked' : ''}><label for="src_${PUMPCLAW_SOURCE_ID}" style="margin:0;font-size:13px;color:var(--text)">PumpClaw scanner <span style="color:var(--text3)">— our own calls</span></label></div>`,
+  ];
   for (const s of sourceRegistry.all()) {
     const filters = `${s.maxMc > 0 ? 'under ' + Math.round(s.maxMc / 1000) + 'K MC' : 'any MC'}${s.maxAgeHours > 0 ? ', <' + s.maxAgeHours + 'h old' : ''}`;
-    opts.push(`<option value="${s.id}" ${cur === s.id ? 'selected' : ''}>${s.name} — ${filters}</option>`);
+    rows.push(`<div class="toggle-row"><input type="checkbox" id="src_${s.id}" name="source_${s.id}" value="1" ${selected.includes(s.id) ? 'checked' : ''}><label for="src_${s.id}" style="margin:0;font-size:13px;color:var(--text)">${s.name} <span style="color:var(--text3)">— ${filters}</span></label></div>`);
   }
-  return opts.join('');
+  return rows.join('');
+}
+
+function sourcesFromForm(form: Record<string, string>): string[] {
+  const out: string[] = [];
+  if (form[`source_${PUMPCLAW_SOURCE_ID}`] === '1') out.push(PUMPCLAW_SOURCE_ID);
+  for (const s of sourceRegistry.all()) if (form[`source_${s.id}`] === '1') out.push(s.id);
+  return out;
 }
 
 function sourceLabel(id?: string): string {
   if (!id || id === PUMPCLAW_SOURCE_ID) return 'PumpClaw';
   return sourceRegistry.get(id)?.name ?? id;
+}
+
+function sourcesLabel(task: TradeTask): string {
+  return taskManager.sourcesFor(task).map(sourceLabel).join(' + ');
 }
 
 function taskSummary(task: TradeTask) {
@@ -1750,7 +1762,7 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
       <td><span style="color:${t.enabled ? '#10b981' : '#4a5570'}">●</span> <a href="/task?id=${t.id}" style="color:var(--text);font-weight:700">${t.name}</a>${t.paper ? ' <span style="font-size:10px;color:#8b5cf6">PAPER</span>' : ''}</td>
       <td class="mono" style="font-size:11px;color:var(--text2)">${addr.slice(0, 6)}…${addr.slice(-4)}</td>
       <td class="mono">${bal === null ? '—' : bal.toFixed(3) + ' ◎'}</td>
-      <td style="font-size:11px;color:${(t.source ?? 'pumpclaw') === 'pumpclaw' ? 'var(--text2)' : '#f59e0b'}">${sourceLabel(t.source)}</td>
+      <td style="font-size:11px;color:${taskManager.sourcesFor(t).includes('pumpclaw') ? 'var(--text2)' : '#f59e0b'}">${sourcesLabel(t)}</td>
       <td style="font-size:12px;color:var(--text2)">${describeStrategy(t.strategy)}</td>
       <td class="mono" style="color:${s.pnl >= 0 ? '#10b981' : '#ef4444'}">${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(3)} ◎</td>
       <td class="mono">${s.open} open · ${s.wins}/${s.closed} wins</td>
@@ -1783,8 +1795,8 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
       <input name="name" maxlength="40" placeholder="Task name">
       <label>Wallet private key (base58, write-only)</label>
       <input type="password" name="wallet_key" autocomplete="off" placeholder="burner wallet key — funds at risk are this wallet's balance only">
-      <label>Buy calls from</label>
-      <select name="source">${sourceOptions()}</select>
+      <label>Buy calls from (pick any number — a task can follow several callers)</label>
+      ${sourceCheckboxes([PUMPCLAW_SOURCE_ID])}
       <label>Strategy preset (tune every knob after creating)</label>
       <select name="preset">${presetOpts}</select>
       <label>Entry size — % of this wallet per trade</label>
@@ -1835,7 +1847,7 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
   <div class="card">
     <h3>${task.enabled ? '🟢' : '⚪'} ${task.name}</h3>
     <div class="kv">Wallet: <b class="mono">${addr}</b></div>
-    <div class="kv">Buying: <b style="color:${(task.source ?? 'pumpclaw') === 'pumpclaw' ? 'var(--text)' : '#f59e0b'}">${sourceLabel(task.source)}</b> calls</div>
+    <div class="kv">Buying: <b style="color:#f59e0b">${sourcesLabel(task)}</b> calls</div>
     <div class="kv" style="margin-top:6px">${bal !== null && bal < 0.01 ? '<span style="color:#f59e0b">⚠ This wallet is empty — send SOL to the address above, or paste a funded wallet\'s key in the strategy form below.</span>' : ''}</div>
     <div class="kv">Balance: <b>${bal === null ? '—' : bal.toFixed(4) + ' SOL'}</b> · Realized PnL: <b style="color:${sum.pnl >= 0 ? '#10b981' : '#ef4444'}">${sum.pnl >= 0 ? '+' : ''}${sum.pnl.toFixed(3)} SOL</b> · ${sum.open} open · ${sum.wins}/${sum.closed} wins</div>
     <div style="display:flex;gap:8px;margin-top:10px">
@@ -1853,8 +1865,8 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
       <h3>Strategy — edits apply to open positions on the next price tick</h3>
       <label>Name</label>
       <input name="name" value="${task.name}" maxlength="40">
-      <label>Buy calls from — switch which caller this task follows</label>
-      <select name="source">${sourceOptions(task.source)}</select>
+      <label>Buy calls from — tick every caller this task should follow</label>
+      ${sourceCheckboxes(taskManager.sourcesFor(task))}
       <label>Preset (picking one resets the fields below)</label>
       <select name="preset">${presetOpts}</select>
       <label>Take-profit levels — multiplier + % of original position to sell (blank = unused)</label>
@@ -2028,7 +2040,7 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
   };
   try {
     if (pathname === '/tasks') {
-      const task = taskManager.create(form.name, form.wallet_key, strategyFromForm(form), form.source);
+      const task = taskManager.create(form.name, form.wallet_key, strategyFromForm(form), sourcesFromForm(form));
       await html('list', { ok: true, text: `Task "${task.name}" created and running — it buys the next call.` });
       return;
     }
@@ -2042,7 +2054,7 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
       taskManager.remove(task.id);
       await html('list', { ok: true, text: `"${name}" deleted (position history kept on disk).` });
     } else if (form.action === 'strategy') {
-      taskManager.update(task.id, { name: form.name, source: form.source, walletKey: form.wallet_key || undefined, strategy: strategyFromForm(form, task.strategy) });
+      taskManager.update(task.id, { name: form.name, sources: sourcesFromForm(form), walletKey: form.wallet_key || undefined, strategy: strategyFromForm(form, task.strategy) });
       await html(task.id, { ok: true, text: 'Strategy saved — applies to open positions on the next tick.' });
     } else {
       await html('list', { ok: false, text: 'Unknown action' });
@@ -2154,7 +2166,7 @@ export function startDashboard(port?: number): void {
           const s = taskSummary(t);
           return {
             id: t.id, name: t.name, enabled: t.enabled, paper: !!t.paper,
-            source: sourceLabel(t.source),
+            source: sourcesLabel(t),
             strategy: describeStrategy(t.strategy),
             balance: t.paper ? null : balances[i],
             pnl: +s.pnl.toFixed(3), open: s.open, wins: s.wins, closed: s.closed,
@@ -2242,7 +2254,7 @@ export function startDashboard(port?: number): void {
         let balance: number | null = null;
         try {
           // combined balance across enabled task wallets
-          const bals = await Promise.all(taskManager.enabledTasks().map(t =>
+          const bals = await Promise.all(taskManager.allEnabled().map(t =>
             getSolBalance(taskManager.keypairFor(t)).catch(() => 0)));
           balance = bals.reduce((s, b) => s + b, 0);
         } catch { /* omit */ }
