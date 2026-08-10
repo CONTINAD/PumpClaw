@@ -177,14 +177,32 @@ export class PerformanceTracker {
   }
 
   /** Update peak if current price is higher. Call this every time we have fresh price data. */
+  // Wick guard: single-tick price spikes on thin pools were being recorded as
+  // permanent ATHs (milestones + /mog then repeat the phantom number). A reading
+  // that jumps the peak >50% must be confirmed by the NEXT distinct reading.
+  private lastReading = new Map<string, { mult: number; ts: number }>();
+
+  private confirmedHigh(mint: string, mult: number, currentPeak: number): boolean {
+    const prev = this.lastReading.get(mint);
+    const now = Date.now();
+    const spike = currentPeak > 0 && mult > currentPeak * 1.5;
+    const confirmed = !spike || (prev !== undefined && prev.mult > currentPeak * 1.5 && now - prev.ts > 1000);
+    if (!prev || now - prev.ts > 1000) this.lastReading.set(mint, { mult, ts: now });
+    return confirmed;
+  }
+
   updatePeak(mint: string, currentPrice: number, currentMC: number): void {
     const rec = this.calls.get(mint);
     if (!rec || rec.entryPrice === 0) return;
     const mult = currentPrice / rec.entryPrice;
-    // Sanity check: if new mult jumps >50X above current peak in a single update,
-    // it's almost certainly bad DexScreener data (legit moons show intermediate ticks)
+    // Hard reject absurd jumps outright
     if (mult > rec.peakMultiplier * 50 && rec.peakMultiplier > 1) {
       console.warn(`[Tracker] Rejected suspicious peak for $${rec.symbol}: ${mult.toFixed(1)}X vs current ${rec.peakMultiplier.toFixed(1)}X — likely bad data`);
+      return;
+    }
+    // Soft reject: big jumps wait one tick for confirmation
+    if (!this.confirmedHigh(mint, mult, rec.peakMultiplier)) {
+      console.log(`[Tracker] Peak spike for $${rec.symbol} (${mult.toFixed(2)}X vs ${rec.peakMultiplier.toFixed(2)}X) — awaiting confirmation`);
       return;
     }
     if (mult > rec.peakMultiplier) {
@@ -205,8 +223,11 @@ export class PerformanceTracker {
 
     const multiplier = currentPrice / rec.entryPrice;
 
-    // Reject suspicious data (same guard as updatePeak)
+    // Reject suspicious data (same guards as updatePeak — incl. wick confirmation)
     if (multiplier > rec.peakMultiplier * 50 && rec.peakMultiplier > 1) {
+      return [];
+    }
+    if (!this.confirmedHigh(mint, multiplier, rec.peakMultiplier)) {
       return [];
     }
 

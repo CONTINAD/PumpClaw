@@ -57,6 +57,7 @@ const _lbTs = loadLbTimestamps();
 const tracker = new PerformanceTracker();
 const paperTrader = new PaperTrader();
 const seenTgMsgIds = new Set<string>();
+const recentCallTimes: number[] = [];
 let lastMilestoneCheck = 0;
 
 // Ring buffer of recently skipped tokens — exposed via /api/skipped on dashboard
@@ -171,9 +172,18 @@ async function fastScanCycle() {
     }
 
     // Liquidity floor — coins with shallow liq are easy rug targets
-    if (market.liquidity > 0 && market.liquidity < 7_000) {
-      log(`⚠ LOW LIQ — skipping ${post.name}: ${fmtUsd(market.liquidity)} liquidity (need ≥$7K)`);
+    if (market.liquidity > 0 && market.liquidity < CONFIG.MIN_LIQUIDITY) {
+      log(`⚠ LOW LIQ — skipping ${post.name}: ${fmtUsd(market.liquidity)} liquidity (need ≥${fmtUsd(CONFIG.MIN_LIQUIDITY)})`);
       recordSkip(post, 'LOW_LIQ', `${fmtUsd(market.liquidity)} liquidity`, market.marketCap);
+      continue;
+    }
+
+    // Hourly call cap — when the trending feed is spraying, quality collapses.
+    // Better to miss a call than to spray the channel with 1 AM exit liquidity.
+    while (recentCallTimes.length > 0 && Date.now() - recentCallTimes[0] > 3600_000) recentCallTimes.shift();
+    if (recentCallTimes.length >= CONFIG.MAX_CALLS_PER_HOUR) {
+      log(`⚠ RATE CAP — skipping ${post.name}: already ${recentCallTimes.length} calls in the last hour`);
+      recordSkip(post, 'RATE_CAP', `${recentCallTimes.length} calls in last hour`, market.marketCap);
       continue;
     }
 
@@ -255,6 +265,7 @@ async function fastScanCycle() {
     });
     alertCount++;
 
+    recentCallTimes.push(Date.now());
     const discordMsgId = await sendAlert(coin, adjustedMarket);
     if (discordMsgId) {
       tracker.setDiscordMsgId(coin.mint, discordMsgId);
