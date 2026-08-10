@@ -9,6 +9,8 @@ import { CONFIG } from './config.js';
 import { getSolBalance, getTokenBalance, closeTokenAccount } from './wallet.js';
 import { jupiterBuy, jupiterSell, type SwapResult, type SwapOpts } from './jupiter.js';
 import { STRATEGY_PRESETS, type Strategy } from './strategy.js';
+import { sendOpsAlert } from './discord.js';
+import { CONFIG as CFG } from './config.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -72,6 +74,8 @@ export interface RealPosition {
 export class Trader {
   private positions = new Map<string, RealPosition>();
   private positionsFile: string;
+  private sellFailCounts = new Map<string, number>();
+  private lastSellFailAlert = new Map<string, number>();
 
   /**
    * @param taskId    stable id — 'main' keeps the legacy positions.json
@@ -271,10 +275,12 @@ export class Trader {
 
     const mult = currentPrice / pos.entryPrice;
     const newExits: RealExit[] = [];
+    let stateChanged = false;
 
     // Track peak multiplier
     if (mult > (pos.peakMultiplier ?? 1)) {
       pos.peakMultiplier = mult;
+      stateChanged = true;
     }
 
     // Helper to execute a partial sell
@@ -331,7 +337,10 @@ export class Trader {
         return null;
       }
 
-      // Attempt sell with retry: if first attempt fails, wait 5s, verify balance, retry
+      // Attempt sell with retry: if first attempt fails, wait 5s, verify balance, retry.
+      // Stop-type exits escalate slippage — when a stop fires the priority is OUT,
+      // not price. A 30% cap that fails during a rug is not a stop-loss.
+      const isStopExit = reason === 'trailing_stop' || reason === 'stop_loss' || reason === 'be_stop' || reason === 'profit_protect';
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const tokensNow = attempt === 1 ? sellAmount : await getTokenBalance(mint, this.kp());
@@ -343,8 +352,14 @@ export class Trader {
           }
 
           const finalSellAmount = attempt === 1 ? sellAmount : tokensNow;
-          console.log(`[Trader] Selling ${finalSellAmount} tokens of $${pos.symbol} (${label})${attempt > 1 ? ` [RETRY #${attempt}]` : ''}...`);
-          const result = await jupiterSell(mint, finalSellAmount, this.swapOpts());
+          const opts = this.swapOpts();
+          if (isStopExit) {
+            // failure count for this mint escalates slippage: 50% → 90%
+            const fails = this.sellFailCounts.get(mint) ?? 0;
+            if (attempt > 1 || fails > 0) opts.slippageBps = Math.max(opts.slippageBps ?? 3000, fails >= 2 ? 9000 : 5000);
+          }
+          console.log(`[Trader] Selling ${finalSellAmount} tokens of $${pos.symbol} (${label})${attempt > 1 ? ` [RETRY #${attempt}]` : ''} slip:${(opts.slippageBps ?? 3000) / 100}%...`);
+          const result = await jupiterSell(mint, finalSellAmount, opts);
 
           const solReceived = result.outputAmount / 1e9;
           const exit: RealExit = {
@@ -363,6 +378,7 @@ export class Trader {
           pos.remainingPct = Math.max(0, pos.remainingPct - actualPct);
           pos.tokensRemaining = Math.max(0, pos.tokensRemaining - finalSellAmount);
           newExits.push(exit);
+          this.sellFailCounts.delete(mint);
 
           console.log(`[Trader] ✅ ${label}: sold ${finalSellAmount} tokens → ${solReceived.toFixed(4)} SOL (tx: ${result.txSignature.slice(0, 16)}...)`);
           return exit;
@@ -376,6 +392,21 @@ export class Trader {
       }
 
       console.error(`[Trader] ⚠ Sell FAILED after 2 attempts for $${pos.symbol} (${label}) — will retry next check cycle`);
+      const failCount = (this.sellFailCounts.get(mint) ?? 0) + 1;
+      this.sellFailCounts.set(mint, failCount);
+      // A stop sell that keeps failing means the position is bleeding uncontrolled —
+      // yell in Discord (once per 5 min per mint) so a human can intervene.
+      if (isStopExit && failCount >= 2) {
+        const last = this.lastSellFailAlert.get(mint) ?? 0;
+        if (Date.now() - last > 5 * 60 * 1000) {
+          this.lastSellFailAlert.set(mint, Date.now());
+          sendOpsAlert(
+            `**${label}** sell for **$${pos.symbol}** [${this.taskId}] has FAILED ${failCount}x — position bleeding below its stop. ` +
+            `Retrying with escalated slippage; consider selling manually: https://dexscreener.com/solana/${mint}`,
+            CFG.TRADES_WEBHOOK,
+          ).catch(() => {});
+        }
+      }
       return null;
     };
 
@@ -411,6 +442,7 @@ export class Trader {
     // ── Update trailing stop high (drop % is live-editable per task) ──
     if (pos.trailingActive && currentPrice > pos.trailingHighPrice) {
       pos.trailingHighPrice = currentPrice;
+      stateChanged = true;
     }
     if (pos.trailingActive) {
       pos.trailingStopPrice = pos.trailingHighPrice * (1 - strat.trailingDrop);
@@ -445,7 +477,9 @@ export class Trader {
       );
     }
 
-    if (newExits.length > 0) this.save();
+    // Persist ratchets too — before this, trailing state only saved on exits, so a
+    // restart mid-pump silently reset the stop back to entry level.
+    if (newExits.length > 0 || stateChanged) this.save();
     return newExits;
   }
 
