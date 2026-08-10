@@ -2428,6 +2428,33 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+    } else if (pathname === '/api/shadow') {
+      // Read-only: realized performance of each shadow (paper) task on live prices.
+      // This is the honest strategy comparison — same calls, same engine, real paths.
+      try {
+        const rows = taskManager.all().filter(t => t.paper).map(t => {
+          const positions = taskManager.traderFor(t).getAllPositions();
+          const closed = positions.filter(p => p.status === 'closed');
+          const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
+          const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
+          const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
+          return {
+            strategy: t.name.replace('📄 ', ''),
+            trades: closed.length,
+            open: positions.filter(p => p.status === 'open').length,
+            wins,
+            winPct: closed.length ? Math.round(wins / closed.length * 100) : 0,
+            pnlSol: +pnl.toFixed(3),
+            avgPerTrade: closed.length ? +(pnl / closed.length).toFixed(4) : 0,
+            bestPeak: +best.toFixed(2),
+          };
+        }).sort((a, b) => b.pnlSol - a.pnlSol);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ note: '1 SOL per trade, 2% fill haircut, live prices', strategies: rows }, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/sources') {
       import('./index.js').then(idx => {
         const events = [...(idx.sourceEvents ?? [])].sort((a: any, b: any) => b.ts - a.ts);
