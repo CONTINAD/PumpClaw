@@ -8,6 +8,7 @@ import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldi
 import { taskManager, type TradeTask } from './tasks.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
+import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import type { CallRecord } from './tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1057,6 +1058,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
         '<a href="/task?id=' + t.id + '" style="text-decoration:none;color:var(--text);background:var(--bg1);border:1px solid var(--border);border-left:3px solid ' + (t.paper ? '#8b5cf6' : t.enabled ? '#10b981' : '#4a5570') + ';border-radius:8px;padding:10px 12px;display:block">' +
         '<div style="display:flex;justify-content:space-between;align-items:center"><b>' + t.name + '</b>' +
         '<span style="font-size:11px;color:' + (t.enabled ? '#10b981' : 'var(--text3)') + '">' + (t.enabled ? '● RUNNING' : '○ paused') + '</span></div>' +
+        '<div style="font-size:10px;color:' + (t.source === 'PumpClaw' ? 'var(--text3)' : '#f59e0b') + ';margin:3px 0">buys: ' + t.source + '</div>' +
         '<div style="font-size:11px;color:var(--text2);margin:4px 0">' + t.strategy + '</div>' +
         '<div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px">' +
         '<span>◎ ' + (t.balance === null ? '—' : t.balance.toFixed(3)) + '</span>' +
@@ -1711,6 +1713,21 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
 
 // ── Tasks pages (sneaker-bot style: N wallets × N strategies) ──
 
+function sourceOptions(selected?: string): string {
+  const cur = selected ?? PUMPCLAW_SOURCE_ID;
+  const opts = [`<option value="${PUMPCLAW_SOURCE_ID}" ${cur === PUMPCLAW_SOURCE_ID ? 'selected' : ''}>PumpClaw scanner (own calls)</option>`];
+  for (const s of sourceRegistry.all()) {
+    const filters = `${s.maxMc > 0 ? 'under ' + Math.round(s.maxMc / 1000) + 'K MC' : 'any MC'}${s.maxAgeHours > 0 ? ', <' + s.maxAgeHours + 'h old' : ''}`;
+    opts.push(`<option value="${s.id}" ${cur === s.id ? 'selected' : ''}>${s.name} — ${filters}</option>`);
+  }
+  return opts.join('');
+}
+
+function sourceLabel(id?: string): string {
+  if (!id || id === PUMPCLAW_SOURCE_ID) return 'PumpClaw';
+  return sourceRegistry.get(id)?.name ?? id;
+}
+
 function taskSummary(task: TradeTask) {
   const positions = taskManager.traderFor(task).getAllPositions();
   const closed = positions.filter(p => p.status === 'closed');
@@ -1733,6 +1750,7 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
       <td><span style="color:${t.enabled ? '#10b981' : '#4a5570'}">●</span> <a href="/task?id=${t.id}" style="color:var(--text);font-weight:700">${t.name}</a>${t.paper ? ' <span style="font-size:10px;color:#8b5cf6">PAPER</span>' : ''}</td>
       <td class="mono" style="font-size:11px;color:var(--text2)">${addr.slice(0, 6)}…${addr.slice(-4)}</td>
       <td class="mono">${bal === null ? '—' : bal.toFixed(3) + ' ◎'}</td>
+      <td style="font-size:11px;color:${(t.source ?? 'pumpclaw') === 'pumpclaw' ? 'var(--text2)' : '#f59e0b'}">${sourceLabel(t.source)}</td>
       <td style="font-size:12px;color:var(--text2)">${describeStrategy(t.strategy)}</td>
       <td class="mono" style="color:${s.pnl >= 0 ? '#10b981' : '#ef4444'}">${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(3)} ◎</td>
       <td class="mono">${s.open} open · ${s.wins}/${s.closed} wins</td>
@@ -1754,7 +1772,7 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
     <h3>Trading tasks · master switch ${CONFIG.TRADE_ENABLED ? '<span style="color:#10b981">ON</span>' : '<span style="color:#ef4444">OFF (Settings)</span>'}</h3>
     ${tasks.length === 0 ? '<p style="font-size:13px;color:var(--text2)">No tasks yet — create the first one below. Each task is one wallet + one strategy, buying every call independently.</p>' : `
     <div style="overflow-x:auto"><table>
-      <tr><th>Task</th><th>Wallet</th><th>Balance</th><th>Strategy</th><th>Realized PnL</th><th>Positions</th><th></th></tr>
+      <tr><th>Task</th><th>Wallet</th><th>Balance</th><th>Buys</th><th>Strategy</th><th>Realized PnL</th><th>Positions</th><th></th></tr>
       ${rows}
     </table></div>`}
   </div>
@@ -1765,6 +1783,8 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
       <input name="name" maxlength="40" placeholder="Task name">
       <label>Wallet private key (base58, write-only)</label>
       <input type="password" name="wallet_key" autocomplete="off" placeholder="burner wallet key — funds at risk are this wallet's balance only">
+      <label>Buy calls from</label>
+      <select name="source">${sourceOptions()}</select>
       <label>Strategy preset (tune every knob after creating)</label>
       <select name="preset">${presetOpts}</select>
       <label>Entry size — % of this wallet per trade</label>
@@ -1815,6 +1835,7 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
   <div class="card">
     <h3>${task.enabled ? '🟢' : '⚪'} ${task.name}</h3>
     <div class="kv">Wallet: <b class="mono">${addr}</b></div>
+    <div class="kv">Buying: <b style="color:${(task.source ?? 'pumpclaw') === 'pumpclaw' ? 'var(--text)' : '#f59e0b'}">${sourceLabel(task.source)}</b> calls</div>
     <div class="kv">Balance: <b>${bal === null ? '—' : bal.toFixed(4) + ' SOL'}</b> · Realized PnL: <b style="color:${sum.pnl >= 0 ? '#10b981' : '#ef4444'}">${sum.pnl >= 0 ? '+' : ''}${sum.pnl.toFixed(3)} SOL</b> · ${sum.open} open · ${sum.wins}/${sum.closed} wins</div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <form method="POST" action="/task"><input type="hidden" name="id" value="${task.id}"><input type="hidden" name="action" value="toggle">
@@ -1831,6 +1852,8 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
       <h3>Strategy — edits apply to open positions on the next price tick</h3>
       <label>Name</label>
       <input name="name" value="${task.name}" maxlength="40">
+      <label>Buy calls from — switch which caller this task follows</label>
+      <select name="source">${sourceOptions(task.source)}</select>
       <label>Preset (picking one resets the fields below)</label>
       <select name="preset">${presetOpts}</select>
       <label>Take-profit levels — multiplier + % of original position to sell (blank = unused)</label>
@@ -2002,7 +2025,7 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
   };
   try {
     if (pathname === '/tasks') {
-      const task = taskManager.create(form.name, form.wallet_key, strategyFromForm(form));
+      const task = taskManager.create(form.name, form.wallet_key, strategyFromForm(form), form.source);
       await html('list', { ok: true, text: `Task "${task.name}" created and running — it buys the next call.` });
       return;
     }
@@ -2016,7 +2039,7 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
       taskManager.remove(task.id);
       await html('list', { ok: true, text: `"${name}" deleted (position history kept on disk).` });
     } else if (form.action === 'strategy') {
-      taskManager.update(task.id, { name: form.name, strategy: strategyFromForm(form, task.strategy) });
+      taskManager.update(task.id, { name: form.name, source: form.source, strategy: strategyFromForm(form, task.strategy) });
       await html(task.id, { ok: true, text: 'Strategy saved — applies to open positions on the next tick.' });
     } else {
       await html('list', { ok: false, text: 'Unknown action' });
@@ -2128,6 +2151,7 @@ export function startDashboard(port?: number): void {
           const s = taskSummary(t);
           return {
             id: t.id, name: t.name, enabled: t.enabled, paper: !!t.paper,
+            source: sourceLabel(t.source),
             strategy: describeStrategy(t.strategy),
             balance: t.paper ? null : balances[i],
             pnl: +s.pnl.toFixed(3), open: s.open, wins: s.wins, closed: s.closed,

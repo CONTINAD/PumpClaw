@@ -15,6 +15,8 @@ import { checkSmartWallets } from './wallet-filter.js';
 import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
 import { registerSlashCommands } from './interactions.js';
+import { sourceRegistry, extractMints, PUMPCLAW_SOURCE_ID } from './call-sources.js';
+import { sendTradeActivity } from './discord.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
 // ── Leaderboard timestamp persistence ───────────────────────
@@ -654,6 +656,98 @@ async function positionMonitorLoop() {
   }
 }
 
+// ── External call sources (copy-trade another caller's channel) ──────────
+// Polls each source channel over REST, extracts CAs from content/embeds/links,
+// applies the source's MC + coin-age filters, then buys on tasks subscribed to it.
+
+const sourceCursors = new Map<string, string>();   // channelId → last seen message id
+const sourceSeenMints = new Set<string>();          // never buy the same mint twice per boot
+
+async function fetchChannelMessages(channelId: string, after?: string): Promise<any[]> {
+  const qs = after ? `?after=${after}&limit=25` : '?limit=1';
+  const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages${qs}`, {
+    headers: { Authorization: `Bot ${CONFIG.DISCORD_BOT_TOKEN}` },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 80)}`);
+  const data: any = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+let warnedNoContent = false;
+
+async function externalSourceLoop() {
+  if (!CONFIG.DISCORD_BOT_TOKEN) {
+    log('⚠ External call sources disabled — DISCORD_BOT_TOKEN not set');
+    return;
+  }
+  while (true) {
+    await new Promise(r => setTimeout(r, 5_000));
+    for (const source of sourceRegistry.enabled()) {
+      // Only poll sources that at least one enabled task subscribes to
+      const subscribers = taskManager.enabledTasks(source.id);
+      if (subscribers.length === 0) continue;
+
+      try {
+        const cursor = sourceCursors.get(source.channelId);
+        const msgs = await fetchChannelMessages(source.channelId, cursor);
+        if (msgs.length === 0) continue;
+
+        // First poll only records the cursor — never backfill old calls
+        const newest = msgs.reduce((a, b) => (BigInt(a.id) > BigInt(b.id) ? a : b));
+        sourceCursors.set(source.channelId, newest.id);
+        if (!cursor) {
+          log(`📡 Watching source "${source.name}" (#${source.channelId}) — ${subscribers.length} task(s) subscribed`);
+          continue;
+        }
+
+        for (const msg of msgs.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))) {
+          const mints = extractMints(msg);
+          if (mints.length === 0) {
+            const emptyish = !msg.content && (msg.embeds ?? []).length === 0;
+            if (emptyish && !warnedNoContent) {
+              warnedNoContent = true;
+              log(`⚠ Source "${source.name}": message content is empty — enable MESSAGE CONTENT INTENT in the Discord dev portal or CAs can't be read`);
+            }
+            continue;
+          }
+
+          for (const mint of mints) {
+            if (sourceSeenMints.has(mint)) continue;
+            sourceSeenMints.add(mint);
+
+            const market = await fetchSingleMarketData(mint);
+            if (!market || market.priceUsd <= 0) {
+              log(`⏭ ${source.name}: ${mint.slice(0, 8)}… no market data — skipping`);
+              continue;
+            }
+            if (source.maxMc > 0 && market.marketCap > source.maxMc) {
+              log(`⏭ ${source.name}: skipping ${mint.slice(0, 8)}… — MC ${fmtUsd(market.marketCap)} over ${fmtUsd(source.maxMc)} cap`);
+              continue;
+            }
+            if (source.maxAgeHours > 0 && market.pairCreatedAt > 0) {
+              const ageH = (Date.now() - market.pairCreatedAt) / 3600_000;
+              if (ageH > source.maxAgeHours) {
+                log(`⏭ ${source.name}: skipping ${mint.slice(0, 8)}… — ${ageH.toFixed(1)}h old (max ${source.maxAgeHours}h)`);
+                continue;
+              }
+            }
+
+            log(`⚡ ${source.name} CALL: ${mint.slice(0, 8)}… at ${fmtUsd(market.marketCap)} MC — buying on ${subscribers.length} task(s)`);
+            const symbol = mint.slice(0, 6);
+            const bought = await taskManager.buyAll(mint, symbol, symbol, market.priceUsd, market.marketCap, source.id);
+            if (bought === 0) {
+              log(`⚠ ${source.name}: no fills for ${mint.slice(0, 8)}… — check balances`);
+            }
+          }
+        }
+      } catch (err: any) {
+        log(`⚠ Source "${source.name}" poll failed: ${err.message}`);
+      }
+    }
+  }
+}
+
 // ── DexScreener sweep (5s) — coarse but BATCHED price check across ALL open
 //    positions (real + shadow) in one API call. Catches fast dumps between
 //    Jupiter rounds and gives the shadow fleet fine-grained exit fidelity. ──
@@ -810,6 +904,9 @@ async function main() {
     });
     dexSweepLoop().catch(err => {
       console.error(`[Sweep] Fatal: ${err.message}`);
+    });
+    externalSourceLoop().catch(err => {
+      console.error(`[Sources] Fatal: ${err.message}`);
     });
   }
 

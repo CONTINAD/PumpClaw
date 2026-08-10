@@ -12,6 +12,7 @@ import { CONFIG } from './config.js';
 import { Trader, type RealExit, type RealPosition } from './trader.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, type Strategy } from './strategy.js';
 import { walletSource, getWallet } from './wallet.js';
+import { PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
 
 const TASKS_FILE = `${CONFIG.DATA_DIR}/tasks.json`;
@@ -24,6 +25,7 @@ export interface TradeTask {
   strategy: Strategy;
   createdAt: number;
   paper?: boolean;       // shadow task: simulated fills on live prices, no wallet needed
+  source?: string;       // call source id — 'pumpclaw' (default) or an external source
 }
 
 export interface TaskExitEvent { task: TradeTask; exit: RealExit }
@@ -123,7 +125,7 @@ class TaskManager {
   }
 
   // ── CRUD (dashboard) ──
-  create(name: string, bs58Key: string, strategy: Partial<Strategy>): TradeTask {
+  create(name: string, bs58Key: string, strategy: Partial<Strategy>, source?: string): TradeTask {
     const kp = Keypair.fromSecretKey(bs58.decode(bs58Key.trim())); // validates the key
     const id = randomBytes(4).toString('hex');
     const task: TradeTask = {
@@ -133,18 +135,20 @@ class TaskManager {
       enabled: true,
       strategy: sanitizeStrategy(strategy),
       createdAt: Date.now(),
+      source: source || PUMPCLAW_SOURCE_ID,
     };
     this.tasks.set(id, task);
     this.save();
-    console.log(`[Tasks] Created "${task.name}" (${kp.publicKey.toBase58().slice(0, 8)}…) — ${task.strategy.preset}`);
+    console.log(`[Tasks] Created "${task.name}" (${kp.publicKey.toBase58().slice(0, 8)}…) — ${task.strategy.preset} — source:${task.source}`);
     return task;
   }
 
-  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy> }): TradeTask {
+  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string }): TradeTask {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`No task ${id}`);
     if (patch.name !== undefined) task.name = patch.name.slice(0, 40) || task.name;
     if (patch.enabled !== undefined) task.enabled = patch.enabled;
+    if (patch.source !== undefined) task.source = patch.source;
     if (patch.strategy !== undefined) task.strategy = sanitizeStrategy({ ...task.strategy, ...patch.strategy });
     this.save();
     return task;
@@ -162,15 +166,18 @@ class TaskManager {
   }
 
   // ── Trading fan-out ──
-  enabledTasks(): TradeTask[] {
-    return this.all().filter(t => t.enabled);
+  enabledTasks(sourceId: string = PUMPCLAW_SOURCE_ID): TradeTask[] {
+    return this.all().filter(t => t.enabled && (t.source ?? PUMPCLAW_SOURCE_ID) === sourceId);
   }
+
+  /** Every enabled task regardless of source (dashboards, banners). */
+  allEnabled(): TradeTask[] { return this.all().filter(t => t.enabled); }
 
   private lastNoFillAlert = 0;
 
   /** Buy on all enabled tasks in parallel. Posts each fill to Discord. */
-  async buyAll(mint: string, symbol: string, name: string, price: number, mc: number): Promise<number> {
-    const tasks = this.enabledTasks();
+  async buyAll(mint: string, symbol: string, name: string, price: number, mc: number, sourceId: string = PUMPCLAW_SOURCE_ID): Promise<number> {
+    const tasks = this.enabledTasks(sourceId);
     if (tasks.length === 0) return 0;
     const results = await Promise.allSettled(
       tasks.map(t => this.traderFor(t).buy(mint, symbol, name, price, mc)),
