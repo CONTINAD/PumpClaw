@@ -72,6 +72,14 @@ export interface SkippedToken {
   timestamp: number;
 }
 export const skippedRing: SkippedToken[] = [];
+
+/** Recent external-source decisions — surfaced at /api/sources for debugging. */
+export interface SourceEvent { ts: number; source: string; mint: string; action: string; detail: string }
+export const sourceEvents: SourceEvent[] = [];
+export function recordSourceEvent(source: string, mint: string, action: string, detail: string) {
+  sourceEvents.push({ ts: Date.now(), source, mint, action, detail });
+  if (sourceEvents.length > 100) sourceEvents.shift();
+}
 function recordSkip(post: { mint: string; name: string }, reason: string, details: string, mc: number) {
   skippedRing.push({ mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now() });
   if (skippedRing.length > 200) skippedRing.shift();
@@ -660,8 +668,26 @@ async function positionMonitorLoop() {
 // Polls each source channel over REST, extracts CAs from content/embeds/links,
 // applies the source's MC + coin-age filters, then buys on tasks subscribed to it.
 
-const sourceCursors = new Map<string, string>();   // channelId → last seen message id
-const sourceSeenMints = new Set<string>();          // never buy the same mint twice per boot
+// Cursor persists across restarts — deploys used to consume the newest message as a
+// fresh bookmark, silently eating any signal posted during the restart window.
+const SOURCE_STATE_FILE = join(CONFIG.DATA_DIR, 'source-cursors.json');
+const CATCHUP_WINDOW_MS = 6 * 60 * 1000;  // after downtime, act on signals at most this old
+
+function loadSourceCursors(): Map<string, string> {
+  try { return new Map(Object.entries(JSON.parse(readFileSync(SOURCE_STATE_FILE, 'utf-8')))); }
+  catch { return new Map(); }
+}
+function saveSourceCursors(): void {
+  try { writeFileSync(SOURCE_STATE_FILE, JSON.stringify(Object.fromEntries(sourceCursors), null, 2)); } catch {}
+}
+
+const sourceCursors = loadSourceCursors();       // channelId → last processed message id
+const sourceSeenMints = new Set<string>();       // never buy the same mint twice per boot
+
+/** Discord snowflake → epoch ms (no API call needed). */
+function snowflakeTime(id: string): number {
+  return Number(BigInt(id) >> 22n) + 1420070400000;
+}
 
 async function fetchChannelMessages(channelId: string, after?: string): Promise<any[]> {
   const qs = after ? `?after=${after}&limit=25` : '?limit=1';
@@ -693,15 +719,22 @@ async function externalSourceLoop() {
         const msgs = await fetchChannelMessages(source.channelId, cursor);
         if (msgs.length === 0) continue;
 
-        // First poll only records the cursor — never backfill old calls
         const newest = msgs.reduce((a, b) => (BigInt(a.id) > BigInt(b.id) ? a : b));
         sourceCursors.set(source.channelId, newest.id);
+        saveSourceCursors();
         if (!cursor) {
+          // Never-seen channel: bookmark only, don't backfill history
           log(`📡 Watching source "${source.name}" (#${source.channelId}) — ${subscribers.length} task(s) subscribed`);
           continue;
         }
 
         for (const msg of msgs.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))) {
+          // After downtime, only act on recent signals — a 40-minute-old entry is stale
+          const age = Date.now() - snowflakeTime(msg.id);
+          if (age > CATCHUP_WINDOW_MS) {
+            log(`⏭ ${source.name}: skipping ${Math.round(age / 60000)}m-old signal (stale after downtime)`);
+            continue;
+          }
           const kind = classifySignal(msg);
           const mints = extractMints(msg);
 
@@ -718,6 +751,7 @@ async function externalSourceLoop() {
               if (!m || m.priceUsd <= 0) continue;
               const n = await taskManager.mirrorExit(source.id, mint, m.priceUsd, m.marketCap, `${source.name} sell signal`);
               if (n > 0) log(`🚪 ${source.name} posted SELL for ${mint.slice(0, 8)}… — closed ${n} position(s)`);
+              recordSourceEvent(source.name, mint, 'mirror-exit', `closed ${n} position(s)`);
             }
             continue;
           }
@@ -737,16 +771,19 @@ async function externalSourceLoop() {
             const market = await fetchSingleMarketData(mint);
             if (!market || market.priceUsd <= 0) {
               log(`⏭ ${source.name}: ${mint.slice(0, 8)}… no market data — skipping`);
+              recordSourceEvent(source.name, mint, 'skip', 'no market data');
               continue;
             }
             if (source.maxMc > 0 && market.marketCap > source.maxMc) {
               log(`⏭ ${source.name}: skipping ${mint.slice(0, 8)}… — MC ${fmtUsd(market.marketCap)} over ${fmtUsd(source.maxMc)} cap`);
+              recordSourceEvent(source.name, mint, 'skip', `MC ${fmtUsd(market.marketCap)} > ${fmtUsd(source.maxMc)} cap`);
               continue;
             }
             if (source.maxAgeHours > 0 && market.pairCreatedAt > 0) {
               const ageH = (Date.now() - market.pairCreatedAt) / 3600_000;
               if (ageH > source.maxAgeHours) {
                 log(`⏭ ${source.name}: skipping ${mint.slice(0, 8)}… — ${ageH.toFixed(1)}h old (max ${source.maxAgeHours}h)`);
+                recordSourceEvent(source.name, mint, 'skip', `${ageH.toFixed(1)}h old > ${source.maxAgeHours}h`);
                 continue;
               }
             }
@@ -754,6 +791,8 @@ async function externalSourceLoop() {
             log(`⚡ ${source.name} CALL: ${mint.slice(0, 8)}… at ${fmtUsd(market.marketCap)} MC — buying on ${subscribers.length} task(s)`);
             const symbol = mint.slice(0, 6);
             const bought = await taskManager.buyAll(mint, symbol, symbol, market.priceUsd, market.marketCap, source.id);
+            recordSourceEvent(source.name, mint, bought > 0 ? 'buy' : 'nofill',
+              bought > 0 ? `${bought} task(s) filled at ${fmtUsd(market.marketCap)} MC` : `0 fills at ${fmtUsd(market.marketCap)} MC — check balance/entry size`);
             if (bought === 0) {
               log(`⚠ ${source.name}: no fills for ${mint.slice(0, 8)}… — check balances`);
             }

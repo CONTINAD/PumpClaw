@@ -2428,6 +2428,22 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+    } else if (pathname === '/api/sources') {
+      import('./index.js').then(idx => {
+        const events = [...(idx.sourceEvents ?? [])].sort((a: any, b: any) => b.ts - a.ts);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          sources: sourceRegistry.all().map(s => ({
+            ...s,
+            subscribers: taskManager.enabledTasks(s.id).map(t => t.name),
+          })),
+          pumpclawSubscribers: taskManager.enabledTasks(PUMPCLAW_SOURCE_ID).map(t => t.name),
+          recent: events.map((e: any) => ({ ...e, when: new Date(e.ts).toISOString().slice(11, 19) })),
+        }, null, 2));
+      }).catch(err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/api/skipped') {
       // Late-resolve at request time to avoid circular import on module load
       import('./index.js').then(idx => {
