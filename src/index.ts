@@ -221,6 +221,18 @@ async function fastScanCycle() {
 
     // Re-fetch price right before calling — use the lower MC if it dropped during checks
     const freshMarket = await fetchSingleMarketData(post.mint);
+
+    // FADE GATE: the pipeline takes ~10-15s — a coin that lost 8%+ during that window
+    // is already rolling over. Calling it is top-signalling; skip instead.
+    if (freshMarket && market.priceUsd > 0 && freshMarket.priceUsd > 0) {
+      const fade = 1 - freshMarket.priceUsd / market.priceUsd;
+      if (fade > 0.08) {
+        log(`⚠ FADED — skipping ${post.name}: price dropped ${(fade * 100).toFixed(1)}% while checks ran`);
+        recordSkip(post, 'FADED', `-${(fade * 100).toFixed(1)}% during checks`, freshMarket.marketCap);
+        continue;
+      }
+    }
+
     const liveMarket = (freshMarket && freshMarket.marketCap < market.marketCap) ? freshMarket : market;
 
     log(
