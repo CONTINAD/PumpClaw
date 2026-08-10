@@ -62,6 +62,10 @@ export interface RealPosition {
   trailingHighPrice: number;
   trailingStopPrice: number;
 
+  // Once a stop condition fires, this stays true until the position is flat — the
+  // panic seller keeps hammering regardless of what price feeds say afterwards.
+  stopTriggered?: boolean;
+
   // State
   status: 'open' | 'closed' | 'error';
   closedTime?: number;
@@ -466,12 +470,14 @@ export class Trader {
     // ── Stop checks ──
     if (pos.remainingPct >= 0.001) {
       if (pos.trailingActive && currentPrice <= pos.trailingStopPrice) {
+        pos.stopTriggered = true; this.save();
         await executeSell('trailing_stop', `Trailing Stop −${(strat.trailingDrop * 100).toFixed(0)}% (ATH ${(pos.trailingHighPrice / pos.entryPrice).toFixed(1)}X)`, pos.remainingPct);
       } else if (ladderMode && (pos.peakMultiplier ?? 1) >= 1.5 && mult <= 1.0) {
         // Profit protection (ladder only): was up 50%+ but dumped back to break-even.
         // In trailing mode this would be a hidden TP that contradicts letting winners breathe.
         await executeSell('profit_protect', `Profit Protect (peaked ${pos.peakMultiplier.toFixed(1)}X)`, pos.remainingPct);
       } else if (currentPrice <= pos.stopLossPrice) {
+        pos.stopTriggered = true; this.save();
         const reason = pos.beStopArmed ? 'be_stop' : 'stop_loss';
         const label = pos.beStopArmed ? 'Break-Even Stop' : `Stop Loss −${((1 - strat.stopLossPct) * 100).toFixed(0)}%`;
         await executeSell(reason, label, pos.remainingPct);
@@ -494,6 +500,97 @@ export class Trader {
     // restart mid-pump silently reset the stop back to entry level.
     if (newExits.length > 0 || stateChanged) this.save();
     return newExits;
+  }
+
+  /**
+   * Liquidate a position whose stop already fired, independent of price feeds.
+   * Escalates slippage AND priority fee with each failure, and falls back to
+   * progressively smaller chunks — thin liquidity often rejects the full size
+   * but accepts a quarter of it. Returns any exits that cleared.
+   */
+  async panicSell(mint: string): Promise<RealExit[]> {
+    const pos = this.positions.get(mint);
+    if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
+    if (this.paper) return [];
+
+    const strat = this.getStrategy();
+    const fails = this.sellFailCounts.get(mint) ?? 0;
+    const slippageBps = Math.min(9500, 5000 + fails * 1000);
+    const priorityFeeLamports = Math.min(5_000_000, Math.max(strat.priorityFeeLamports, 100_000) * (1 + fails * 2));
+
+    let onChain = pos.tokensRemaining;
+    try { onChain = await getTokenBalance(mint, this.kp()); } catch { /* use tracked */ }
+
+    if (onChain <= 0) {
+      console.log(`[Panic:${this.taskId}] $${pos.symbol} has no tokens on-chain — closing record`);
+      pos.remainingPct = 0;
+      pos.tokensRemaining = 0;
+      pos.status = 'closed';
+      pos.closedTime = Date.now();
+      pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
+      this.save();
+      return [];
+    }
+
+    // Try full size first, then halves — a smaller clip often routes when the full one won't
+    const attempts = fails >= 2 ? [1, 0.5, 0.25] : fails >= 1 ? [1, 0.5] : [1];
+    for (const frac of attempts) {
+      const amount = Math.floor(onChain * frac);
+      if (amount <= 0) continue;
+      try {
+        console.log(`[Panic:${this.taskId}] Selling ${(frac * 100).toFixed(0)}% of $${pos.symbol} — slip ${slippageBps / 100}%, prio ${priorityFeeLamports}`);
+        const result = await jupiterSell(mint, amount, { keypair: this.kp(), slippageBps, priorityFeeLamports });
+        const solReceived = result.outputAmount / 1e9;
+        const soldPct = pos.remainingPct * frac;
+        const exit: RealExit = {
+          reason: 'panic_exit',
+          label: `Panic exit (stop blown, ${(frac * 100).toFixed(0)}%)`,
+          multiplierAtExit: pos.entrySol > 0 ? (solReceived / (pos.entrySol * soldPct)) : 0,
+          pctSold: soldPct,
+          tokensSold: amount,
+          solReceived,
+          txSignature: result.txSignature,
+          timestamp: Date.now(),
+        };
+        pos.exits.push(exit);
+        pos.totalSolReturned += solReceived;
+        pos.remainingPct = Math.max(0, pos.remainingPct - soldPct);
+        pos.tokensRemaining = Math.max(0, onChain - amount);
+        this.sellFailCounts.delete(mint);
+        if (pos.remainingPct < 0.001) {
+          pos.status = 'closed';
+          pos.closedTime = Date.now();
+          pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
+          pos.stopTriggered = false;
+          closeTokenAccount(mint, this.kp()).catch(() => {});
+        }
+        this.save();
+        console.log(`[Panic:${this.taskId}] ✅ Cleared ${(frac * 100).toFixed(0)}% of $${pos.symbol} → ${solReceived.toFixed(4)} SOL`);
+        return [exit];
+      } catch (err: any) {
+        console.error(`[Panic:${this.taskId}] ${(frac * 100).toFixed(0)}% sell failed for $${pos.symbol}: ${err.message}`);
+      }
+    }
+
+    const n = fails + 1;
+    this.sellFailCounts.set(mint, n);
+    if (n === 3 || n % 10 === 0) {
+      const last = this.lastSellFailAlert.get(mint) ?? 0;
+      if (Date.now() - last > 5 * 60 * 1000) {
+        this.lastSellFailAlert.set(mint, Date.now());
+        sendOpsAlert(
+          `🆘 **$${pos.symbol}** [${this.taskId}] — stop fired but the sell has failed **${n}x**. Still holding ${(pos.remainingPct * 100).toFixed(0)}%. ` +
+          `Retrying with higher slippage/fees; sell manually if you can: https://pump.fun/${mint}`,
+          CFG.TRADES_WEBHOOK,
+        ).catch(() => {});
+      }
+    }
+    return [];
+  }
+
+  /** Positions whose stop fired but that still hold tokens. */
+  getStuckPositions(): RealPosition[] {
+    return [...this.positions.values()].filter(p => p.status === 'open' && p.stopTriggered && p.remainingPct >= 0.001);
   }
 
   getPosition(mint: string): RealPosition | undefined {

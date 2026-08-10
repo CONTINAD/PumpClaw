@@ -300,6 +300,24 @@ class TaskManager {
     return closed;
   }
 
+  /** Retry liquidation on every position whose stop fired but never cleared. */
+  async panicSweep(): Promise<void> {
+    for (const task of this.all()) {
+      if (task.paper) continue;
+      const trader = this.traderFor(task);
+      for (const pos of trader.getStuckPositions()) {
+        const exits = await trader.panicSell(pos.mint);
+        for (const exit of exits) {
+          sendTradeActivity(
+            task.name, 'sell', pos.symbol, pos.mint,
+            `${exit.label} → **+${exit.solReceived.toFixed(4)} SOL**`,
+            exit.txSignature,
+          ).catch(() => {});
+        }
+      }
+    }
+  }
+
   /** Every open position across all tasks, tagged with its task. */
   openPositions(): { task: TradeTask; pos: RealPosition }[] {
     const out: { task: TradeTask; pos: RealPosition }[] = [];

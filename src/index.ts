@@ -805,6 +805,20 @@ async function externalSourceLoop() {
   }
 }
 
+// ── Panic-sell loop (8s) — retries any stop that fired but never cleared.
+//    Independent of price feeds: once a stop triggers, getting OUT is the only goal.
+
+async function panicSellLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 8_000));
+    try {
+      await taskManager.panicSweep();
+    } catch (err: any) {
+      console.error(`[Panic] Sweep error: ${err.message}`);
+    }
+  }
+}
+
 // ── DexScreener sweep (5s) — coarse but BATCHED price check across ALL open
 //    positions (real + shadow) in one API call. Catches fast dumps between
 //    Jupiter rounds and gives the shadow fleet fine-grained exit fidelity. ──
@@ -964,6 +978,9 @@ async function main() {
     });
     externalSourceLoop().catch(err => {
       console.error(`[Sources] Fatal: ${err.message}`);
+    });
+    panicSellLoop().catch(err => {
+      console.error(`[Panic] Fatal: ${err.message}`);
     });
   }
 
