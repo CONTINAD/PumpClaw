@@ -143,9 +143,18 @@ class TaskManager {
     return task;
   }
 
-  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string }): TradeTask {
+  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string; walletKey?: string }): TradeTask {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`No task ${id}`);
+    if (patch.walletKey) {
+      const kp = Keypair.fromSecretKey(bs58.decode(patch.walletKey.trim())); // validates
+      if (this.traderFor(task).getOpenPositions().length > 0) {
+        throw new Error('Task has open positions — swapping wallets now would orphan them. Wait for exits (or pause + sell manually) first.');
+      }
+      task.walletKey = bs58.encode(kp.secretKey);
+      this.traders.delete(task.id); // rebuild trader with the new keypair
+      console.log(`[Tasks] "${task.name}" wallet replaced → ${kp.publicKey.toBase58()}`);
+    }
     if (patch.name !== undefined) task.name = patch.name.slice(0, 40) || task.name;
     if (patch.enabled !== undefined) task.enabled = patch.enabled;
     if (patch.source !== undefined) task.source = patch.source;

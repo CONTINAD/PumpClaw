@@ -1836,6 +1836,7 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
     <h3>${task.enabled ? '🟢' : '⚪'} ${task.name}</h3>
     <div class="kv">Wallet: <b class="mono">${addr}</b></div>
     <div class="kv">Buying: <b style="color:${(task.source ?? 'pumpclaw') === 'pumpclaw' ? 'var(--text)' : '#f59e0b'}">${sourceLabel(task.source)}</b> calls</div>
+    <div class="kv" style="margin-top:6px">${bal !== null && bal < 0.01 ? '<span style="color:#f59e0b">⚠ This wallet is empty — send SOL to the address above, or paste a funded wallet\'s key in the strategy form below.</span>' : ''}</div>
     <div class="kv">Balance: <b>${bal === null ? '—' : bal.toFixed(4) + ' SOL'}</b> · Realized PnL: <b style="color:${sum.pnl >= 0 ? '#10b981' : '#ef4444'}">${sum.pnl >= 0 ? '+' : ''}${sum.pnl.toFixed(3)} SOL</b> · ${sum.open} open · ${sum.wins}/${sum.closed} wins</div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <form method="POST" action="/task"><input type="hidden" name="id" value="${task.id}"><input type="hidden" name="action" value="toggle">
@@ -1875,6 +1876,8 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
         <input type="number" name="min_entry" step="0.01" min="0.01" value="${s.minEntrySol}" style="flex:1">
         <input type="number" name="max_entry" step="0.01" min="0" value="${s.maxEntrySol}" style="flex:1">
       </div>
+      <label>Replace this task's wallet (base58 private key — leave blank to keep)</label>
+      <input type="password" name="wallet_key" autocomplete="off" placeholder="only if you want this task to trade from a different wallet">
       <label>Slippage % / Priority fee (SOL)</label>
       <div style="display:flex;gap:8px">
         <input type="number" name="slippage" min="1" max="99" value="${Math.round(s.slippageBps / 100)}" style="flex:1">
@@ -2039,7 +2042,7 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
       taskManager.remove(task.id);
       await html('list', { ok: true, text: `"${name}" deleted (position history kept on disk).` });
     } else if (form.action === 'strategy') {
-      taskManager.update(task.id, { name: form.name, source: form.source, strategy: strategyFromForm(form, task.strategy) });
+      taskManager.update(task.id, { name: form.name, source: form.source, walletKey: form.wallet_key || undefined, strategy: strategyFromForm(form, task.strategy) });
       await html(task.id, { ok: true, text: 'Strategy saved — applies to open positions on the next tick.' });
     } else {
       await html('list', { ok: false, text: 'Unknown action' });
