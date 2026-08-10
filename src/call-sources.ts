@@ -20,13 +20,14 @@ export interface CallSource {
   maxMc: number;         // skip calls above this market cap (0 = no cap)
   maxAgeHours: number;   // skip coins older than this (0 = no age limit)
   enabled: boolean;
+  mirrorExits?: boolean; // when the caller posts a SELL for a coin we hold, exit too
 }
 
 /** Built-in source: PumpClaw's own scanner. Always present, not editable. */
 export const PUMPCLAW_SOURCE_ID = 'pumpclaw';
 
 const DEFAULT_SOURCES: CallSource[] = [
-  { id: 'zeus', name: 'Zeus calls', channelId: '1490766730220535878', maxMc: 40_000, maxAgeHours: 24, enabled: true },
+  { id: 'zeus', name: 'Zeus calls', channelId: '1490766730220535878', maxMc: 40_000, maxAgeHours: 24, enabled: true, mirrorExits: true },
 ];
 
 class SourceRegistry {
@@ -71,6 +72,27 @@ const LINK_RE = new RegExp(
   `(?:dexscreener\\.com/solana/|pump\\.fun/(?:coin/)?|gmgn\\.ai/sol/token/(?:[\\w]+_)?|axiom\\.trade/t/|photon-sol\\.tinyastro\\.io/en/lp/|bullx\\.io/terminal\\?[^ ]*address=|solscan\\.io/token/|birdeye\\.so/token/)(${BASE58}{32,44})`,
   'g',
 );
+
+/** Classify a caller's message. Callers like Signal Vault post BOTH entries and
+ *  exits in the same channel — buying on a 'Sell!' message is exactly backwards. */
+export type SignalKind = 'buy' | 'sell' | 'unknown';
+
+export function classifySignal(msg: any): SignalKind {
+  const chunks: string[] = [msg.content ?? ''];
+  for (const e of msg.embeds ?? []) {
+    for (const v of [e.title, e.description, e.author?.name, e.footer?.text]) {
+      if (typeof v === 'string') chunks.push(v);
+    }
+    for (const f of e.fields ?? []) chunks.push(`${f.name ?? ''} ${f.value ?? ''}`);
+  }
+  const text = chunks.join(' ').toLowerCase();
+  const sell = /\bsell(?:ing|s|!)?\b|\bexit(?:ed|ing)?\b|took profit|closed position|\bsold\b/.test(text);
+  const buy = /\bbuy(?:ing|s|!)?\b|\bbought\b|\bentry\b|\bentered\b|\bape\b|\blong\b|new call/.test(text);
+  if (sell && !buy) return 'sell';
+  if (buy && !sell) return 'buy';
+  if (buy && sell) return 'buy';   // ambiguous → treat as entry, filters still apply
+  return 'unknown';                 // bare CA post = a call
+}
 
 /** Pull every plausible Solana mint out of a Discord message (content + embeds). */
 export function extractMints(msg: any): string[] {

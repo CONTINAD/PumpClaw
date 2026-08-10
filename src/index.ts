@@ -15,7 +15,7 @@ import { checkSmartWallets } from './wallet-filter.js';
 import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
 import { registerSlashCommands } from './interactions.js';
-import { sourceRegistry, extractMints, PUMPCLAW_SOURCE_ID } from './call-sources.js';
+import { sourceRegistry, extractMints, classifySignal, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { sendTradeActivity } from './discord.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
@@ -702,7 +702,25 @@ async function externalSourceLoop() {
         }
 
         for (const msg of msgs.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))) {
+          const kind = classifySignal(msg);
           const mints = extractMints(msg);
+
+          // SELL signal → never buy. Optionally mirror the caller's exit.
+          if (kind === 'sell') {
+            for (const mint of mints) {
+              if (!source.mirrorExits) continue;
+              const held = taskManager.enabledTasks(source.id).some(t => {
+                const p = taskManager.traderFor(t).getPosition(mint);
+                return p?.status === 'open';
+              });
+              if (!held) continue;
+              const m = await fetchSingleMarketData(mint);
+              if (!m || m.priceUsd <= 0) continue;
+              const n = await taskManager.mirrorExit(source.id, mint, m.priceUsd, m.marketCap, `${source.name} sell signal`);
+              if (n > 0) log(`🚪 ${source.name} posted SELL for ${mint.slice(0, 8)}… — closed ${n} position(s)`);
+            }
+            continue;
+          }
           if (mints.length === 0) {
             const emptyish = !msg.content && (msg.embeds ?? []).length === 0;
             if (emptyish && !warnedNoContent) {

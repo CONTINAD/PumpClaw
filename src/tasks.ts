@@ -269,6 +269,31 @@ class TaskManager {
     return events;
   }
 
+  /** Close positions on tasks following `sourceId` because that caller posted a sell. */
+  async mirrorExit(sourceId: string, mint: string, price: number, mc: number, label: string): Promise<number> {
+    let closed = 0;
+    for (const task of this.enabledTasks(sourceId)) {
+      const trader = this.traderFor(task);
+      if (!trader.getPosition(mint) || trader.getPosition(mint)?.status !== 'open') continue;
+      try {
+        const exits = await trader.checkPosition(mint, price, mc, label);
+        for (const exit of exits) {
+          closed++;
+          if (!task.paper) {
+            sendTradeActivity(
+              task.name, 'sell', trader.getPosition(mint)?.symbol ?? mint.slice(0, 8), mint,
+              `${label} at **${exit.multiplierAtExit.toFixed(2)}X** → **+${exit.solReceived.toFixed(4)} SOL**`,
+              exit.txSignature,
+            ).catch(() => {});
+          }
+        }
+      } catch (err: any) {
+        console.error(`[Tasks] Mirror exit failed (${task.name}/${mint.slice(0, 8)}): ${err.message}`);
+      }
+    }
+    return closed;
+  }
+
   /** Every open position across all tasks, tagged with its task. */
   openPositions(): { task: TradeTask; pos: RealPosition }[] {
     const out: { task: TradeTask; pos: RealPosition }[] = [];

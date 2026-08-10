@@ -269,7 +269,7 @@ export class Trader {
    * Check price against TP/SL levels and execute sells.
    * Returns any exits that fired.
    */
-  async checkPosition(mint: string, currentPrice: number, currentMC: number): Promise<RealExit[]> {
+  async checkPosition(mint: string, currentPrice: number, currentMC: number, forceExitLabel?: string): Promise<RealExit[]> {
     const pos = this.positions.get(mint);
     if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
 
@@ -409,6 +409,19 @@ export class Trader {
       }
       return null;
     };
+
+    // Forced exit (e.g. the source caller posted a sell) — dump the rest at market
+    if (forceExitLabel) {
+      await executeSell('source_exit', forceExitLabel, pos.remainingPct);
+      if (pos.remainingPct < 0.001 && pos.status === 'open') {
+        pos.status = 'closed';
+        pos.closedTime = Date.now();
+        pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
+        if (!this.paper) closeTokenAccount(mint, this.kp()).catch(() => {});
+      }
+      this.save();
+      return newExits;
+    }
 
     // ── Take profit levels (generalized: any number of TPs from the strategy) ──
     const strat = this.getStrategy();
