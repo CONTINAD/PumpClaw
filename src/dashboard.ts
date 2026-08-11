@@ -2767,9 +2767,16 @@ export function startDashboard(port?: number): void {
           const rets = closed.map(p => (p.totalSolReturned / (p.entrySol || 1)));
           const best = rets.length ? Math.max(...rets) : 0;
           const s = t.strategy;
+          const stopPct = Math.round((1 - s.stopLossPct) * 100);
+          const trailPct = s.trailingDrop < 0.89 ? Math.round(s.trailingDrop * 100) : 0;
           return {
             key: s.preset,
             name: t.name.replace('📄 ', ''),
+            dipPct: s.entryMode === 'dip' ? Math.round((s.dipPct ?? 0) * 100) : 0,
+            targets: s.tps.map(x => x.mult),
+            stopPct: stopPct >= 95 ? null : stopPct,
+            trailPct,
+            holdMin: s.maxHoldMin ?? 0,
             entry: s.entryMode === 'dip' ? `dip −${Math.round((s.dipPct ?? 0) * 100)}%` : 'instant',
             shape: s.maxHoldMin ? `${s.maxHoldMin}m clock` : s.tps.length ? s.tps.map(x => `${Math.round(x.sellPct * 100)}%@${x.mult}x`).join(' ') : `trail ${Math.round(s.trailingDrop * 100)}%`,
             trades: closed.length, open: ps.length - closed.length, wins,
@@ -2785,15 +2792,17 @@ export function startDashboard(port?: number): void {
         const fmt = (r: any, rank: number) => `<tr>
           <td class="mono" style="color:var(--text3)">${rank}</td>
           <td><a href="/strategy?key=${r.key}" style="color:var(--text);font-weight:700;text-decoration:none;border-bottom:1px dotted var(--border2)">${r.name}</a></td>
-          <td style="color:${r.entry === 'instant' ? 'var(--text2)' : '#f59e0b'};font-size:12px">${r.entry}</td>
-          <td style="font-size:12px;color:var(--text2)">${r.shape}</td>
+          <td style="color:${r.dipPct ? '#f59e0b' : 'var(--text2)'};font-size:12px;white-space:nowrap">${r.dipPct ? `−${r.dipPct}% dip` : 'instant'}</td>
+          <td style="font-size:12px;color:var(--text);white-space:nowrap">${r.targets.length ? r.targets.map((m: number) => m + '×').join('/') : r.holdMin ? `${r.holdMin}m clock` : `trail ${r.trailPct}%`}</td>
+          <td style="font-size:12px;white-space:nowrap;color:${r.stopPct === null ? 'var(--text3)' : r.stopPct <= 20 ? '#ef4444' : r.stopPct <= 40 ? '#f59e0b' : 'var(--text2)'}">${r.stopPct === null ? 'none' : '−' + r.stopPct + '%'}</td>
+          <td style="font-size:11px;color:var(--text3);white-space:nowrap">${r.trailPct ? `trail ${r.trailPct}%` : ''}${r.holdMin && r.targets.length ? ` ${r.holdMin}m cap` : ''}</td>
           <td class="mono">${r.trades}${r.open ? ` <span style="color:#10b981">+${r.open}</span>` : ''}</td>
           <td class="mono">${r.winPct}%</td>
           <td class="mono" style="color:${r.avg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
           <td class="mono" style="color:${r.pnl >= 0 ? '#10b981' : '#ef4444'}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}</td>
           <td class="mono" style="color:var(--text2)">${r.best.toFixed(1)}x</td>
         </tr>`;
-        const head = `<tr><th>#</th><th>Strategy</th><th>Entry</th><th>Shape</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Total</th><th>Best</th></tr>`;
+        const head = `<tr><th>#</th><th>Strategy</th><th>Entry</th><th>Target</th><th>Stop</th><th>Extra</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Total</th><th>Best</th></tr>`;
 
         const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
         const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
@@ -2937,9 +2946,16 @@ export function startDashboard(port?: number): void {
           const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
           const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
           const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
+          const _s = t.strategy;
+          const _stop = Math.round((1 - _s.stopLossPct) * 100);
           return {
             key: t.strategy.preset,
             strategy: t.name.replace('📄 ', ''),
+            dipPct: _s.entryMode === 'dip' ? Math.round((_s.dipPct ?? 0) * 100) : 0,
+            targets: _s.tps.map(x => x.mult),
+            stopPct: _stop >= 95 ? null : _stop,
+            trailPct: _s.trailingDrop < 0.89 ? Math.round(_s.trailingDrop * 100) : 0,
+            holdMin: _s.maxHoldMin ?? 0,
             trades: closed.length,
             open: positions.filter(p => p.status === 'open').length,
             wins,

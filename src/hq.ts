@@ -324,14 +324,14 @@ async function paint() {
   const top = strat.slice(0, 9);
   const amax = Math.max(0.001, ...top.map(s => Math.abs(s.avgPerTrade)));
   $('strats').innerHTML = !top.length ? '<div class="empty">not enough closed trades yet</div>' :
-    '<table><thead><tr><th></th><th>Strategy</th><th>Entry</th><th class="num">n</th>' +
+    '<table><thead><tr><th></th><th>Strategy</th><th>Entry</th><th>Target</th><th>Stop</th><th class="num">n</th>' +
     '<th class="num">Win</th><th class="num">Avg/trade</th><th>Confidence</th></tr></thead><tbody>' +
     top.map((s,i) => {
       const dip = s.strategy.startsWith('Dip');
       const good = s.avgPerTrade >= 0.03;
       const w = Math.abs(s.avgPerTrade) / amax * 100;
       return '<tr><td class="rank">' + (i+1) + '</td>' +
-        '<td class="sym" style="font-size:12px"><a href="/strategy?key=' + (s.key||'') + '" style="color:var(--txt);text-decoration:none;border-bottom:1px dotted var(--line2)">' + s.strategy.replace(/^Dip /,'').slice(0,26) + '</a></td>' +
+        '<td class="sym" style="font-size:12px"><a href="/strategy?key=' + (s.key||'') + '" style="color:var(--txt);text-decoration:none;border-bottom:1px dotted var(--line2)">' + s.strategy.replace(/^Dip −\d+% → /,'').replace(/^Instant → /,'').slice(0,34) + '</a></td>' +
         '<td><span class="chip ' + (dip ? 'dip' : 'inst') + '">' + (dip ? s.strategy.match(/−\\d+%/) || 'dip' : 'instant') + '</span></td>' +
         '<td class="num dimc">' + s.trades + '</td>' +
         '<td class="num ' + (s.winPct >= 60 ? 'up' : 'dimc') + '">' + s.winPct + '%</td>' +
