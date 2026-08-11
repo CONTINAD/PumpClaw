@@ -8,6 +8,7 @@ import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldi
 import { taskManager, type TradeTask } from './tasks.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
 import { buildHqHTML } from './hq.js';
+import { fmtUsd } from './discord.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import type { CallRecord } from './tracker.js';
@@ -2158,6 +2159,35 @@ export function startDashboard(port?: number): void {
     }
 
     // POST /settings | /tasks | /task — collect body then handle
+    if (req.method === 'POST' && pathname === '/strategy') {
+      let body = '';
+      req.on('data', (c: Buffer) => { body += c; if (body.length > 64_000) req.destroy(); });
+      req.on('end', () => {
+        (async () => {
+          if (!authOk(req)) {
+            res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(settingsLoginHTML());
+            return;
+          }
+          const form = parseFormBody(body);
+          try {
+            const shadow = taskManager.all().find(t => t.paper && t.strategy.preset === form.key);
+            if (!shadow) throw new Error('unknown strategy');
+            const strat = { ...shadow.strategy };
+            if (form.entry_pct) strat.entryPct = Math.min(1, Math.max(0.01, parseFloat(form.entry_pct) / 100));
+            if (form.max_entry) strat.maxEntrySol = Math.max(0, parseFloat(form.max_entry));
+            const task = taskManager.create(form.name || `${shadow.name.replace('📄 ', '')} (live)`, form.wallet_key, strat, taskManager.sourcesFor(shadow));
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(await buildTaskDetailHTML(task, { ok: true, text: `Live task "${task.name}" created with this strategy. Fund the wallet above and it trades the next call.` }));
+          } catch (err: any) {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(await buildTasksHTML({ ok: false, text: err.message }));
+          }
+        })().catch(err => { res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end('Error: ' + err.message); });
+      });
+      return;
+    }
+
     if (req.method === 'POST' && (pathname === '/settings' || pathname === '/tasks' || pathname === '/task')) {
       let body = '';
       req.on('data', (c: Buffer) => { body += c; if (body.length > 64_000) req.destroy(); });
@@ -2487,6 +2517,106 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+    } else if (pathname === '/strategy') {
+      if (!authOk(req)) {
+        res.writeHead(authHash() ? 401 : 200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(authHash() ? settingsLoginHTML() : settingsShell('<div class="card"><h3>Locked</h3><p style="font-size:13px">Set DASH_PASSWORD in Railway to view strategy detail.</p></div>', '/shadow'));
+        return;
+      }
+      try {
+        const km = url.match(/[?&]key=([\w-]+)/);
+        const key = km ? km[1] : '';
+        const task = taskManager.all().find(t => t.paper && t.strategy.preset === key);
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(settingsShell('<div class="card"><h3>Unknown strategy</h3><p style="font-size:13px"><a href="/shadow" style="color:#3b82f6">← back to the fleet</a></p></div>', '/shadow'));
+          return;
+        }
+        const s = task.strategy;
+        const positions = taskManager.traderFor(task).getAllPositions()
+          .sort((a, b) => b.entryTime - a.entryTime);
+        const closed = positions.filter(p => p.status === 'closed');
+        const pnl = closed.reduce((sum, p) => sum + (p.finalPnlSol ?? 0), 0);
+        const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
+
+        const shape = s.maxHoldMin ? `${s.maxHoldMin}-minute clock`
+          : s.tps.length ? s.tps.map(t => `${Math.round(t.sellPct * 100)}% at ${t.mult}×`).join(', ')
+          : `trailing ${Math.round(s.trailingDrop * 100)}%`;
+        const entryDesc = s.entryMode === 'dip'
+          ? `wait for a ${Math.round((s.dipPct ?? 0) * 100)}% dip below the call (${s.dipWindowMin}-min window)`
+          : 'buy immediately at the call';
+
+        const rows = positions.slice(0, 60).map(p => {
+          const ret = p.entrySol > 0 ? p.totalSolReturned / p.entrySol : 0;
+          const sells = p.exits.map(e =>
+            `<div style="font-size:11px;color:var(--text2)">${e.label} — <b style="color:${e.multiplierAtExit >= 1 ? '#10b981' : '#ef4444'}">${e.multiplierAtExit.toFixed(2)}×</b> → ${e.solReceived.toFixed(3)} ◎</div>`
+          ).join('') || '<div style="font-size:11px;color:var(--text3)">— still open —</div>';
+          const pl = p.status === 'closed' ? (p.finalPnlSol ?? 0) : null;
+          return `<tr>
+            <td><b>$${p.symbol.slice(0, 12)}</b><div style="font-size:10px;color:var(--text3)">${new Date(p.entryTime).toISOString().slice(5, 16).replace('T', ' ')}</div></td>
+            <td class="mono" style="font-size:11px">${p.entryPrice.toPrecision(4)}<div style="font-size:10px;color:var(--text3)">${fmtUsd(p.entryMC)} MC</div></td>
+            <td>${sells}</td>
+            <td class="mono">${p.peakMultiplier.toFixed(2)}×</td>
+            <td class="mono" style="font-weight:700;color:${pl === null ? 'var(--text2)' : pl >= 0 ? '#10b981' : '#ef4444'}">
+              ${pl === null ? `${Math.round(p.remainingPct * 100)}% open` : (pl >= 0 ? '+' : '') + pl.toFixed(3) + ' ◎'}
+              ${p.status === 'closed' ? `<div style="font-size:10px;color:var(--text3);font-weight:400">${ret.toFixed(2)}× returned</div>` : ''}
+            </td></tr>`;
+        }).join('');
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>${task.name.replace('📄 ', '')}</h3>
+          <p style="font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:12px">${STRATEGY_PRESETS[key]?.desc ?? ''}</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:6px">
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Realized PnL</div>
+              <div style="font-size:20px;font-weight:700;color:${pnl >= 0 ? '#10b981' : '#ef4444'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} ◎</div></div>
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Win rate</div>
+              <div style="font-size:20px;font-weight:700">${closed.length ? Math.round(wins / closed.length * 100) : 0}%<span style="font-size:12px;color:var(--text3)"> (${wins}/${closed.length})</span></div></div>
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Avg per trade</div>
+              <div style="font-size:20px;font-weight:700;color:${closed.length && pnl / closed.length >= 0.03 ? '#10b981' : 'var(--text)'}">${closed.length ? (pnl / closed.length >= 0 ? '+' : '') + (pnl / closed.length).toFixed(3) : '—'}</div></div>
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Open now</div>
+              <div style="font-size:20px;font-weight:700">${positions.length - closed.length}</div></div>
+          </div>
+          <div class="kv" style="margin-top:10px"><b>Entry:</b> ${entryDesc}</div>
+          <div class="kv"><b>Exit:</b> ${shape}${s.stopLossPct < 0.99 ? ` · stop at −${Math.round((1 - s.stopLossPct) * 100)}%` : ''}${s.breakEvenAfterTp1 ? ' · break-even stop after first TP' : ''}</div>
+          <div class="kv"><b>Sizing:</b> ${Math.round(s.entryPct * 100)}% of wallet, min ${s.minEntrySol} ◎${s.maxEntrySol ? `, max ${s.maxEntrySol} ◎` : ''} · ${s.slippageBps / 100}% slippage</div>
+        </div>
+
+        <form method="POST" action="/strategy">
+          <input type="hidden" name="key" value="${key}">
+          <div class="card" style="border-color:#1e5c3a">
+            <h3 style="color:#10b981">▶ Run this strategy with real money</h3>
+            <p style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:4px">
+              Creates a live task with this exact configuration on a wallet you supply. It starts enabled and buys the next qualifying call.
+            </p>
+            <label>Task name</label>
+            <input name="name" maxlength="40" placeholder="${task.name.replace('📄 ', '')} (live)">
+            <label>Wallet private key (base58) — use a burner</label>
+            <input type="password" name="wallet_key" autocomplete="off" placeholder="only funds in this wallet are at risk">
+            <label>Entry size — % of that wallet per trade</label>
+            <input type="number" name="entry_pct" min="1" max="100" value="${Math.round(s.entryPct * 100)}">
+            <label>Max entry per trade (SOL, 0 = uncapped)</label>
+            <input type="number" name="max_entry" step="0.01" min="0" value="${s.maxEntrySol}">
+            <button type="submit">Create live task with this strategy</button>
+          </div>
+        </form>
+
+        <div class="card" style="max-width:none">
+          <h3>Every trade (${positions.length})</h3>
+          ${positions.length ? `<div style="overflow-x:auto"><table>
+            <tr><th>Coin / when</th><th>Bought at</th><th>Sold at</th><th>Peak</th><th>Result</th></tr>${rows}</table></div>`
+            : '<p style="font-size:13px;color:var(--text2)">No trades yet.</p>'}
+        </div>`, '/shadow');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Strategy page error: ' + err.message);
+      }
     } else if (pathname === '/shadow') {
       try {
         // Rolling window — default 24h. Old trades ran under different filter settings,
@@ -2503,6 +2633,7 @@ export function startDashboard(port?: number): void {
           const best = rets.length ? Math.max(...rets) : 0;
           const s = t.strategy;
           return {
+            key: s.preset,
             name: t.name.replace('📄 ', ''),
             entry: s.entryMode === 'dip' ? `dip −${Math.round((s.dipPct ?? 0) * 100)}%` : 'instant',
             shape: s.maxHoldMin ? `${s.maxHoldMin}m clock` : s.tps.length ? s.tps.map(x => `${Math.round(x.sellPct * 100)}%@${x.mult}x`).join(' ') : `trail ${Math.round(s.trailingDrop * 100)}%`,
@@ -2518,7 +2649,7 @@ export function startDashboard(port?: number): void {
         const thin = rows.filter(r => r.trades < 8);
         const fmt = (r: any, rank: number) => `<tr>
           <td class="mono" style="color:var(--text3)">${rank}</td>
-          <td><b>${r.name}</b></td>
+          <td><a href="/strategy?key=${r.key}" style="color:var(--text);font-weight:700;text-decoration:none;border-bottom:1px dotted var(--border2)">${r.name}</a></td>
           <td style="color:${r.entry === 'instant' ? 'var(--text2)' : '#f59e0b'};font-size:12px">${r.entry}</td>
           <td style="font-size:12px;color:var(--text2)">${r.shape}</td>
           <td class="mono">${r.trades}${r.open ? ` <span style="color:#10b981">+${r.open}</span>` : ''}</td>
@@ -2541,7 +2672,7 @@ export function startDashboard(port?: number): void {
           <h3 style="color:#9be826">🏆 What's working ${hours === 'all' ? '(all time)' : `(last ${hours}h)`}</h3>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:12px">
             ${winners.length ? winners.map(w => `<div style="background:var(--bg1);border:1px solid #1e5c3a;border-radius:8px;padding:10px 12px">
-              <div style="font-size:12px;color:var(--text);font-weight:700">${w.name}</div>
+              <div style="font-size:12px;font-weight:700"><a href="/strategy?key=${w.key}" style="color:var(--text);text-decoration:none">${w.name} →</a></div>
               <div style="font-size:22px;font-weight:700;color:#10b981">${w.avg >= 0 ? '+' : ''}${w.avg.toFixed(3)}<span style="font-size:11px;color:var(--text3);font-weight:400"> /trade</span></div>
               <div style="font-size:11px;color:var(--text2)">${w.trades} trades · ${w.winPct}% win · ${w.pnl >= 0 ? '+' : ''}${w.pnl.toFixed(1)} SOL</div>
             </div>`).join('') : '<span style="color:var(--text3)">No strategy is clearly profitable yet.</span>'}
@@ -2599,6 +2730,7 @@ export function startDashboard(port?: number): void {
           const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
           const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
           return {
+            key: t.strategy.preset,
             strategy: t.name.replace('📄 ', ''),
             trades: closed.length,
             open: positions.filter(p => p.status === 'open').length,

@@ -128,7 +128,7 @@ tbody tr:last-child td{border-bottom:none}
   <div class="brand"><span class="mk">◤</span>PUMP<em>CLAW</em></div>
   <div class="pulse"><span class="dot" id="hb"></span><span id="hbtxt">connecting</span></div>
   <nav>
-    <a href="/shadow">Strategies</a><a href="/tasks">Tasks</a><a href="/strategies">Lab</a>
+    <a href="/">HQ</a><a href="/shadow">Strategies</a><a href="/tasks">Tasks</a><a href="/strategies">Lab</a>
     <a href="/settings">Settings</a><a href="/classic">Classic</a>
   </nav>
 </div>
@@ -285,7 +285,7 @@ async function paint() {
       const good = s.avgPerTrade >= 0.03;
       const w = Math.abs(s.avgPerTrade) / amax * 100;
       return '<tr><td class="rank">' + (i+1) + '</td>' +
-        '<td class="sym" style="font-size:12px">' + s.strategy.replace(/^Dip /,'').slice(0,26) + '</td>' +
+        '<td class="sym" style="font-size:12px"><a href="/strategy?key=' + (s.key||'') + '" style="color:var(--txt);text-decoration:none;border-bottom:1px dotted var(--line2)">' + s.strategy.replace(/^Dip /,'').slice(0,26) + '</a></td>' +
         '<td><span class="chip ' + (dip ? 'dip' : 'inst') + '">' + (dip ? s.strategy.match(/−\\d+%/) || 'dip' : 'instant') + '</span></td>' +
         '<td class="num dimc">' + s.trades + '</td>' +
         '<td class="num ' + (s.winPct >= 60 ? 'up' : 'dimc') + '">' + s.winPct + '%</td>' +
