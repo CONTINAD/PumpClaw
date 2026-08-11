@@ -2586,9 +2586,12 @@ export function startDashboard(port?: number): void {
       // Read-only: realized performance of each shadow (paper) task on live prices.
       // This is the honest strategy comparison — same calls, same engine, real paths.
       try {
-        // ?hours=24 restricts to trades CLOSED in that window
-        const hoursM = url.match(/[?&]hours=(\d+)/);
-        const cutoff = hoursM ? Date.now() - parseInt(hoursM[1]) * 3600_000 : 0;
+        // Defaults to the last 24h — trades older than that ran under different
+        // filter settings and market conditions, so mixing them is misleading.
+        // ?hours=all for full history, ?hours=N for any other window.
+        const hoursM = url.match(/[?&]hours=(\d+|all)/);
+        const hv = hoursM ? hoursM[1] : '24';
+        const cutoff = hv === 'all' ? 0 : Date.now() - parseInt(hv) * 3600_000;
         const rows = taskManager.all().filter(t => t.paper).map(t => {
           const positions = taskManager.traderFor(t).getAllPositions();
           const closed = positions.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cutoff);
@@ -2607,7 +2610,11 @@ export function startDashboard(port?: number): void {
           };
         }).sort((a, b) => b.pnlSol - a.pnlSol);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ note: '1 SOL per trade, 2% fill haircut, live prices', strategies: rows }, null, 2));
+        res.end(JSON.stringify({
+          window: hv === 'all' ? 'all time' : `last ${hv}h`,
+          note: '1 SOL per trade, 2% fill haircut, live prices',
+          strategies: rows,
+        }, null, 2));
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
