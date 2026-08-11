@@ -132,6 +132,20 @@ async function fastScanCycle() {
   const marketData = await fetchBatchMarketData(mints);
   log(`📊 DexScreener data for ${marketData.size}/${mints.length} fresh trending coins`);
 
+  // Pre-screen every candidate on cheap market filters first, then run the SLOW
+  // bundle/graph checks for all survivors in parallel. Sequentially this cost
+  // 15-30s per coin, so a third candidate could be a minute stale before we looked.
+  const cheapPass = freshPosts.filter(post => {
+    const m = marketData.get(post.mint);
+    if (!m) return false;
+    const vt = m.marketCap < CONFIG.MICRO_MC_THRESHOLD ? CONFIG.MIN_5M_VOLUME_MICRO_MC
+      : m.marketCap < CONFIG.LOW_MC_THRESHOLD ? CONFIG.MIN_5M_VOLUME_LOW_MC : CONFIG.MIN_5M_VOLUME_HIGH_MC;
+    return m.volume5m >= vt && m.priceChange5m >= -25;
+  });
+  const bundlePromises = new Map<string, Promise<Awaited<ReturnType<typeof checkBundle>>>>();
+  for (const post of cheapPass) bundlePromises.set(post.mint, checkBundle(post.mint));
+  if (bundlePromises.size > 1) log(`⚡ Running ${bundlePromises.size} bundle checks in parallel`);
+
   let alertCount = 0;
   for (const post of freshPosts) {
     const market = marketData.get(post.mint);
@@ -199,7 +213,7 @@ async function fastScanCycle() {
 
     if (tracker.hasBeenCalled(post.mint)) continue;
 
-    const bundle = await checkBundle(post.mint);
+    const bundle = await (bundlePromises.get(post.mint) ?? checkBundle(post.mint));
     if (!bundle.safe) {
       log(`⚠ BUNDLED — skipping ${post.name}: ${bundle.details}`);
       recordSkip(post, 'BUNDLED', bundle.details, market.marketCap);
@@ -805,6 +819,39 @@ async function externalSourceLoop() {
   }
 }
 
+// ── Real-position loop (1.5s) — REAL money gets its own fast lane.
+//    The paper fleet shares a 5s batched sweep; live positions are checked far more
+//    often and never queue behind 400 paper tasks.
+
+async function realPositionLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, CONFIG.REAL_CHECK_INTERVAL_MS));
+    try {
+      const real = taskManager.openPositions().filter(({ task }) => !task.paper);
+      if (real.length === 0) continue;
+      const mints = [...new Set(real.map(({ pos }) => pos.mint))];
+      const data = await fetchBatchMarketData(mints);
+      for (const mint of mints) {
+        const m = data.get(mint);
+        if (!m || m.priceUsd <= 0) continue;
+        for (const task of taskManager.all().filter(t => !t.paper)) {
+          const trader = taskManager.traderFor(task);
+          if (trader.getPosition(mint)?.status !== 'open') continue;
+          const exits = await trader.checkPosition(mint, m.priceUsd, m.marketCap);
+          for (const exit of exits) {
+            log(`💰 REAL EXIT [${task.name}]: $${trader.getPosition(mint)?.symbol ?? mint.slice(0, 8)} — ${exit.label} → ${exit.solReceived.toFixed(4)} SOL`);
+            sendTradeActivity(task.name, 'sell', trader.getPosition(mint)?.symbol ?? mint.slice(0, 8), mint,
+              `${exit.label} at **${exit.multiplierAtExit.toFixed(2)}X** → **+${exit.solReceived.toFixed(4)} SOL**`,
+              exit.txSignature).catch(() => {});
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[RealLoop] ${err.message}`);
+    }
+  }
+}
+
 // ── Stop watchdog (25s) — independent verification that stops actually execute.
 //    The panic seller retries stops that FIRED. This catches the worse case: a stop
 //    that never fired at all because the position stopped being priced (delisted
@@ -885,7 +932,7 @@ async function panicSellLoop() {
 
 async function dexSweepLoop() {
   while (true) {
-    await new Promise(r => setTimeout(r, 5_000));
+    await new Promise(r => setTimeout(r, 3_000));
     try {
       const open = taskManager.openPositions();
       const pending = taskManager.pendingEntries();
@@ -1047,6 +1094,9 @@ async function main() {
     });
     stopWatchdog().catch(err => {
       console.error(`[Watchdog] Fatal: ${err.message}`);
+    });
+    realPositionLoop().catch(err => {
+      console.error(`[RealLoop] Fatal: ${err.message}`);
     });
   }
 

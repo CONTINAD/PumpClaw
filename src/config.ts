@@ -129,6 +129,13 @@ export const CONFIG = {
   TRADE_TP3_MULT: 4,   TRADE_TP3_SELL: 0.20,   // ladder: sell 20% at 4X
   TRADE_TRAILING_DROP: 0.45,           // -45% from ATH (trailing mode: from entry; ladder: after TP3)
   TRADE_MONITOR_INTERVAL_MS: 2_000,   // check open positions every 2s
+  // ── Live-trading safety ──
+  REAL_CHECK_INTERVAL_MS: 1_000,      // dedicated fast loop for REAL positions only
+  // Hard circuit breaker: force-exit any real position down this much from entry,
+  // regardless of what its strategy says. A stop that never fires is the failure
+  // mode that actually costs money.
+  TRADE_MAX_LOSS_PCT: 0.65,           // exit at -65% no matter what
+  VERIFY_SELLS: true,                 // confirm on-chain that tokens actually left
 };
 
 // ── Runtime settings overrides (dashboard /settings page) ───

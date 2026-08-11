@@ -386,6 +386,23 @@ export class Trader {
           newExits.push(exit);
           this.sellFailCounts.delete(mint);
 
+          // Verify on-chain that the tokens actually left. Jupiter can report success
+          // on a tx that later fails; without this the book says "sold" while the
+          // wallet still holds the bag and nothing manages it.
+          if (CFG.VERIFY_SELLS && isFullExit) {
+            try {
+              await new Promise(r => setTimeout(r, 2500));
+              const left = await getTokenBalance(mint, this.kp());
+              if (left > finalSellAmount * 0.02) {
+                console.error(`[Trader] ⚠ Sell reported success but ${left} tokens remain for $${pos.symbol} — reopening position`);
+                pos.remainingPct = Math.max(pos.remainingPct, left / Math.max(1, pos.tokensReceived));
+                pos.tokensRemaining = left;
+                pos.stopTriggered = true;   // panic seller will keep working on it
+                this.save();
+              }
+            } catch { /* balance check failed — panic loop still covers it */ }
+          }
+
           console.log(`[Trader] ✅ ${label}: sold ${finalSellAmount} tokens → ${solReceived.toFixed(4)} SOL (tx: ${result.txSignature.slice(0, 16)}...)`);
           return exit;
         } catch (err: any) {
@@ -431,6 +448,24 @@ export class Trader {
 
     // ── Take profit levels (generalized: any number of TPs from the strategy) ──
     const strat = this.getStrategy();
+
+    // ── Circuit breaker ── independent of strategy config. If a real position is
+    // down more than the hard limit, get out. This is the backstop for every way a
+    // configured stop can fail to fire.
+    if (!this.paper && mult <= (1 - CFG.TRADE_MAX_LOSS_PCT) && pos.remainingPct >= 0.001) {
+      pos.stopTriggered = true;
+      this.save();
+      console.error(`[Trader:${this.taskId}] 🚨 CIRCUIT BREAKER $${pos.symbol} at ${mult.toFixed(3)}X — forcing exit`);
+      await executeSell('circuit_breaker', `Circuit breaker −${Math.round(CFG.TRADE_MAX_LOSS_PCT * 100)}% at ${mult.toFixed(2)}X`, pos.remainingPct);
+      if (pos.remainingPct < 0.001 && pos.status === 'open') {
+        pos.status = 'closed';
+        pos.closedTime = Date.now();
+        pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
+        closeTokenAccount(mint, this.kp()).catch(() => {});
+      }
+      this.save();
+      return newExits;
+    }
 
     // Hard time exit — the most-maintained public bots exit on a clock, not a price.
     if (strat.maxHoldMin && strat.maxHoldMin > 0) {
