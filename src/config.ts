@@ -50,7 +50,7 @@ export const CONFIG = {
   MILESTONES: [2, 3, 5, 10, 20, 50, 100],
 
   // How often to check milestones for all tracked coins (ms)
-  MILESTONE_CHECK_INTERVAL_MS: 15_000,
+  MILESTONE_CHECK_INTERVAL_MS: 15_000,   // slow-path sweep; fast loop handles recent calls every 4s
 
   // Leaderboard intervals: [label, postEveryMs, lookbackMs]
   LEADERBOARD_INTERVALS: [

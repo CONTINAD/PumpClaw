@@ -819,6 +819,40 @@ async function externalSourceLoop() {
   }
 }
 
+// ── Fast milestone loop (4s) — 2X/3X alerts fired on the 30s maintenance cycle,
+//    so a spike was often announced after it had already faded. Recent calls are
+//    where all the movement is, so they get their own tight loop.
+
+const FAST_MILESTONE_WINDOW_MS = 3 * 60 * 60 * 1000;  // calls younger than 3h
+
+async function fastMilestoneLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 4_000));
+    try {
+      const fresh = tracker.getActiveCalls()
+        .filter(c => Date.now() - c.entryTime < FAST_MILESTONE_WINDOW_MS && c.entryPrice > 0);
+      if (fresh.length === 0) continue;
+
+      const data = await fetchBatchMarketData(fresh.map(c => c.mint).slice(0, 30));
+      for (const rec of fresh) {
+        const m = data.get(rec.mint);
+        if (!m || m.priceUsd <= 0) continue;
+
+        tracker.updatePeak(rec.mint, m.priceUsd, m.marketCap);
+        const hits = tracker.checkMilestones(rec.mint, m.priceUsd, m.marketCap);
+        for (const hit of hits) {
+          const mult = m.priceUsd / rec.entryPrice;
+          log(`🚀 MILESTONE (fast): $${rec.symbol} hits ${hit.multiplier}X — live ${mult.toFixed(2)}X, ${fmtUsd(m.marketCap)} MC`);
+          const msgId = await sendMilestoneAlert(rec, hit.multiplier, m.priceUsd, m.marketCap);
+          if (msgId) tracker.setMilestoneMessageId(rec.mint, hit.multiplier, msgId);
+        }
+      }
+    } catch (err: any) {
+      console.error(`[FastMilestone] ${err.message}`);
+    }
+  }
+}
+
 // ── Real-position loop (1.5s) — REAL money gets its own fast lane.
 //    The paper fleet shares a 5s batched sweep; live positions are checked far more
 //    often and never queue behind 400 paper tasks.
@@ -1077,6 +1111,11 @@ async function main() {
   console.log('');
 
 
+
+  // Milestone alerts run regardless of whether trading is enabled
+  fastMilestoneLoop().catch(err => {
+    console.error(`[FastMilestone] Fatal: ${err.message}`);
+  });
 
   // Launch the fast position monitor + batched price sweep in parallel
   if (CONFIG.TRADE_ENABLED) {
