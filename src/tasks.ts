@@ -33,6 +33,18 @@ export interface TradeTask {
 
 export interface TaskExitEvent { task: TradeTask; exit: RealExit }
 
+/** Appended to a sell notification: the POSITION's result, not just this slice.
+ *  A partial exit returning 0.05 SOL looked like a loss when the trade was +0.37. */
+function positionSummary(pos: RealPosition | undefined): string {
+  if (!pos || pos.entrySol <= 0) return '';
+  const net = pos.totalSolReturned - pos.entrySol;
+  const mult = pos.totalSolReturned / pos.entrySol;
+  if (pos.status === 'closed' || pos.remainingPct < 0.001) {
+    return `\n**Position closed: ${net >= 0 ? '+' : ''}${net.toFixed(4)} SOL** (${mult.toFixed(2)}× on ${pos.entrySol} SOL in)`;
+  }
+  return `\n*so far ${pos.totalSolReturned.toFixed(4)} of ${pos.entrySol} SOL back · ${Math.round(pos.remainingPct * 100)}% still open*`;
+}
+
 /** A call a dip-entry task is waiting on: buy only if price falls to `target`. */
 export interface PendingEntry {
   taskId: string;
@@ -388,7 +400,7 @@ class TaskManager {
           const pos = this.traderFor(task).getPosition(mint);
           sendTradeActivity(
             task.name, 'sell', pos?.symbol ?? mint.slice(0, 8), mint,
-            `${exit.label} at **${exit.multiplierAtExit.toFixed(2)}X** → **+${exit.solReceived.toFixed(4)} SOL**`,
+            `${exit.label} at **${exit.multiplierAtExit.toFixed(2)}X** → +${exit.solReceived.toFixed(4)} SOL${positionSummary(pos)}`,
             exit.txSignature, task.webhook,
           ).catch(() => {});
         }
@@ -434,7 +446,7 @@ class TaskManager {
         for (const exit of exits) {
           sendTradeActivity(
             task.name, 'sell', pos.symbol, pos.mint,
-            `${exit.label} → **+${exit.solReceived.toFixed(4)} SOL**`,
+            `${exit.label} → +${exit.solReceived.toFixed(4)} SOL${positionSummary(trader.getPosition(pos.mint))}`,
             exit.txSignature, task.webhook,
           ).catch(() => {});
         }

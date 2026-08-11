@@ -623,9 +623,14 @@ export class Trader {
         const result = await jupiterSell(mint, amount, { keypair: this.kp(), slippageBps, priorityFeeLamports });
         const solReceived = result.outputAmount / 1e9;
         const soldPct = pos.remainingPct * frac;
+        const exitMult = pos.entrySol > 0 && soldPct > 0 ? solReceived / (pos.entrySol * soldPct) : 0;
         const exit: RealExit = {
           reason: 'panic_exit',
-          label: `Panic exit (stop blown, ${(frac * 100).toFixed(0)}%)`,
+          // Above entry this is just a stop that fired late — calling it a "panic"
+          // made a profitable 2.4x exit read like an emergency.
+          label: exitMult >= 1
+            ? `Stop exit at ${exitMult.toFixed(2)}X${frac < 1 ? ` (${(frac * 100).toFixed(0)}%)` : ''}`
+            : `Emergency exit at ${exitMult.toFixed(2)}X${frac < 1 ? ` (${(frac * 100).toFixed(0)}%)` : ''}`,
           multiplierAtExit: pos.entrySol > 0 ? (solReceived / (pos.entrySol * soldPct)) : 0,
           pctSold: soldPct,
           tokensSold: amount,
