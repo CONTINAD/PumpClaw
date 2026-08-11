@@ -628,11 +628,24 @@ export class Trader {
 
   // ── Persistence ──
 
+  private saveTimer: NodeJS.Timeout | null = null;
+  private dirty = false;
+
+  /** Debounced write. Paper tasks tolerate a short delay; real tasks flush at once
+   *  so a crash can never lose a live position record. */
   private save(): void {
+    if (!this.paper) { this.flush(); return; }
+    this.dirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => { this.saveTimer = null; if (this.dirty) this.flush(); }, 4000);
+  }
+
+  private flush(): void {
+    this.dirty = false;
     try {
       mkdirSync(dirname(this.positionsFile), { recursive: true });
       const data = [...this.positions.values()];
-      writeFileSync(this.positionsFile, JSON.stringify(data, null, 2));
+      writeFileSync(this.positionsFile, JSON.stringify(data));
     } catch (err: any) {
       console.error(`[Trader] Save error: ${err.message}`);
     }
