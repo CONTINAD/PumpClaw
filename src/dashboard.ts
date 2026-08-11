@@ -2504,9 +2504,12 @@ export function startDashboard(port?: number): void {
       // Read-only: realized performance of each shadow (paper) task on live prices.
       // This is the honest strategy comparison — same calls, same engine, real paths.
       try {
+        // ?hours=24 restricts to trades CLOSED in that window
+        const hoursM = url.match(/[?&]hours=(\d+)/);
+        const cutoff = hoursM ? Date.now() - parseInt(hoursM[1]) * 3600_000 : 0;
         const rows = taskManager.all().filter(t => t.paper).map(t => {
           const positions = taskManager.traderFor(t).getAllPositions();
-          const closed = positions.filter(p => p.status === 'closed');
+          const closed = positions.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cutoff);
           const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
           const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
           const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
