@@ -1028,6 +1028,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     ).join('')}
     <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
     <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
+    <a href="/shadow" style="border-color:var(--border2)">📄 Shadow Fleet</a>
     <a href="/settings" style="border-color:var(--border2)">⚙️ Settings</a>
   </div>
 </div>
@@ -1573,11 +1574,11 @@ button:hover{filter:brightness(1.1)}
 .mono{font-family:'SF Mono',Menlo,monospace}`;
 
 function settingsShell(inner: string, self = '/settings'): string {
-  const title = self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
-  const wide = self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
+  const title = self === '/shadow' ? '📄 Shadow Fleet' : self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
+  const wide = self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/shadow">Shadow</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -2427,6 +2428,69 @@ export function startDashboard(port?: number): void {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (pathname === '/shadow') {
+      try {
+        const rows = taskManager.all().filter(t => t.paper).map(t => {
+          const ps = taskManager.traderFor(t).getAllPositions();
+          const closed = ps.filter(p => p.status === 'closed');
+          const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
+          const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
+          const rets = closed.map(p => (p.totalSolReturned / (p.entrySol || 1)));
+          const best = rets.length ? Math.max(...rets) : 0;
+          const s = t.strategy;
+          return {
+            name: t.name.replace('📄 ', ''),
+            entry: s.entryMode === 'dip' ? `dip −${Math.round((s.dipPct ?? 0) * 100)}%` : 'instant',
+            shape: s.maxHoldMin ? `${s.maxHoldMin}m clock` : s.tps.length ? s.tps.map(x => `${Math.round(x.sellPct * 100)}%@${x.mult}x`).join(' ') : `trail ${Math.round(s.trailingDrop * 100)}%`,
+            trades: closed.length, open: ps.length - closed.length, wins,
+            winPct: closed.length ? Math.round(wins / closed.length * 100) : 0,
+            pnl: +pnl.toFixed(3),
+            avg: closed.length ? +(pnl / closed.length).toFixed(4) : 0,
+            best: +best.toFixed(2),
+          };
+        }).sort((a, b) => b.avg - a.avg);
+
+        const enough = rows.filter(r => r.trades >= 8);
+        const thin = rows.filter(r => r.trades < 8);
+        const fmt = (r: any, rank: number) => `<tr>
+          <td class="mono" style="color:var(--text3)">${rank}</td>
+          <td><b>${r.name}</b></td>
+          <td style="color:${r.entry === 'instant' ? 'var(--text2)' : '#f59e0b'};font-size:12px">${r.entry}</td>
+          <td style="font-size:12px;color:var(--text2)">${r.shape}</td>
+          <td class="mono">${r.trades}${r.open ? ` <span style="color:#10b981">+${r.open}</span>` : ''}</td>
+          <td class="mono">${r.winPct}%</td>
+          <td class="mono" style="color:${r.avg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
+          <td class="mono" style="color:${r.pnl >= 0 ? '#10b981' : '#ef4444'}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}</td>
+          <td class="mono" style="color:var(--text2)">${r.best.toFixed(1)}x</td>
+        </tr>`;
+        const head = `<tr><th>#</th><th>Strategy</th><th>Entry</th><th>Shape</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Total</th><th>Best</th></tr>`;
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>📄 Shadow fleet — ${rows.length} strategies, 1 SOL/trade on live prices</h3>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6">
+            Ranked by average PnL per closed trade. <b>Strategies with fewer than 8 trades are listed separately</b> — a
+            small sample tells you nothing. Even above that bar, treat a one-day leader with suspicion: with 61 strategies
+            running, the best one is expected to look good by luck alone. What matters is a strategy that stays near the
+            top across several days <i>and</i> has enough trades to mean something.
+          </p>
+          <div style="overflow-x:auto"><table>${head}${enough.map((r, i) => fmt(r, i + 1)).join('')}</table></div>
+        </div>
+        ${thin.length ? `<div class="card" style="max-width:none">
+          <h3>Too few trades to judge (${thin.length})</h3>
+          <div style="overflow-x:auto"><table>${head}${thin.map((r, i) => fmt(r, i + 1)).join('')}</table></div>
+        </div>` : ''}
+        <div class="note" style="font-size:11px;color:var(--text3);margin-top:14px;line-height:1.6">
+          Paper fills at observed prices with a 2% haircut; real fills also pay ~2.5% protocol fee round-trip, so a
+          strategy needs roughly +3% per trade before it earns anything real. Dip-entry strategies only trade when the
+          pullback actually happens, so their trade counts run lower.
+        </div>`, '/shadow');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html.replace('<title>PumpClaw Settings</title>', '<title>PumpClaw Shadow Fleet</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Shadow page error: ' + err.message);
       }
     } else if (pathname === '/api/shadow') {
       // Read-only: realized performance of each shadow (paper) task on live prices.

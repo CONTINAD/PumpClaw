@@ -429,6 +429,22 @@ export class Trader {
 
     // ── Take profit levels (generalized: any number of TPs from the strategy) ──
     const strat = this.getStrategy();
+
+    // Hard time exit — the most-maintained public bots exit on a clock, not a price.
+    if (strat.maxHoldMin && strat.maxHoldMin > 0) {
+      const heldMin = (Date.now() - pos.entryTime) / 60_000;
+      if (heldMin >= strat.maxHoldMin && pos.remainingPct >= 0.001) {
+        await executeSell('time_exit', `Time exit ${strat.maxHoldMin}m at ${mult.toFixed(2)}X`, pos.remainingPct);
+        if (pos.remainingPct < 0.001 && pos.status === 'open') {
+          pos.status = 'closed';
+          pos.closedTime = Date.now();
+          pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
+          if (!this.paper) closeTokenAccount(mint, this.kp()).catch(() => {});
+        }
+        this.save();
+        return newExits;
+      }
+    }
     if (!pos.tpHits || pos.tpHits.length !== strat.tps.length) {
       // Position opened under a different strategy shape (or legacy file) —
       // rebuild flags, preserving legacy tp1..tp3 hits where they line up

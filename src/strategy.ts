@@ -23,6 +23,7 @@ export interface Strategy {
   trailingFrom: 'entry' | 'afterLastTp';
   stopLossPct: number;                  // ladder-style initial stop (0.75 = -25%); ignored when trailingFrom=entry
   breakEvenAfterTp1: boolean;           // move stop to entry after first TP
+  maxHoldMin?: number;                  // hard time exit — sell the rest after N minutes
   entryPct: number;                     // fraction of wallet balance per trade
   minEntrySol: number;
   maxEntrySol: number;                  // 0 = no cap
@@ -34,6 +35,7 @@ const BASE = {
   entryMode: 'instant' as const,
   dipPct: 0.20,
   dipWindowMin: 30,
+  maxHoldMin: 0,
   entryPct: 0.10,
   minEntrySol: 0.05,
   maxEntrySol: 0,
@@ -101,6 +103,7 @@ export const STRATEGY_PRESETS: Record<string, { name: string; desc: string; make
 type Spec = {
   key: string; name: string; desc: string;
   dip?: number;                       // undefined = instant entry
+  hold?: number;                      // hard time exit in minutes
   tps?: [number, number][];
   trail?: number;
   trailFrom?: 'entry' | 'afterLastTp';
@@ -131,6 +134,49 @@ const GRID: Spec[] = [
   { key: 'instsplit',   name: 'Instant → 50%@1.3+2X',    desc: 'Buy the call, bank half at 1.3X.',                           tps: [[1.3, .5], [2, .5]], stop: .7, be: true },
   { key: 'insttrail25', name: 'Instant → trail 25%',     desc: 'Buy the call, tight trailing stop.',                         trail: .25, trailFrom: 'entry', stop: .75 },
   { key: 'instlad',     name: 'Instant → 1.3/1.8/2.5',   desc: 'Buy the call, tight scale-out ladder.',                      tps: [[1.3, .4], [1.8, .3], [2.5, .3]], stop: .7, be: true },
+
+  // ── time-boxed exits (what the most-maintained public bots actually ship) ──
+  { key: 'inst5m',      name: 'Instant → hold 5m',       desc: 'Buy the call, sell everything after 5 minutes.',             hold: 5,  stop: .5 },
+  { key: 'inst10m',     name: 'Instant → hold 10m',      desc: 'Buy the call, flat exit at 10 minutes.',                     hold: 10, stop: .5 },
+  { key: 'inst3m',      name: 'Instant → hold 3m',       desc: 'Median time-to-peak is 2 min — exit right after it.',        hold: 3,  stop: .5 },
+  { key: 'inst2m',      name: 'Instant → hold 2m',       desc: 'Exit at the measured median peak.',                          hold: 2,  stop: .6 },
+  { key: 'inst5mtp15',  name: 'Instant → TP 1.5X or 5m', desc: 'Whichever comes first: 1.5X or five minutes.',               hold: 5,  tps: [[1.5, 1]], stop: .6 },
+  { key: 'inst10mtp2',  name: 'Instant → TP 2X or 10m',  desc: 'Whichever comes first: 2X or ten minutes.',                  hold: 10, tps: [[2, 1]], stop: .6 },
+  { key: 'dip20hold10', name: 'Dip −20% → hold 10m',     desc: 'Pullback entry, flat 10-minute exit.',              dip: .20, hold: 10, stop: .5 },
+  { key: 'dip20hold5',  name: 'Dip −20% → hold 5m',      desc: 'Pullback entry, flat 5-minute exit.',               dip: .20, hold: 5,  stop: .5 },
+  { key: 'dip20tp2h15', name: 'Dip −20% → 2X or 15m',    desc: 'Pullback entry, 2X target with a 15-min cutoff.',   dip: .20, hold: 15, tps: [[2, 1]], stop: .6 },
+  { key: 'dip10hold10', name: 'Dip −10% → hold 10m',     desc: 'Shallow pullback, 10-minute exit.',                 dip: .10, hold: 10, stop: .5 },
+
+  // ── shallow-target family (costs are ~3%, so small edges can still clear) ──
+  { key: 'insttp12',    name: 'Instant → TP 1.2X',       desc: 'Tiny 20% scalp, tight stop.',                                tps: [[1.2, 1]], stop: .85 },
+  { key: 'dip20tp12',   name: 'Dip −20% → TP 1.2X',      desc: 'Pullback entry, tiny scalp back to the call price.', dip: .20, tps: [[1.2, 1]], stop: .85 },
+  { key: 'dip20tp125',  name: 'Dip −20% → TP 1.25X',     desc: 'Pullback entry, exit at roughly the call price.',   dip: .20, tps: [[1.25, 1]], stop: .8 },
+  { key: 'insttp175',   name: 'Instant → TP 1.75X',      desc: 'Middle target between the 1.5X and 2X variants.',            tps: [[1.75, 1]], stop: .6 },
+  { key: 'dip20tp175',  name: 'Dip −20% → TP 1.75X',     desc: 'Pullback entry, 1.75X target.',                     dip: .20, tps: [[1.75, 1]], stop: .6 },
+
+  // ── deep-dip family (are the deepest pullbacks the real bargains?) ──
+  { key: 'dip40tp2',    name: 'Dip −40% → TP 2X',        desc: 'Only buy a violent flush, then 2X.',                dip: .40, tps: [[2, 1]], stop: .5 },
+  { key: 'dip40tp15',   name: 'Dip −40% → TP 1.5X',      desc: 'Violent flush entry, modest target.',               dip: .40, tps: [[1.5, 1]], stop: .6 },
+  { key: 'dip30split',  name: 'Dip −30% → 50%@1.3+2X',   desc: 'Deep pullback, bank half early.',                   dip: .30, tps: [[1.3, .5], [2, .5]], stop: .7, be: true },
+  { key: 'dip5tp15',    name: 'Dip −5% → TP 1.5X',       desc: 'Barely wait at all, quick target.',                 dip: .05, tps: [[1.5, 1]], stop: .7 },
+
+  // ── stop-width sweep on the sim's best shape ──
+  { key: 'dip20tp2s30', name: 'Dip −20% → 2X, stop −30%',desc: 'Same shape, mid-width stop.',                       dip: .20, tps: [[2, 1]], stop: .7 },
+  { key: 'dip20tp2s40', name: 'Dip −20% → 2X, stop −40%',desc: 'Same shape, wider stop.',                           dip: .20, tps: [[2, 1]], stop: .6 },
+  { key: 'dip20tp2ns',  name: 'Dip −20% → 2X, no stop',  desc: 'Pullback entry, ride it out to the target.',        dip: .20, tps: [[2, 1]], stop: .05 },
+  { key: 'insttp2ns',   name: 'Instant → TP 2X, no stop',desc: 'Buy the call and never cut — the control case.',              tps: [[2, 1]], stop: .05 },
+
+  // ── runner variants: bank most, leave a lottery ticket ──
+  { key: 'dip20r90',    name: 'Dip −20% → 90%@2X + run', desc: 'Bank 90% at 2X, let 10% ride on a trail.',          dip: .20, tps: [[2, .9]], trail: .5, trailFrom: 'entry', stop: .6, be: true },
+  { key: 'instr80',     name: 'Instant → 80%@1.5X + run',desc: 'Bank 80% at 1.5X, trail the rest.',                          tps: [[1.5, .8]], trail: .4, trailFrom: 'entry', stop: .7, be: true },
+  { key: 'dip20lad3',   name: 'Dip −20% → 1.2/1.5/2/3',  desc: 'Four-rung ladder from a pullback entry.',           dip: .20, tps: [[1.2, .3], [1.5, .3], [2, .2], [3, .2]], stop: .7, be: true },
+  { key: 'instlad4',    name: 'Instant → 1.2/1.5/2/3',   desc: 'Four-rung ladder from the call price.',                      tps: [[1.2, .3], [1.5, .3], [2, .2], [3, .2]], stop: .7, be: true },
+
+  // ── tight trailing sweep ──
+  { key: 'insttrail15', name: 'Instant → trail 15%',     desc: 'Very tight trail from the call price.',                      trail: .15, trailFrom: 'entry', stop: .85 },
+  { key: 'insttrail20', name: 'Instant → trail 20%',     desc: 'Tight trail from the call price.',                           trail: .20, trailFrom: 'entry', stop: .8 },
+  { key: 'dip20trail15',name: 'Dip −20% → trail 15%',    desc: 'Pullback entry, very tight trail.',                 dip: .20, trail: .15, trailFrom: 'entry', stop: .85 },
+  { key: 'dip20trail20',name: 'Dip −20% → trail 20%',    desc: 'Pullback entry, tight trail.',                      dip: .20, trail: .20, trailFrom: 'entry', stop: .8 },
 ];
 
 for (const g of GRID) {
@@ -143,9 +189,12 @@ for (const g of GRID) {
       entryMode: g.dip ? ('dip' as const) : ('instant' as const),
       dipPct: g.dip ?? 0.2,
       dipWindowMin: 30,
+      maxHoldMin: g.hold ?? 0,
       tps: (g.tps ?? []).map(([mult, sellPct]) => ({ mult, sellPct })),
-      trailingDrop: g.trail ?? 0.9,          // 0.9 = effectively no trailing when unset
-      trailingFrom: g.trailFrom ?? ('entry' as const),
+      // No trail configured => keep trailing OFF (armed only after TPs) so stopLossPct
+      // is the real stop. Otherwise trailing-from-entry would override it.
+      trailingDrop: g.trail ?? 0.9,
+      trailingFrom: g.trail ? (g.trailFrom ?? ('entry' as const)) : ('afterLastTp' as const),
       stopLossPct: g.stop ?? 0.5,
       breakEvenAfterTp1: !!g.be,
     }),
@@ -175,6 +224,7 @@ export function sanitizeStrategy(s: Partial<Strategy>): Strategy {
     entryMode: s.entryMode === 'dip' ? 'dip' : 'instant',
     dipPct: clamp(s.dipPct, 0.02, 0.8, 0.20),
     dipWindowMin: clamp(s.dipWindowMin, 1, 240, 30),
+    maxHoldMin: clamp(s.maxHoldMin, 0, 1440, 0),
     tps,
     trailingDrop,
     trailingFrom: s.trailingFrom === 'afterLastTp' ? 'afterLastTp' : 'entry',
