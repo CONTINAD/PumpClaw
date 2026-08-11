@@ -2474,7 +2474,31 @@ export function startDashboard(port?: number): void {
         </tr>`;
         const head = `<tr><th>#</th><th>Strategy</th><th>Entry</th><th>Shape</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Total</th><th>Best</th></tr>`;
 
+        const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
+        const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
+        const instRows = rows.filter(r => r.entry === 'instant' && r.trades > 0);
+        const grpAvg = (rs: any[]) => {
+          const n = rs.reduce((s, r) => s + r.trades, 0);
+          return n ? rs.reduce((s, r) => s + r.pnl, 0) / n : 0;
+        };
         const html = settingsShell(`
+        <div class="card" style="max-width:none;border-color:#1e5c3a;background:linear-gradient(180deg,#0d1f16,var(--bg2))">
+          <h3 style="color:#9be826">🏆 What's working right now</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:12px">
+            ${winners.length ? winners.map(w => `<div style="background:var(--bg1);border:1px solid #1e5c3a;border-radius:8px;padding:10px 12px">
+              <div style="font-size:12px;color:var(--text);font-weight:700">${w.name}</div>
+              <div style="font-size:22px;font-weight:700;color:#10b981">${w.avg >= 0 ? '+' : ''}${w.avg.toFixed(3)}<span style="font-size:11px;color:var(--text3);font-weight:400"> /trade</span></div>
+              <div style="font-size:11px;color:var(--text2)">${w.trades} trades · ${w.winPct}% win · ${w.pnl >= 0 ? '+' : ''}${w.pnl.toFixed(1)} SOL</div>
+            </div>`).join('') : '<span style="color:var(--text3)">No strategy is clearly profitable yet.</span>'}
+          </div>
+          <div style="display:flex;gap:20px;font-size:13px;flex-wrap:wrap">
+            <span>Dip entry: <b style="color:${grpAvg(dipRows) >= 0 ? '#10b981' : '#ef4444'}">${grpAvg(dipRows) >= 0 ? '+' : ''}${grpAvg(dipRows).toFixed(3)}</b>/trade
+              <span style="color:var(--text3)">(${dipRows.reduce((s, r) => s + r.trades, 0)} trades)</span></span>
+            <span>Instant entry: <b style="color:${grpAvg(instRows) >= 0 ? '#10b981' : '#ef4444'}">${grpAvg(instRows) >= 0 ? '+' : ''}${grpAvg(instRows).toFixed(3)}</b>/trade
+              <span style="color:var(--text3)">(${instRows.reduce((s, r) => s + r.trades, 0)} trades)</span></span>
+            <span style="color:var(--text2)">Break-even after real fees ≈ <b>+0.03</b>/trade</span>
+          </div>
+        </div>
         <div class="card" style="max-width:none">
           <h3>📄 Shadow fleet — ${rows.length} strategies, 1 SOL/trade on live prices</h3>
           <p style="font-size:12px;color:var(--text2);line-height:1.6">
