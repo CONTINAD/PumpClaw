@@ -516,7 +516,10 @@ export class Trader {
     const strat = this.getStrategy();
     const fails = this.sellFailCounts.get(mint) ?? 0;
     const slippageBps = Math.min(9500, 5000 + fails * 1000);
-    const priorityFeeLamports = Math.min(5_000_000, Math.max(strat.priorityFeeLamports, 100_000) * (1 + fails * 2));
+    // Escalate the fee, but never spend more than 2% of the position on landing one tx.
+    // Measured median landed priority fee is ~2k lamports; 5M on a 0.03 SOL clip is 16%.
+    const feeCeiling = Math.max(50_000, Math.floor(pos.entrySol * 1e9 * 0.02));
+    const priorityFeeLamports = Math.min(feeCeiling, Math.max(strat.priorityFeeLamports, 100_000) * (1 + fails * 2));
 
     let onChain = pos.tokensRemaining;
     try { onChain = await getTokenBalance(mint, this.kp()); } catch { /* use tracked */ }

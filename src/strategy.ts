@@ -37,8 +37,8 @@ const BASE = {
   entryPct: 0.10,
   minEntrySol: 0.05,
   maxEntrySol: 0,
-  slippageBps: 3000,
-  priorityFeeLamports: 100_000,
+  slippageBps: 1500,
+  priorityFeeLamports: 30_000,
 };
 
 export const STRATEGY_PRESETS: Record<string, { name: string; desc: string; make: () => Strategy }> = {

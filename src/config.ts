@@ -108,8 +108,11 @@ export const CONFIG = {
   TRADE_ENABLED: true,
   TRADE_ENTRY_PCT: 0.10,               // 10% of wallet balance per trade
   TRADE_MIN_ENTRY_SOL: 0.05,           // minimum 0.05 SOL per trade
-  TRADE_SLIPPAGE_BPS: 3000,            // 30% slippage
-  TRADE_PRIORITY_FEE_LAMPORTS: 100_000, // 0.0001 SOL priority fee
+  // Measured on mainnet (Aug 2026): median landed priority fee on PumpSwap swaps is
+  // ~2.1k lamports, p90 ~32k. 100k was ~47x the median — pure waste on small clips.
+  // High slippage tolerance is also what makes a trade worth sandwiching.
+  TRADE_SLIPPAGE_BPS: 1500,            // 15% (was 30%) — realized slippage median is ~0bps
+  TRADE_PRIORITY_FEE_LAMPORTS: 30_000, // ~p90 of landed fees, still lands promptly
   TRADE_MIN_SOL_BALANCE: 0.05,         // don't trade if wallet SOL below this
   // Exit strategy: 'trailing' = always-on -45% trailing stop from entry, no TPs —
   // backtested 1.76X avg/call on 306 recorded calls vs 1.26X for the TP ladder
