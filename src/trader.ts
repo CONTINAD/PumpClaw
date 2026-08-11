@@ -6,7 +6,8 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { Keypair } from '@solana/web3.js';
 import { CONFIG } from './config.js';
-import { getSolBalance, getTokenBalance, closeTokenAccount } from './wallet.js';
+import { getSolBalance, getTokenBalance, closeTokenAccount, getConnection } from './wallet.js';
+import { getSolPrice } from './dexscreener.js';
 import { jupiterBuy, jupiterSell, type SwapResult, type SwapOpts } from './jupiter.js';
 import { STRATEGY_PRESETS, type Strategy } from './strategy.js';
 import { sendOpsAlert } from './discord.js';
@@ -71,6 +72,24 @@ export interface RealPosition {
   closedTime?: number;
   finalPnlSol?: number;
   error?: string;
+}
+
+const decimalsCache = new Map<string, number>();
+/** SPL mint decimals — pump.fun is 6, but never assume. */
+async function mintDecimals(mint: string): Promise<number> {
+  const hit = decimalsCache.get(mint);
+  if (hit !== undefined) return hit;
+  try {
+    const { PublicKey } = await import('@solana/web3.js');
+    const info: any = await getConnection().getParsedAccountInfo(new PublicKey(mint));
+    const d = info?.value?.data?.parsed?.info?.decimals;
+    const v = typeof d === 'number' ? d : 6;
+    decimalsCache.set(mint, v);
+    return v;
+  } catch {
+    decimalsCache.set(mint, 6);
+    return 6;
+  }
 }
 
 // ── Trader class ─────────────────────────────────────────────
@@ -230,13 +249,37 @@ export class Trader {
       return null;
     }
 
+    // The price we were quoted is NOT the price we filled at. Between the trigger
+    // and execution the market moves — a dip order can fill on the bounce. Derive
+    // the true entry from the swap itself so every downstream rule (TPs, stops,
+    // P&L) is measured against what we actually paid.
+    let fillPrice = currentPrice;
+    let fillMC = currentMC;
+    try {
+      const decimals = await mintDecimals(mint);
+      const tokensUi = result.outputAmount / Math.pow(10, decimals);
+      const solUsd = await getSolPrice();
+      if (tokensUi > 0 && solUsd > 0) {
+        const derived = (entrySol * solUsd) / tokensUi;
+        // sanity: ignore absurd values (bad decimals, weird routes)
+        if (derived > 0 && derived < currentPrice * 5 && derived > currentPrice / 5) {
+          fillPrice = derived;
+          fillMC = currentMC * (derived / currentPrice);
+          const slipPct = (derived / currentPrice - 1) * 100;
+          if (Math.abs(slipPct) > 3) {
+            console.log(`[Trader:${this.taskId}] Fill was ${slipPct > 0 ? '+' : ''}${slipPct.toFixed(1)}% vs quote — entry recorded at the real fill (${fillMC.toFixed(0)} MC, not ${currentMC.toFixed(0)})`);
+          }
+        }
+      }
+    } catch { /* keep the quoted price */ }
+
     const position: RealPosition = {
       mint,
       symbol,
       name,
       entrySol,
-      entryPrice: currentPrice,
-      entryMC: currentMC,
+      entryPrice: fillPrice,
+      entryMC: fillMC,
       entryTime: Date.now(),
       entryTx: result.txSignature,
       tokensReceived: result.outputAmount,
@@ -244,8 +287,8 @@ export class Trader {
       // trailing-from-entry silently replaced stopLossPct, so a strategy advertising
       // a -20% stop could actually run at -80%.
       stopLossPrice: strat.trailingFrom === 'entry'
-        ? currentPrice * Math.max(1 - strat.trailingDrop, strat.stopLossPct)
-        : currentPrice * strat.stopLossPct,
+        ? fillPrice * Math.max(1 - strat.trailingDrop, strat.stopLossPct)
+        : fillPrice * strat.stopLossPct,
       beStopArmed: false,
       remainingPct: 1.0,
       tokensRemaining: result.outputAmount,
@@ -259,8 +302,8 @@ export class Trader {
       // trailing-from-entry strategies arm the trailing stop immediately —
       // initial stop = entry × (1 − drop), ratchets up with every new ATH
       trailingActive: strat.trailingFrom === 'entry',
-      trailingHighPrice: strat.trailingFrom === 'entry' ? currentPrice : 0,
-      trailingStopPrice: strat.trailingFrom === 'entry' ? currentPrice * (1 - strat.trailingDrop) : 0,
+      trailingHighPrice: strat.trailingFrom === 'entry' ? fillPrice : 0,
+      trailingStopPrice: strat.trailingFrom === 'entry' ? fillPrice * (1 - strat.trailingDrop) : 0,
       status: 'open',
     };
 
@@ -713,6 +756,45 @@ export class Trader {
       writeFileSync(this.positionsFile, JSON.stringify(data));
     } catch (err: any) {
       console.error(`[Trader] Save error: ${err.message}`);
+    }
+  }
+
+  /** Recompute a position's entry from what we actually received on-chain.
+   *  Positions opened before the fill-price fix recorded the TRIGGER price, so
+   *  their stops and targets were keyed to a basis they never paid. */
+  async repairEntryBasis(): Promise<void> {
+    if (this.paper) return;
+    const strat = this.getStrategy();
+    for (const pos of this.positions.values()) {
+      if (pos.status !== 'open' || pos.entryTx === 'paper' || pos.tokensReceived <= 0) continue;
+      try {
+        const decimals = await mintDecimals(pos.mint);
+        const tokensUi = pos.tokensReceived / Math.pow(10, decimals);
+        const solUsd = await getSolPrice();
+        if (tokensUi <= 0 || solUsd <= 0) continue;
+        const real = (pos.entrySol * solUsd) / tokensUi;
+        if (!(real > 0) || Math.abs(real / pos.entryPrice - 1) < 0.05) continue;   // already right
+
+        const oldEntry = pos.entryPrice;
+        pos.entryPrice = real;
+        pos.entryMC = pos.entryMC * (real / oldEntry);
+        // Prices observed in the market stay as they are; levels defined relative to
+        // ENTRY get recomputed against the true basis.
+        pos.stopLossPrice = real * (strat.trailingFrom === 'entry'
+          ? Math.max(1 - strat.trailingDrop, strat.stopLossPct)
+          : strat.stopLossPct);
+        if (pos.trailingHighPrice > 0) {
+          pos.peakMultiplier = pos.trailingHighPrice / real;
+          if (pos.trailingActive) {
+            pos.trailingStopPrice = Math.max(pos.trailingHighPrice * (1 - strat.trailingDrop), pos.stopLossPrice);
+          }
+        } else {
+          pos.peakMultiplier = Math.max(1, pos.peakMultiplier * (oldEntry / real));
+        }
+        console.log(`[Trader:${this.taskId}] Repaired $${pos.symbol} entry: ${oldEntry.toExponential(3)} → ${real.toExponential(3)} ` +
+          `(MC ${pos.entryMC.toFixed(0)}), stop now ${(pos.stopLossPrice / real).toFixed(3)}x`);
+        this.flush();
+      } catch { /* leave as-is */ }
     }
   }
 

@@ -301,6 +301,14 @@ class TaskManager {
     // Keep the positions file as history (positions-<id>.json) — never delete trade records
   }
 
+  /** Repair entry bases on every real task (runs at startup). */
+  async repairAll(): Promise<void> {
+    for (const t of this.all().filter(x => !x.paper)) {
+      try { await this.traderFor(t).repairEntryBasis(); }
+      catch (err: any) { console.error(`[Tasks] repair failed (${t.name}): ${err.message}`); }
+    }
+  }
+
   // ── Trading fan-out ──
   /** Sources a task follows. PumpClaw's own scanner is the base feed every task
    *  gets unless explicitly opted out — adding an external caller ADDS a lane,

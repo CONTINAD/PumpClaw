@@ -1144,6 +1144,9 @@ async function main() {
 
 
 
+  // Fix any position whose entry was recorded at the trigger price instead of the fill
+  taskManager.repairAll().catch(err => console.error(`[Repair] ${err.message}`));
+
   candleCaptureLoop().catch(err => console.error(`[Candles] Fatal: ${err.message}`));
 
   // Milestone alerts run regardless of whether trading is enabled
