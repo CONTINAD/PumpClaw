@@ -1041,6 +1041,36 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   </div>
 </div>
 
+<!-- ── top strategies ── -->
+<div class="card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;margin:16px 0">
+  <h3 style="font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">🏆 Top strategies (last 24h) <a href="/shadow" style="float:right;font-size:11px;color:#3b82f6;text-transform:none;letter-spacing:0">all 111 →</a></h3>
+  <div id="ts-body" style="font-size:13px;color:var(--text3)">Loading…</div>
+</div>
+<script>
+(function () {
+  async function tick() {
+    const body = document.getElementById('ts-body');
+    try {
+      const d = await (await fetch('/api/shadow?hours=24')).json();
+      const s = (d.strategies || []).filter(x => x.trades >= 5).sort((a, b) => b.avgPerTrade - a.avgPerTrade).slice(0, 5);
+      if (!s.length) { body.innerHTML = '<span style="color:var(--text3)">Not enough closed trades in the last 24h yet.</span>'; return; }
+      body.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+        '<tr>' + ['#', 'Strategy', 'Trades', 'Win', 'Avg/trade', 'Total'].map(h => '<th style="color:var(--text3);text-align:left;padding:4px 8px;font-size:11px;text-transform:uppercase">' + h + '</th>').join('') + '</tr>' +
+        s.map((x, i) => '<tr>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text3)">' + (i + 1) + '</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border)"><b>' + x.strategy + '</b></td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border)">' + x.trades + '</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border)">' + x.winPct + '%</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);font-weight:700;color:' + (x.avgPerTrade >= 0.03 ? '#10b981' : x.avgPerTrade >= 0 ? '#f59e0b' : '#ef4444') + '">' + (x.avgPerTrade >= 0 ? '+' : '') + x.avgPerTrade.toFixed(3) + '</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border);color:' + (x.pnlSol >= 0 ? '#10b981' : '#ef4444') + '">' + (x.pnlSol >= 0 ? '+' : '') + x.pnlSol.toFixed(2) + ' ◎</td>' +
+          '</tr>').join('') + '</table>' +
+        '<div style="font-size:11px;color:var(--text3);margin-top:8px">Green = clears the ~3% real-fee break-even. Paper trades, 1 SOL each.</div>';
+    } catch (e) { body.innerHTML = '<span style="color:var(--text3)">unavailable</span>'; }
+  }
+  tick(); setInterval(tick, 60000);
+})();
+</script>
+
 <!-- ── running tasks ── -->
 <div class="card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;margin:16px 0">
   <h3 style="font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">🤖 Trading Tasks <span id="tk-status" style="margin-left:auto;font-size:11px;float:right;text-transform:none;letter-spacing:0;color:var(--text3)"></span></h3>
@@ -1908,6 +1938,19 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
     </div>
   </form>
 
+  <form method="POST" action="/task">
+    <input type="hidden" name="id" value="${task.id}"><input type="hidden" name="action" value="duplicate">
+    <div class="card">
+      <h3>⧉ Copy this task</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:6px">Same strategy and call sources, different wallet — for running the same setup at another size, or for someone else.</p>
+      <label>New task name</label>
+      <input name="name" maxlength="40" placeholder="${task.name} copy">
+      <label>Wallet private key for the copy (base58)</label>
+      <input type="password" name="wallet_key" autocomplete="off" placeholder="burner wallet key">
+      <button type="submit" style="background:#3b82f6;color:#fff">Create copy</button>
+    </div>
+  </form>
+
   <div class="card" style="max-width:none">
     <h3>📊 Stats</h3>
     <div id="stats-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;font-size:13px"><span style="color:var(--text3)">Loading…</span></div>
@@ -2062,6 +2105,9 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
       const name = task.name;
       taskManager.remove(task.id);
       await html('list', { ok: true, text: `"${name}" deleted (position history kept on disk).` });
+    } else if (form.action === 'duplicate') {
+      const copy = taskManager.duplicate(task.id, form.name, form.wallet_key);
+      await html(copy.id, { ok: true, text: `Copied "${task.name}" → "${copy.name}". Fund its wallet to start trading.` });
     } else if (form.action === 'strategy') {
       taskManager.update(task.id, { name: form.name, sources: sourcesFromForm(form), walletKey: form.wallet_key || undefined, strategy: strategyFromForm(form, task.strategy) });
       await html(task.id, { ok: true, text: 'Strategy saved — applies to open positions on the next tick.' });

@@ -214,6 +214,15 @@ class TaskManager {
     return task;
   }
 
+  /** Clone a task's full strategy onto a new wallet. */
+  duplicate(id: string, name: string, bs58Key: string): TradeTask {
+    const src = this.tasks.get(id);
+    if (!src) throw new Error(`No task ${id}`);
+    const copy = this.create(name || `${src.name} copy`, bs58Key, { ...src.strategy }, this.sourcesFor(src));
+    console.log(`[Tasks] Duplicated "${src.name}" → "${copy.name}"`);
+    return copy;
+  }
+
   update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string; sources?: string[]; walletKey?: string }): TradeTask {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`No task ${id}`);
