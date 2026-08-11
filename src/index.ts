@@ -16,7 +16,7 @@ import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
 import { registerSlashCommands } from './interactions.js';
 import { sourceRegistry, extractMints, classifySignal, PUMPCLAW_SOURCE_ID } from './call-sources.js';
-import { sendTradeActivity } from './discord.js';
+import { sendTradeActivity, sendOpsAlert } from './discord.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
 // ── Leaderboard timestamp persistence ───────────────────────
