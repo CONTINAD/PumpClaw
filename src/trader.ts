@@ -290,19 +290,42 @@ export class Trader {
     }
 
     // Helper to execute a partial sell
+    /**
+     * @param fillMult  For PAPER fills: the multiple the trigger actually sits at
+     *   (a TP level, or the stop price). Without this, paper sells used the observed
+     *   price at check time — so when the feed gapped, every strategy whose trigger
+     *   had been breached filled at the SAME price and all exit levels became
+     *   indistinguishable. Real fills ignore this and use the actual swap result.
+     */
     const executeSell = async (
       reason: RealExit['reason'],
       label: string,
       pctOfOriginal: number,
+      fillMult?: number,
     ): Promise<RealExit | null> => {
       const isFullExit = pctOfOriginal >= pos.remainingPct - 0.001;
       const actualPct = Math.min(pctOfOriginal, pos.remainingPct);
 
       if (this.paper) {
-        // Simulated fill at the trigger price minus a flat 2% haircut for slippage realism
-        const solReceived = pos.entrySol * actualPct * mult * 0.98;
+        // Fill at the TRIGGER level (never better than what the observed price
+        // offers), minus a flat 2% haircut. Using the trigger keeps strategies
+        // comparable instead of collapsing them onto whatever print the feed
+        // happened to show. Gap risk beyond the trigger is deliberately not
+        // modelled — real fills on a collapsing coin are worse than this.
+        let effMult = mult;
+        if (fillMult !== undefined) {
+          effMult = fillMult;
+          // Gap penalty: if the observed price is already well below the trigger, the
+          // market was falling fast and a real fill lands worse than the trigger.
+          // Charge slippage proportional to the gap, capped at 20%.
+          if (mult < fillMult && fillMult > 0) {
+            const gap = (fillMult - mult) / fillMult;
+            effMult = fillMult * (1 - Math.min(0.2, gap * 0.5));
+          }
+        }
+        const solReceived = pos.entrySol * actualPct * effMult * 0.98;
         const exit: RealExit = {
-          reason, label, multiplierAtExit: mult, pctSold: actualPct,
+          reason, label, multiplierAtExit: effMult, pctSold: actualPct,
           tokensSold: pos.tokensReceived * actualPct, solReceived,
           txSignature: 'paper', timestamp: Date.now(),
         };
@@ -493,7 +516,7 @@ export class Trader {
       if (!pos.tpHits[i] && mult >= tp.mult) {
         pos.tpHits[i] = true;
         if (i < 3) (pos as any)[`tp${i + 1}Hit`] = true;
-        await executeSell(`tp${i + 1}`, `TP${i + 1} ${tp.mult}X`, tp.sellPct);
+        await executeSell(`tp${i + 1}`, `TP${i + 1} ${tp.mult}X`, tp.sellPct, tp.mult);
         if (i === 0 && strat.breakEvenAfterTp1 && !pos.beStopArmed) {
           pos.beStopArmed = true;
           pos.stopLossPrice = pos.entryPrice;
@@ -524,7 +547,8 @@ export class Trader {
     if (pos.remainingPct >= 0.001) {
       if (pos.trailingActive && currentPrice <= pos.trailingStopPrice) {
         pos.stopTriggered = true; this.save();
-        await executeSell('trailing_stop', `Trailing Stop −${(strat.trailingDrop * 100).toFixed(0)}% (ATH ${(pos.trailingHighPrice / pos.entryPrice).toFixed(1)}X)`, pos.remainingPct);
+        await executeSell('trailing_stop', `Trailing Stop −${(strat.trailingDrop * 100).toFixed(0)}% (ATH ${(pos.trailingHighPrice / pos.entryPrice).toFixed(1)}X)`, pos.remainingPct,
+          pos.entryPrice > 0 ? pos.trailingStopPrice / pos.entryPrice : undefined);
       } else if (ladderMode && (pos.peakMultiplier ?? 1) >= 1.5 && mult <= 1.0) {
         // Profit protection (ladder only): was up 50%+ but dumped back to break-even.
         // In trailing mode this would be a hidden TP that contradicts letting winners breathe.
@@ -533,7 +557,8 @@ export class Trader {
         pos.stopTriggered = true; this.save();
         const reason = pos.beStopArmed ? 'be_stop' : 'stop_loss';
         const label = pos.beStopArmed ? 'Break-Even Stop' : `Stop Loss −${((1 - strat.stopLossPct) * 100).toFixed(0)}%`;
-        await executeSell(reason, label, pos.remainingPct);
+        await executeSell(reason, label, pos.remainingPct,
+          pos.entryPrice > 0 ? pos.stopLossPrice / pos.entryPrice : undefined);
       }
     }
 
