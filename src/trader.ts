@@ -255,9 +255,24 @@ export class Trader {
     // P&L) is measured against what we actually paid.
     let fillPrice = currentPrice;
     let fillMC = currentMC;
+    let realTokens = result.outputAmount;
+    try {
+      // Jupiter's quote.outAmount is what it EXPECTED to deliver, not what arrived.
+      // On $Layoo the quote said ~852K tokens and 614K landed — a 28% gap. Always
+      // read the wallet.
+      await new Promise(r => setTimeout(r, 2500));
+      const onChain = await getTokenBalance(mint, this.kp());
+      if (onChain > 0) {
+        if (Math.abs(onChain / result.outputAmount - 1) > 0.03) {
+          console.log(`[Trader:${this.taskId}] Quote said ${result.outputAmount} tokens, received ${onChain} ` +
+            `(${((onChain / result.outputAmount - 1) * 100).toFixed(1)}%) — using the real amount`);
+        }
+        realTokens = onChain;
+      }
+    } catch { /* fall back to the quote */ }
     try {
       const decimals = await mintDecimals(mint);
-      const tokensUi = result.outputAmount / Math.pow(10, decimals);
+      const tokensUi = realTokens / Math.pow(10, decimals);
       const solUsd = await getSolPrice();
       if (tokensUi > 0 && solUsd > 0) {
         const derived = (entrySol * solUsd) / tokensUi;
@@ -282,7 +297,7 @@ export class Trader {
       entryMC: fillMC,
       entryTime: Date.now(),
       entryTx: result.txSignature,
-      tokensReceived: result.outputAmount,
+      tokensReceived: realTokens,
       // Use the TIGHTER of the trailing floor and the configured stop. Previously
       // trailing-from-entry silently replaced stopLossPct, so a strategy advertising
       // a -20% stop could actually run at -80%.
@@ -291,7 +306,7 @@ export class Trader {
         : fillPrice * strat.stopLossPct,
       beStopArmed: false,
       remainingPct: 1.0,
-      tokensRemaining: result.outputAmount,
+      tokensRemaining: realTokens,
       exits: [],
       totalSolReturned: 0,
       tpHits: strat.tps.map(() => false),
@@ -769,7 +784,21 @@ export class Trader {
       if (pos.status !== 'open' || pos.entryTx === 'paper' || pos.tokensReceived <= 0) continue;
       try {
         const decimals = await mintDecimals(pos.mint);
-        const tokensUi = pos.tokensReceived / Math.pow(10, decimals);
+        // Prefer the wallet's actual balance — the stored figure came from a quote.
+        // Only valid while the position is untouched; after partial sells it's stale.
+        let rawTokens = pos.tokensReceived;
+        if (pos.remainingPct > 0.999) {
+          const onChain = await getTokenBalance(pos.mint, this.kp()).catch(() => 0);
+          if (onChain > 0) {
+            if (Math.abs(onChain / pos.tokensReceived - 1) > 0.03) {
+              console.log(`[Trader:${this.taskId}] $${pos.symbol}: stored ${pos.tokensReceived} tokens, wallet holds ${onChain}`);
+            }
+            rawTokens = onChain;
+            pos.tokensReceived = onChain;
+            pos.tokensRemaining = onChain;
+          }
+        }
+        const tokensUi = rawTokens / Math.pow(10, decimals);
         const solUsd = await getSolPrice();
         if (tokensUi <= 0 || solUsd <= 0) continue;
         const real = (pos.entrySol * solUsd) / tokensUi;
