@@ -232,16 +232,24 @@ async function fastScanCycle() {
       log(`💎 SMART HOLDERS — ${smartCheck.holders} tracked wallet(s) holding $${post.name}`);
     }
 
-    if (market.marketCap >= CONFIG.MIN_GLOBAL_FEES_MC) {
+    // Fee floor — a migrated coin that hasn't generated real fees hasn't been
+    // genuinely traded. Scales with market cap: bigger claimed cap demands more
+    // proof of activity behind it.
+    const migrated = (market.dexId ?? '').toLowerCase().includes('pumpswap')
+      || (market.dexId ?? '').toLowerCase().includes('raydium');
+    if (migrated) {
       const solPrice = await getSolPrice();
       const volumeSol = market.volume24h / solPrice;
       const estFees = volumeSol * CONFIG.PUMPSWAP_FEE_RATE;
-      if (estFees < CONFIG.MIN_GLOBAL_FEES_SOL) {
-        log(`⚠ LOW FEES — skipping ${post.name}: est ${estFees.toFixed(2)} SOL fees (need ≥${CONFIG.MIN_GLOBAL_FEES_SOL}) — vol ${volumeSol.toFixed(1)} SOL for ${fmtUsd(market.marketCap)} MC`);
-        recordSkip(post, 'LOW_FEES', `${estFees.toFixed(2)} SOL est fees`, market.marketCap);
+      const needed = market.marketCap >= 100_000 ? CONFIG.MIN_FEES_100K_SOL
+        : market.marketCap >= 60_000 ? CONFIG.MIN_FEES_60K_SOL
+        : CONFIG.MIN_FEES_BONDED_SOL;
+      if (estFees < needed) {
+        log(`⚠ LOW FEES — skipping ${post.name}: ${estFees.toFixed(2)} SOL fees, needs ≥${needed} at ${fmtUsd(market.marketCap)} MC (vol ${volumeSol.toFixed(0)} SOL)`);
+        recordSkip(post, 'LOW_FEES', `${estFees.toFixed(2)}/${needed} SOL fees at ${fmtUsd(market.marketCap)} MC`, market.marketCap);
         continue;
       }
-      log(`✅ Fee check passed: est ${estFees.toFixed(2)} SOL fees (vol ${volumeSol.toFixed(1)} SOL)`);
+      log(`✅ Fees ok: ${estFees.toFixed(2)} SOL (needed ${needed}) at ${fmtUsd(market.marketCap)} MC`);
     }
 
     const coinDetails = await fetchCoinDetails(post.mint);

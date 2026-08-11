@@ -86,9 +86,17 @@ export const CONFIG = {
   BUNDLE_LOW_BAL_PCT: 40,           // skip if 40%+ of top holders have < 1 SOL
 
   // Global fee / activity filter
-  MIN_GLOBAL_FEES_SOL: 2,           // skip if estimated trading fees < 2 SOL
-  MIN_GLOBAL_FEES_MC: 50_000,       // only apply fee check if MC >= this
-  PUMPSWAP_FEE_RATE: 0.003,         // ~0.3% total pumpswap fee rate
+  // Fee-based activity filter. Measured on-chain (Aug 2026): pump.fun's bonding
+  // curve and freshly-graduated PumpSwap pools both charge 1.25%; the 0.30% tier
+  // only applies above ~98,240 SOL mcap (~$7.5M), which none of our coins reach.
+  // The old 0.003 constant understated real fees by ~4x.
+  PUMPSWAP_FEE_RATE: 0.0125,
+  // Minimum lifetime fees a MIGRATED coin must have generated, by market cap.
+  // Filling the bonding curve to graduate alone produces ~1 SOL, so a genuinely
+  // traded migrated coin clears these easily.
+  MIN_FEES_BONDED_SOL: 3,           // any migrated coin
+  MIN_FEES_60K_SOL: 5,              // at $60K+ market cap
+  MIN_FEES_100K_SOL: 10,            // at $100K+ market cap
 
   // Persistent data
   DATA_DIR,

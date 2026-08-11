@@ -3149,7 +3149,13 @@ export function startDashboard(port?: number): void {
             wallet: taskManager.keypairFor(t).publicKey.toBase58(),
             hasWebhook: !!t.webhook,
             webhookTail: t.webhook ? '…' + t.webhook.slice(-14) : null,
+            entryMode: t.strategy.entryMode === 'dip'
+              ? `waits for a ${Math.round((t.strategy.dipPct ?? 0) * 100)}% dip (${t.strategy.dipWindowMin}min window)`
+              : 'buys immediately at the call',
             strategy: describeStrategy(t.strategy),
+            pendingOrders: taskManager.pendingEntries().filter(p => p.taskId === t.id)
+              .map(p => ({ symbol: p.symbol, target: p.target, callPrice: p.callPrice,
+                expiresInMin: Math.max(0, Math.round((p.expiresAt - Date.now()) / 60000)) })),
           })),
           positionFiles, candleFiles,
           files: info,
