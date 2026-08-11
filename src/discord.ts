@@ -572,6 +572,7 @@ export async function sendTradeActivity(
   mint: string,
   detail: string,
   tx?: string,
+  webhookUrl?: string,
 ): Promise<void> {
   const emoji = kind === 'buy' ? '🟦' : '💰';
   const verb = kind === 'buy' ? 'Bought' : 'Sold';
@@ -583,7 +584,7 @@ export async function sendTradeActivity(
     }],
   };
   try {
-    await fetch(CONFIG.TRADES_WEBHOOK || CONFIG.DISCORD_WEBHOOK, {
+    await fetch(webhookUrl || CONFIG.TRADES_WEBHOOK || CONFIG.DISCORD_WEBHOOK, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

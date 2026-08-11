@@ -6,6 +6,7 @@ import { createHash } from 'crypto';
 import { CONFIG, saveSettingsOverrides } from './config.js';
 import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldings } from './wallet.js';
 import { taskManager, type TradeTask } from './tasks.js';
+import { sendTradeActivity } from './discord.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
 import { buildHqHTML } from './hq.js';
 import { fmtUsd } from './discord.js';
@@ -1960,7 +1961,7 @@ async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<stri
       <td class="mono" style="font-size:11px;color:var(--text2)">${addr.slice(0, 6)}…${addr.slice(-4)}</td>
       <td class="mono">${bal === null ? '—' : bal.toFixed(3) + ' ◎'}</td>
       <td style="font-size:11px;color:${taskManager.sourcesFor(t).includes('pumpclaw') ? 'var(--text2)' : '#f59e0b'}">${sourcesLabel(t)}</td>
-      <td style="font-size:12px;color:var(--text2)">${describeStrategy(t.strategy)}</td>
+      <td style="font-size:12px;color:var(--text2)">${describeStrategy(t.strategy)}${t.webhook ? ' <span title="has its own Discord channel" style="color:#5865F2">🔔</span>' : ''}</td>
       <td class="mono" style="color:${s.pnl >= 0 ? '#10b981' : '#ef4444'}">${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(3)} ◎</td>
       <td class="mono">${s.open} open · ${s.wins}/${s.closed} wins</td>
       <td>
@@ -2093,6 +2094,24 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
         <input type="number" name="priority_fee" step="0.00001" min="0" value="${s.priorityFeeLamports / 1e9}" style="flex:1">
       </div>
       <button type="submit">Save strategy</button>
+    </div>
+  </form>
+
+  <form method="POST" action="/task">
+    <input type="hidden" name="id" value="${task.id}"><input type="hidden" name="action" value="webhook">
+    <div class="card">
+      <h3>🔔 Discord webhook for this task</h3>
+      <p style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:4px">
+        ${task.webhook
+          ? `Currently posting this task's buys and sells to <b style="color:#10b981">its own channel</b> (…${task.webhook.slice(-12)}).`
+          : `Right now this task's fills go to the shared trades channel. Paste a webhook to give it a dedicated channel instead.`}
+        Create one in Discord: <i>Channel → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL</i>.
+      </p>
+      <label>Webhook URL${task.webhook ? ' (leave blank and save to remove)' : ''}</label>
+      <input name="webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…" value="">
+      <div class="toggle-row"><input type="checkbox" id="tw" name="test" value="1" checked>
+        <label for="tw" style="margin:0;font-size:13px;color:var(--text)">Send a test message so I know it works</label></div>
+      <button type="submit" style="background:#5865F2;color:#fff">Save webhook</button>
     </div>
   </form>
 
@@ -2263,6 +2282,17 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
       const name = task.name;
       taskManager.remove(task.id);
       await html('list', { ok: true, text: `"${name}" deleted (position history kept on disk).` });
+    } else if (form.action === 'webhook') {
+      const url2 = (form.webhook ?? '').trim();
+      taskManager.update(task.id, { webhook: url2 });
+      let note = url2 ? `Webhook saved — "${task.name}" now posts its fills to that channel.` : `Webhook cleared — "${task.name}" posts to the shared trades channel again.`;
+      if (url2 && form.test === '1') {
+        const ok = await sendTradeActivity(task.name, 'buy', 'TEST', 'test',
+          `webhook connected — live fills for **${task.name}** will appear here`, undefined, url2)
+          .then(() => true).catch(() => false);
+        note += ok ? ' A test message was sent.' : ' (test message failed — double-check the URL)';
+      }
+      await html(task.id, { ok: true, text: note });
     } else if (form.action === 'duplicate') {
       const copy = taskManager.duplicate(task.id, form.name, form.wallet_key);
       await html(copy.id, { ok: true, text: `Copied "${task.name}" → "${copy.name}". Fund its wallet to start trading.` });

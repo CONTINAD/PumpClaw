@@ -27,6 +27,7 @@ export interface TradeTask {
   paper?: boolean;       // shadow task: simulated fills on live prices, no wallet needed
   source?: string;       // legacy single-source field (migrated into `sources`)
   sources?: string[];    // EXTRA call sources followed on top of PumpClaw's own calls
+  webhook?: string;      // per-task Discord webhook — this task's fills post here
   noPumpclaw?: boolean;  // explicit opt-out of PumpClaw's own scanner (default: follow it)
 }
 
@@ -242,9 +243,17 @@ class TaskManager {
     return copy;
   }
 
-  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string; sources?: string[]; walletKey?: string }): TradeTask {
+  update(id: string, patch: { name?: string; enabled?: boolean; strategy?: Partial<Strategy>; source?: string; sources?: string[]; walletKey?: string; webhook?: string }): TradeTask {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`No task ${id}`);
+    if (patch.webhook !== undefined) {
+      const w = patch.webhook.trim();
+      if (w && !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(w)) {
+        throw new Error('That does not look like a Discord webhook URL (expected https://discord.com/api/webhooks/...)');
+      }
+      task.webhook = w || undefined;
+      console.log(`[Tasks] "${task.name}" webhook ${w ? 'set' : 'cleared'}`);
+    }
     if (patch.walletKey) {
       const kp = Keypair.fromSecretKey(bs58.decode(patch.walletKey.trim())); // validates
       if (this.traderFor(task).getOpenPositions().length > 0) {
@@ -335,7 +344,7 @@ class TaskManager {
           sendTradeActivity(
             tasks[i].name, 'buy', symbol, mint,
             `**${pos.entrySol} SOL** at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC`,
-            pos.entryTx,
+            pos.entryTx, tasks[i].webhook,
           ).catch(() => {});
         }
       } else if (r.status === 'rejected') {
@@ -380,7 +389,7 @@ class TaskManager {
           sendTradeActivity(
             task.name, 'sell', pos?.symbol ?? mint.slice(0, 8), mint,
             `${exit.label} at **${exit.multiplierAtExit.toFixed(2)}X** → **+${exit.solReceived.toFixed(4)} SOL**`,
-            exit.txSignature,
+            exit.txSignature, task.webhook,
           ).catch(() => {});
         }
       } catch (err: any) {
@@ -404,7 +413,7 @@ class TaskManager {
             sendTradeActivity(
               task.name, 'sell', trader.getPosition(mint)?.symbol ?? mint.slice(0, 8), mint,
               `${label} at **${exit.multiplierAtExit.toFixed(2)}X** → **+${exit.solReceived.toFixed(4)} SOL**`,
-              exit.txSignature,
+              exit.txSignature, task.webhook,
             ).catch(() => {});
           }
         }
@@ -426,7 +435,7 @@ class TaskManager {
           sendTradeActivity(
             task.name, 'sell', pos.symbol, pos.mint,
             `${exit.label} → **+${exit.solReceived.toFixed(4)} SOL**`,
-            exit.txSignature,
+            exit.txSignature, task.webhook,
           ).catch(() => {});
         }
       }
