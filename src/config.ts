@@ -30,11 +30,14 @@ export const CONFIG = {
   PUMPFUN_API: 'https://frontend-api-v3.pump.fun',
   DEXSCREENER_API: 'https://api.dexscreener.com',
 
-  // Alerts — volume thresholds (raised Aug 10 after a night of low-quality calls)
-  MIN_5M_VOLUME_MICRO_MC: 8_000,  // required 5m vol if MC < 20k
-  MIN_5M_VOLUME_LOW_MC: 12_000,  // required 5m vol if MC 20k-50k
-  MIN_5M_VOLUME_HIGH_MC: 20_000, // required 5m vol if MC >= 50k
-  MIN_LIQUIDITY: 10_000,         // skip below this liquidity (rug fodder)
+  // Volume thresholds. Raised ~60% on Aug 10 after one bad night, which caused a
+  // 4-hour call drought (LOW_VOL was the top rejection reason). Rolled back Aug 11 —
+  // the raise was a reaction, not an evidence-backed threshold. Farm detection
+  // (bundle + wallet-graph) is what actually filters quality, and that stays.
+  MIN_5M_VOLUME_MICRO_MC: 5_000,  // required 5m vol if MC < 20k
+  MIN_5M_VOLUME_LOW_MC: 8_000,   // required 5m vol if MC 20k-50k
+  MIN_5M_VOLUME_HIGH_MC: 15_000, // required 5m vol if MC >= 50k
+  MIN_LIQUIDITY: 7_000,          // skip below this liquidity (rug fodder)
   MAX_CALLS_PER_HOUR: 6,         // hard cap — a spam hour means the signal is degraded
   MICRO_MC_THRESHOLD: 20_000,    // MC cutoff for micro tier
   LOW_MC_THRESHOLD: 50_000,      // MC cutoff between low and high tiers
@@ -69,7 +72,9 @@ export const CONFIG = {
   // Block when the top holders are ALL high-activity wallets: every funding-time check
   // becomes vacuous (0/0 = 0%) and bundles sail through. Fail closed instead.
   // Tradeoff: also blocks legit sniper-heavy launches — set false to allow them.
-  BUNDLE_BLOCK_UNVERIFIABLE: true,
+  // Superseded by the wallet-graph check, which detects farms built from ACTIVE
+  // wallets directly instead of blanket-blocking every coin we can't age-verify.
+  BUNDLE_BLOCK_UNVERIFIABLE: false,
   BUNDLE_MIN_VERIFIABLE: 3,         // need this many fresh wallets to trust a PASS
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.
