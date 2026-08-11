@@ -2439,9 +2439,14 @@ export function startDashboard(port?: number): void {
       }
     } else if (pathname === '/shadow') {
       try {
+        // Rolling window — default 24h. Old trades ran under different filter settings,
+        // so mixing them makes strategies incomparable. ?hours=all shows everything.
+        const hm = url.match(/[?&]hours=(\d+|all)/);
+        const hours = hm ? hm[1] : '24';
+        const cut = hours === 'all' ? 0 : Date.now() - parseInt(hours) * 3600_000;
         const rows = taskManager.all().filter(t => t.paper).map(t => {
           const ps = taskManager.traderFor(t).getAllPositions();
-          const closed = ps.filter(p => p.status === 'closed');
+          const closed = ps.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cut);
           const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
           const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
           const rets = closed.map(p => (p.totalSolReturned / (p.entrySol || 1)));
@@ -2483,7 +2488,7 @@ export function startDashboard(port?: number): void {
         };
         const html = settingsShell(`
         <div class="card" style="max-width:none;border-color:#1e5c3a;background:linear-gradient(180deg,#0d1f16,var(--bg2))">
-          <h3 style="color:#9be826">🏆 What's working right now</h3>
+          <h3 style="color:#9be826">🏆 What's working ${hours === 'all' ? '(all time)' : `(last ${hours}h)`}</h3>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:12px">
             ${winners.length ? winners.map(w => `<div style="background:var(--bg1);border:1px solid #1e5c3a;border-radius:8px;padding:10px 12px">
               <div style="font-size:12px;color:var(--text);font-weight:700">${w.name}</div>
@@ -2500,7 +2505,10 @@ export function startDashboard(port?: number): void {
           </div>
         </div>
         <div class="card" style="max-width:none">
-          <h3>📄 Shadow fleet — ${rows.length} strategies, 1 SOL/trade on live prices</h3>
+          <h3>📄 Shadow fleet — ${rows.length} strategies · ${hours === 'all' ? 'all time' : `last ${hours}h`} · 1 SOL/trade</h3>
+          <div style="display:flex;gap:6px;margin-bottom:10px">
+            ${['6', '12', '24', '48', 'all'].map(h => `<a href="/shadow?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hours ? 'var(--border2)' : 'var(--border)'};background:${h === hours ? 'var(--bg3)' : 'transparent'};color:${h === hours ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h + 'h'}</a>`).join('')}
+          </div>
           <p style="font-size:12px;color:var(--text2);line-height:1.6">
             Ranked by average PnL per closed trade. <b>Strategies with fewer than 8 trades are listed separately</b> — a
             small sample tells you nothing. Even above that bar, treat a one-day leader with suspicion: with 61 strategies
