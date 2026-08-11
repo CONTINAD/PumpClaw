@@ -11,6 +11,7 @@ import { buildHqHTML } from './hq.js';
 import { fmtUsd } from './discord.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
+import { loadPaths, backtest, type BacktestCfg } from './candles.js';
 import type { CallRecord } from './tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1614,11 +1615,11 @@ button:hover{filter:brightness(1.1)}
 .mono{font-family:'SF Mono',Menlo,monospace}`;
 
 function settingsShell(inner: string, self = '/settings'): string {
-  const title = self === '/live' ? '◆ Live Trading' : self === '/shadow' ? '📄 Shadow Fleet' : self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
-  const wide = self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
+  const title = self === '/builder' ? '🧪 Strategy Builder' : self === '/live' ? '◆ Live Trading' : self === '/shadow' ? '📄 Shadow Fleet' : self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
+  const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/live">Live</a><a href="/shadow">Shadow</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/shadow">Shadow</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -1753,6 +1754,161 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
 
 
 // ── Tasks pages (sneaker-bot style: N wallets × N strategies) ──
+
+function buildBuilderHTML(url: string, canAct: boolean): string {
+  const fromKey = (url.match(/[?&]from=([\w-]+)/) || [])[1] ?? 'dip20tp2';
+  const base = STRATEGY_PRESETS[fromKey]?.make() ?? STRATEGY_PRESETS.dip20tp2.make();
+  const opts = Object.entries(STRATEGY_PRESETS)
+    .map(([k, v]) => `<option value="${k}" ${k === fromKey ? 'selected' : ''}>${v.name}</option>`).join('');
+  const tpRow = (i: number) => {
+    const tp = base.tps[i];
+    return `<div style="display:flex;gap:8px;margin:5px 0;align-items:center">
+      <span style="font-size:11px;color:var(--text3);width:26px">#${i + 1}</span>
+      <input type="number" step="0.05" min="1.01" id="tpm${i}" name="tp_mult_${i}" placeholder="multiple" value="${tp ? tp.mult : ''}" style="flex:1">
+      <input type="number" step="1" min="1" max="100" id="tps${i}" name="tp_sell_${i}" placeholder="% to sell" value="${tp ? Math.round(tp.sellPct * 100) : ''}" style="flex:1">
+    </div>`;
+  };
+
+  return settingsShell(`
+  <div class="card" style="max-width:none">
+    <h3>🧪 Strategy builder</h3>
+    <p style="font-size:13px;color:var(--text2);line-height:1.6">
+      Edit every parameter and backtest it against the <b id="pathcount">…</b> real price paths captured from our own
+      calls — minute-by-minute, the actual path each coin took. Then add it to the paper fleet to run forward, or
+      go straight to live trading.
+    </p>
+    <label>Start from an existing strategy</label>
+    <select onchange="location.href='/builder?from='+this.value">${opts}</select>
+  </div>
+
+  <form method="POST" action="/builder" id="f">
+    <div class="card">
+      <h3>Entry</h3>
+      <label>How it enters</label>
+      <select name="entry_mode" id="entry_mode" onchange="preview()">
+        <option value="instant" ${base.entryMode !== 'dip' ? 'selected' : ''}>Buy immediately at the call</option>
+        <option value="dip" ${base.entryMode === 'dip' ? 'selected' : ''}>Wait for a pullback below the call</option>
+      </select>
+      <label>Pullback depth — % below the call price</label>
+      <input type="number" id="dip_pct" name="dip_pct" min="1" max="80" value="${Math.round((base.dipPct ?? 0.2) * 100)}" oninput="preview()">
+      <label>Give up if the pullback hasn't come within (minutes)</label>
+      <input type="number" id="dip_window" name="dip_window" min="1" max="240" value="${base.dipWindowMin ?? 30}" oninput="preview()">
+    </div>
+
+    <div class="card">
+      <h3>Take profit</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:4px">Multiple to sell at, and what % of the position to sell there. Leave blank to skip a rung.</p>
+      ${[0, 1, 2, 3, 4, 5].map(tpRow).join('')}
+      <div class="toggle-row"><input type="checkbox" id="be" name="break_even" value="1" ${base.breakEvenAfterTp1 ? 'checked' : ''} onchange="preview()">
+        <label for="be" style="margin:0;font-size:13px;color:var(--text)">Move the stop to break-even after the first take-profit</label></div>
+    </div>
+
+    <div class="card">
+      <h3>Risk</h3>
+      <label>Stop loss — % below entry</label>
+      <input type="number" id="stop_loss" name="stop_loss" min="1" max="95" value="${Math.round((1 - base.stopLossPct) * 100)}" oninput="preview()">
+      <label>Trailing stop — % below the high (90 = effectively off)</label>
+      <input type="number" id="trailing_drop" name="trailing_drop" min="5" max="90" value="${Math.round(base.trailingDrop * 100)}" oninput="preview()">
+      <label>When the trailing stop is active</label>
+      <select name="trailing_from" id="trailing_from" onchange="preview()">
+        <option value="entry" ${base.trailingFrom === 'entry' ? 'selected' : ''}>From entry (it is the stop)</option>
+        <option value="afterLastTp" ${base.trailingFrom !== 'entry' ? 'selected' : ''}>Only after all take-profits hit</option>
+      </select>
+      <label>Hard time exit — sell everything after N minutes (0 = off)</label>
+      <input type="number" id="max_hold" name="max_hold" min="0" max="1440" value="${base.maxHoldMin ?? 0}" oninput="preview()">
+    </div>
+
+    <div class="card" style="border-color:#1e5c3a">
+      <h3 style="color:#10b981">📊 Backtest — real captured paths</h3>
+      <div id="bt" style="font-size:13px;color:var(--text2)">adjust anything above to run…</div>
+      <div id="btsamples" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h3>Sizing & execution (live tasks only)</h3>
+      <label>Entry size — % of wallet per trade</label>
+      <input type="number" name="entry_pct" min="1" max="100" value="${Math.round(base.entryPct * 100)}">
+      <label>Min / max entry (SOL, max 0 = uncapped)</label>
+      <div style="display:flex;gap:8px">
+        <input type="number" name="min_entry" step="0.01" min="0.01" value="${base.minEntrySol}" style="flex:1">
+        <input type="number" name="max_entry" step="0.01" min="0" value="${base.maxEntrySol}" style="flex:1">
+      </div>
+      <label>Slippage % / priority fee (SOL)</label>
+      <div style="display:flex;gap:8px">
+        <input type="number" name="slippage" min="1" max="99" value="${Math.round(base.slippageBps / 100)}" style="flex:1">
+        <input type="number" name="priority_fee" step="0.00001" min="0" value="${base.priorityFeeLamports / 1e9}" style="flex:1">
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Save it</h3>
+      <label>Name</label>
+      <input name="name" maxlength="40" placeholder="My custom strategy">
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+        <button type="submit" name="mode" value="paper" style="flex:1;min-width:200px">📄 Add to paper fleet (no money)</button>
+        ${canAct ? `<button type="submit" name="mode" value="live" style="flex:1;min-width:200px;background:#10b981;color:#04120a">▶ Create LIVE task</button>` : ''}
+      </div>
+      ${canAct ? `<label style="margin-top:12px">Wallet private key (live only)</label>
+      <input type="password" name="wallet_key" autocomplete="off" placeholder="burner wallet — required for a live task">`
+        : `<p style="font-size:12px;color:var(--text3);margin-top:10px">Log in on <a href="/settings" style="color:#3b82f6">Settings</a> to create live tasks.</p>`}
+    </div>
+  </form>
+
+<script>
+let timer = null;
+function cfg() {
+  const tps = [];
+  for (let i = 0; i < 6; i++) {
+    const m = parseFloat(document.getElementById('tpm' + i).value);
+    const s = parseFloat(document.getElementById('tps' + i).value);
+    if (m > 1 && s > 0) tps.push({ mult: m, sellPct: s / 100 });
+  }
+  return {
+    entryMode: document.getElementById('entry_mode').value,
+    dipPct: (+document.getElementById('dip_pct').value || 20) / 100,
+    dipWindowMin: +document.getElementById('dip_window').value || 30,
+    tps,
+    trailingDrop: (+document.getElementById('trailing_drop').value || 90) / 100,
+    trailingFrom: document.getElementById('trailing_from').value,
+    stopLossPct: 1 - (+document.getElementById('stop_loss').value || 50) / 100,
+    breakEvenAfterTp1: document.getElementById('be').checked,
+    maxHoldMin: +document.getElementById('max_hold').value || 0,
+  };
+}
+async function preview() {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    const el = document.getElementById('bt');
+    el.textContent = 'running…';
+    try {
+      const r = await (await fetch('/api/backtest', { method: 'POST', body: JSON.stringify(cfg()) })).json();
+      document.getElementById('pathcount').textContent = r.pathsAvailable ?? 0;
+      if (!r.trades) { el.innerHTML = '<span style="color:#f59e0b">No trades — the pullback never happened on any captured path' +
+        (r.pathsAvailable ? '' : ', or no paths are captured yet (they appear ~45min after each call)') + '.</span>'; document.getElementById('btsamples').innerHTML = ''; return; }
+      const good = r.avg >= 0.03, ok2 = r.avg >= 0;
+      el.innerHTML =
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">' +
+        [['Avg / trade', (r.avg >= 0 ? '+' : '') + r.avg.toFixed(3), good ? '#10b981' : ok2 ? '#f59e0b' : '#ef4444'],
+         ['Robust avg', (r.robustAvg >= 0 ? '+' : '') + r.robustAvg.toFixed(3), r.robustAvg >= 0 ? '#10b981' : '#ef4444'],
+         ['Win rate', r.winPct + '%', ''], ['Median', r.median.toFixed(2) + '×', ''],
+         ['Trades', r.trades + (r.skipped ? ' (' + r.skipped + ' no-fill)' : ''), ''],
+         ['Best / worst', r.best.toFixed(1) + '× / ' + r.worst.toFixed(2) + '×', '']]
+        .map(([k, v, c]) => '<div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:9px 11px">' +
+          '<div style="font-size:10px;color:var(--text3);text-transform:uppercase">' + k + '</div>' +
+          '<div style="font-size:18px;font-weight:700;' + (c ? 'color:' + c : '') + '">' + v + '</div></div>').join('') +
+        '</div><div style="font-size:11px;color:var(--text3);margin-top:8px">Robust avg drops the best 3 trades — if it goes negative, the edge is one or two lucky coins. Real fees need roughly +0.03/trade.</div>';
+      document.getElementById('btsamples').innerHTML = '<table style="width:100%;font-size:12px;border-collapse:collapse">' +
+        '<tr><th style="text-align:left;padding:4px;color:var(--text3);font-size:10px">BEST</th><th></th><th style="text-align:left;padding:4px;color:var(--text3);font-size:10px">WORST</th><th></th></tr>' +
+        r.samples.slice(0, 5).map((s, i) => { const w = r.samples[r.samples.length - 1 - i];
+          return '<tr><td style="padding:3px 4px">$' + s.symbol.slice(0,10) + '</td><td style="color:#10b981">' + s.ret.toFixed(2) + '× <span style="color:var(--text3);font-size:10px">' + s.exit + '</span></td>' +
+                 '<td style="padding:3px 4px">$' + w.symbol.slice(0,10) + '</td><td style="color:#ef4444">' + w.ret.toFixed(2) + '× <span style="color:var(--text3);font-size:10px">' + w.exit + '</span></td></tr>'; }).join('') + '</table>';
+    } catch (e) { el.textContent = 'backtest failed'; }
+  }, 350);
+}
+document.querySelectorAll('#f input,#f select').forEach(el => el.addEventListener('input', preview));
+preview();
+</script>`, '/builder');
+}
 
 function sourceCheckboxes(selected: string[]): string {
   const rows = [
@@ -2517,6 +2673,81 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+    } else if (pathname === '/api/backtest') {
+      // Backtest an arbitrary config against every captured real price path
+      let body = '';
+      req.on('data', (c: Buffer) => { body += c; if (body.length > 32_000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const cfg = JSON.parse(body) as BacktestCfg;
+          const paths = loadPaths();
+          const r = backtest(cfg, paths);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ...r, pathsAvailable: paths.length }));
+        } catch (err: any) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    } else if (pathname === '/api/presets') {
+      const out = Object.entries(STRATEGY_PRESETS).map(([k, v]) => ({ key: k, name: v.name, cfg: v.make() }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ presets: out, paths: loadPaths().length }));
+    } else if (req.method === 'POST' && pathname === '/builder') {
+      let body = '';
+      req.on('data', (c: Buffer) => { body += c; if (body.length > 64_000) req.destroy(); });
+      req.on('end', () => {
+        (async () => {
+          if (!authOk(req)) {
+            res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(settingsLoginHTML());
+            return;
+          }
+          const form = parseFormBody(body);
+          try {
+            const tps: { mult: number; sellPct: number }[] = [];
+            for (let i = 0; i < 6; i++) {
+              const m = parseFloat(form[`tp_mult_${i}`]), sp = parseFloat(form[`tp_sell_${i}`]);
+              if (Number.isFinite(m) && Number.isFinite(sp) && m > 1 && sp > 0) tps.push({ mult: m, sellPct: sp / 100 });
+            }
+            const strat = sanitizeStrategy({
+              preset: 'custom',
+              entryMode: form.entry_mode === 'dip' ? 'dip' : 'instant',
+              dipPct: parseFloat(form.dip_pct) / 100,
+              dipWindowMin: parseFloat(form.dip_window),
+              tps,
+              trailingDrop: parseFloat(form.trailing_drop) / 100,
+              trailingFrom: form.trailing_from === 'entry' ? 'entry' : 'afterLastTp',
+              stopLossPct: 1 - parseFloat(form.stop_loss) / 100,
+              breakEvenAfterTp1: form.break_even === '1',
+              maxHoldMin: parseFloat(form.max_hold) || 0,
+              entryPct: parseFloat(form.entry_pct) / 100,
+              minEntrySol: parseFloat(form.min_entry),
+              maxEntrySol: parseFloat(form.max_entry) || 0,
+              slippageBps: parseFloat(form.slippage) * 100,
+              priorityFeeLamports: parseFloat(form.priority_fee) * 1e9,
+            });
+            const name = (form.name || 'Custom strategy').slice(0, 40);
+            if (form.mode === 'live') {
+              const task = taskManager.create(name, form.wallet_key, strat);
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end(await buildTaskDetailHTML(task, { ok: true, text: `Live task "${task.name}" created. Fund its wallet and it trades the next call.` }));
+            } else {
+              const task = taskManager.createPaper(name, strat);
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end(await buildTasksHTML({ ok: true, text: `Paper strategy "${task.name}" added to the fleet — it starts trading the next call with no money at risk.` }));
+            }
+          } catch (err: any) {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(await buildTasksHTML({ ok: false, text: err.message }));
+          }
+        })().catch(err => { res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end('Builder error: ' + err.message); });
+      });
+      return;
+    } else if (pathname === '/builder') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(buildBuilderHTML(url, authOk(req)));
     } else if (pathname === '/coin') {
       // Forensics: how did EVERY strategy handle this one coin? (public — read-only)
       try {

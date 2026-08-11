@@ -214,6 +214,25 @@ class TaskManager {
     return task;
   }
 
+  /** Add a user-built strategy to the paper fleet (no wallet, no money at risk). */
+  createPaper(name: string, strategy: Partial<Strategy>): TradeTask {
+    const id = `custom-${randomBytes(3).toString('hex')}`;
+    const task: TradeTask = {
+      id,
+      name: `📄 ${name}`.slice(0, 42),
+      walletKey: bs58.encode(Keypair.generate().secretKey),
+      enabled: true,
+      strategy: sanitizeStrategy(strategy),
+      createdAt: Date.now(),
+      paper: true,
+      sources: [],
+    };
+    this.tasks.set(id, task);
+    this.save();
+    console.log(`[Tasks] Custom paper strategy added: ${task.name}`);
+    return task;
+  }
+
   /** Clone a task's full strategy onto a new wallet. */
   duplicate(id: string, name: string, bs58Key: string): TradeTask {
     const src = this.tasks.get(id);

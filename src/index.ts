@@ -16,6 +16,7 @@ import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
 import { registerSlashCommands } from './interactions.js';
 import { sourceRegistry, extractMints, classifySignal, PUMPCLAW_SOURCE_ID } from './call-sources.js';
+import { capturePath, hasPath } from './candles.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
@@ -819,6 +820,29 @@ async function externalSourceLoop() {
   }
 }
 
+// ── Candle capture (every 5 min) — stores the real minute path of each call
+//    ~45min after it fires, so the strategy builder can backtest against what
+//    actually happened instead of a peak model. Free API, never touches Helius.
+
+async function candleCaptureLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 5 * 60_000));
+    try {
+      const ready = tracker.getActiveCalls().filter(c => {
+        const age = Date.now() - c.entryTime;
+        return age > 45 * 60_000 && age < 7 * 24 * 3600_000 && !hasPath(c.mint);
+      }).slice(0, 6);
+      for (const c of ready) {
+        const ok = await capturePath(c.mint, c.symbol, c.entryTime);
+        if (ok) log(`🕯 Captured price path for $${c.symbol}`);
+        await new Promise(r => setTimeout(r, 3000));   // GeckoTerminal rate limit
+      }
+    } catch (err: any) {
+      console.error(`[Candles] ${err.message}`);
+    }
+  }
+}
+
 // ── Fast milestone loop (4s) — 2X/3X alerts fired on the 30s maintenance cycle,
 //    so a spike was often announced after it had already faded. Recent calls are
 //    where all the movement is, so they get their own tight loop.
@@ -1111,6 +1135,8 @@ async function main() {
   console.log('');
 
 
+
+  candleCaptureLoop().catch(err => console.error(`[Candles] Fatal: ${err.message}`));
 
   // Milestone alerts run regardless of whether trading is enabled
   fastMilestoneLoop().catch(err => {
