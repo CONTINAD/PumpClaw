@@ -141,8 +141,9 @@ export class Trader {
         entryTime: Date.now(),
         entryTx: 'paper',
         tokensReceived: tokens,
+        // tighter of the trailing floor and the configured stop (same rule as live)
         stopLossPrice: strat0.trailingFrom === 'entry'
-          ? currentPrice * (1 - strat0.trailingDrop)
+          ? currentPrice * Math.max(1 - strat0.trailingDrop, strat0.stopLossPct)
           : currentPrice * strat0.stopLossPct,
         beStopArmed: false,
         remainingPct: 1.0,
@@ -239,10 +240,11 @@ export class Trader {
       entryTime: Date.now(),
       entryTx: result.txSignature,
       tokensReceived: result.outputAmount,
-      // trailing-from-entry: the trailing stop IS the stop — the fixed SL sits at the
-      // same level so it can't fire first and neuter the wide trailing stop
+      // Use the TIGHTER of the trailing floor and the configured stop. Previously
+      // trailing-from-entry silently replaced stopLossPct, so a strategy advertising
+      // a -20% stop could actually run at -80%.
       stopLossPrice: strat.trailingFrom === 'entry'
-        ? currentPrice * (1 - strat.trailingDrop)
+        ? currentPrice * Math.max(1 - strat.trailingDrop, strat.stopLossPct)
         : currentPrice * strat.stopLossPct,
       beStopArmed: false,
       remainingPct: 1.0,

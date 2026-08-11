@@ -805,6 +805,66 @@ async function externalSourceLoop() {
   }
 }
 
+// ── Stop watchdog (25s) — independent verification that stops actually execute.
+//    The panic seller retries stops that FIRED. This catches the worse case: a stop
+//    that never fired at all because the position stopped being priced (delisted
+//    pool, feed gap, restart mid-trade). It prices every open position directly and
+//    forces an exit on anything sitting below its stop.
+
+const stopWatchAlerted = new Set<string>();
+
+async function stopWatchdog() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 25_000));
+    try {
+      const open = taskManager.openPositions();
+      if (open.length === 0) { stopWatchAlerted.clear(); continue; }
+      const mints = [...new Set(open.map(({ pos }) => pos.mint))];
+      const data = await fetchBatchMarketData(mints);
+
+      for (const { task, pos } of open) {
+        const m = data.get(pos.mint);
+        const stale = Date.now() - pos.entryTime > 10 * 60_000;
+
+        // (a) no price data on a position we've held a while — we are flying blind
+        if ((!m || m.priceUsd <= 0) && stale && !task.paper) {
+          const key = `nofeed:${pos.mint}:${task.id}`;
+          if (!stopWatchAlerted.has(key)) {
+            stopWatchAlerted.add(key);
+            log(`🚨 NO PRICE FEED for $${pos.symbol} [${task.name}] — stop cannot be evaluated`);
+            sendOpsAlert(`No price feed for **$${pos.symbol}** [${task.name}] — the stop can't be evaluated, so the position is unmanaged. ` +
+              `Check it manually: https://dexscreener.com/solana/${pos.mint}`, CONFIG.TRADES_WEBHOOK).catch(() => {});
+          }
+          continue;
+        }
+        if (!m || m.priceUsd <= 0) continue;
+
+        // (b) price is at/below the stop but the position is still open → the stop
+        //     didn't execute. Force it, loudly.
+        const stopPrice = Math.max(pos.stopLossPrice, pos.trailingActive ? pos.trailingStopPrice : 0);
+        if (stopPrice > 0 && m.priceUsd <= stopPrice && pos.remainingPct >= 0.001) {
+          const mult = m.priceUsd / pos.entryPrice;
+          log(`🚨 STOP NOT EXECUTED: $${pos.symbol} [${task.name}] at ${mult.toFixed(2)}X, stop ${(stopPrice / pos.entryPrice).toFixed(2)}X — forcing exit`);
+          const events = await taskManager.checkAll(pos.mint, m.priceUsd, m.marketCap);
+          if (events.length === 0 && !task.paper) {
+            // checkAll didn't clear it — escalate straight to the panic seller
+            await taskManager.panicSweep();
+            const key = `stuck:${pos.mint}:${task.id}`;
+            if (!stopWatchAlerted.has(key)) {
+              stopWatchAlerted.add(key);
+              sendOpsAlert(`⚠️ **$${pos.symbol}** [${task.name}] is **below its stop and did not sell** ` +
+                `(now ${mult.toFixed(2)}X, stop ${(stopPrice / pos.entryPrice).toFixed(2)}X). Panic seller engaged — sell manually if it persists: ` +
+                `https://pump.fun/${pos.mint}`, CONFIG.TRADES_WEBHOOK).catch(() => {});
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Watchdog] ${err.message}`);
+    }
+  }
+}
+
 // ── Panic-sell loop (8s) — retries any stop that fired but never cleared.
 //    Independent of price feeds: once a stop triggers, getting OUT is the only goal.
 
@@ -984,6 +1044,9 @@ async function main() {
     });
     panicSellLoop().catch(err => {
       console.error(`[Panic] Fatal: ${err.message}`);
+    });
+    stopWatchdog().catch(err => {
+      console.error(`[Watchdog] Fatal: ${err.message}`);
     });
   }
 

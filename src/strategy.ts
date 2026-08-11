@@ -72,22 +72,22 @@ export const STRATEGY_PRESETS: Record<string, { name: string; desc: string; make
   dip20tp2: {
     name: 'Dip −20% → TP 2X',
     desc: 'Wait for a 20% pullback, then flat 2X take-profit. Best on 42 real paths (+11.8%/trade).',
-    make: () => ({ ...BASE, preset: 'dip20tp2', entryMode: 'dip' as const, dipPct: 0.20, dipWindowMin: 30, tps: [{ mult: 2, sellPct: 1 }], trailingDrop: 0.6, trailingFrom: 'entry' as const, stopLossPct: 0.4, breakEvenAfterTp1: false }),
+    make: () => ({ ...BASE, preset: 'dip20tp2', entryMode: 'dip' as const, dipPct: 0.20, dipWindowMin: 30, tps: [{ mult: 2, sellPct: 1 }], trailingDrop: 0.9, trailingFrom: 'afterLastTp' as const, stopLossPct: 0.4, breakEvenAfterTp1: false }),
   },
   dip20tp2stop: {
     name: 'Dip −20% → TP 2X, stop −20%',
     desc: 'Same entry, hard −20% stop. Fewer wins, smaller losers (+9.8%/trade).',
-    make: () => ({ ...BASE, preset: 'dip20tp2stop', entryMode: 'dip' as const, dipPct: 0.20, dipWindowMin: 30, tps: [{ mult: 2, sellPct: 1 }], trailingDrop: 0.8, trailingFrom: 'entry' as const, stopLossPct: 0.8, breakEvenAfterTp1: false }),
+    make: () => ({ ...BASE, preset: 'dip20tp2stop', entryMode: 'dip' as const, dipPct: 0.20, dipWindowMin: 30, tps: [{ mult: 2, sellPct: 1 }], trailingDrop: 0.9, trailingFrom: 'afterLastTp' as const, stopLossPct: 0.8, breakEvenAfterTp1: false }),
   },
   dip20split: {
     name: 'Dip −20% → 50%@1.3 + 50%@2',
     desc: 'Pullback entry, bank half early. Highest win rate at 60% (+5.5%/trade).',
-    make: () => ({ ...BASE, preset: 'dip20split', entryMode: 'dip' as const, dipPct: 0.20, dipWindowMin: 30, tps: [{ mult: 1.3, sellPct: 0.5 }, { mult: 2, sellPct: 0.5 }], trailingDrop: 0.7, trailingFrom: 'entry' as const, stopLossPct: 0.7, breakEvenAfterTp1: true }),
+    make: () => ({ ...BASE, preset: 'dip20split', entryMode: 'dip' as const, dipPct: 0.20, dipWindowMin: 30, tps: [{ mult: 1.3, sellPct: 0.5 }, { mult: 2, sellPct: 0.5 }], trailingDrop: 0.9, trailingFrom: 'afterLastTp' as const, stopLossPct: 0.7, breakEvenAfterTp1: true }),
   },
   instanttp15: {
     name: 'Instant → TP 1.5X',
     desc: 'No waiting, quick 1.5X scalp — best instant-entry variant (+3.8%/trade).',
-    make: () => ({ ...BASE, preset: 'instanttp15', tps: [{ mult: 1.5, sellPct: 1 }], trailingDrop: 0.7, trailingFrom: 'entry' as const, stopLossPct: 0.7, breakEvenAfterTp1: false }),
+    make: () => ({ ...BASE, preset: 'instanttp15', tps: [{ mult: 1.5, sellPct: 1 }], trailingDrop: 0.9, trailingFrom: 'afterLastTp' as const, stopLossPct: 0.7, breakEvenAfterTp1: false }),
   },
   hyb2: {
     name: '50% @ 2X + trail',
@@ -322,7 +322,11 @@ export function sanitizeStrategy(s: Partial<Strategy>): Strategy {
     tps,
     trailingDrop,
     trailingFrom: s.trailingFrom === 'afterLastTp' ? 'afterLastTp' : 'entry',
-    stopLossPct: clamp(s.stopLossPct, 0.05, 0.99, 1 - trailingDrop),
+    // If trailing runs from entry it IS the stop, so keep the two consistent —
+    // otherwise a strategy advertising "stop −20%" silently runs at −80%.
+    stopLossPct: s.trailingFrom === 'entry'
+      ? Math.max(clamp(s.stopLossPct, 0.05, 0.99, 1 - trailingDrop), 1 - trailingDrop)
+      : clamp(s.stopLossPct, 0.05, 0.99, 1 - trailingDrop),
     breakEvenAfterTp1: !!s.breakEvenAfterTp1,
     entryPct: clamp(s.entryPct, 0.01, 1, base.entryPct),
     minEntrySol: clamp(s.minEntrySol, 0.01, 100, base.minEntrySol),
