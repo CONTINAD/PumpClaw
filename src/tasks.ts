@@ -301,6 +301,18 @@ class TaskManager {
     // Keep the positions file as history (positions-<id>.json) — never delete trade records
   }
 
+  /** Reconcile every real task's book against the chain. */
+  async reconcileAll(): Promise<{ task: string; fixed: string[]; orphans: string[]; ghosts: string[] }[]> {
+    const out: { task: string; fixed: string[]; orphans: string[]; ghosts: string[] }[] = [];
+    for (const t of this.all().filter(x => !x.paper)) {
+      try {
+        const r = await this.traderFor(t).reconcile();
+        if (r.fixed.length || r.orphans.length || r.ghosts.length) out.push({ task: t.name, ...r });
+      } catch (err: any) { console.error(`[Tasks] reconcile failed (${t.name}): ${err.message}`); }
+    }
+    return out;
+  }
+
   /** Repair entry bases on every real task (runs at startup). */
   async repairAll(): Promise<void> {
     for (const t of this.all().filter(x => !x.paper)) {

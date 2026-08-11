@@ -3121,6 +3121,40 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Shadow page error: ' + err.message);
       }
+    } else if (pathname === '/api/verify') {
+      // On-demand audit: every real position checked against the chain
+      (async () => {
+        const out: any[] = [];
+        for (const t of taskManager.all().filter(x => !x.paper)) {
+          const kp = taskManager.keypairFor(t);
+          const trader = taskManager.traderFor(t);
+          const sol = await getSolBalance(kp).catch(() => null);
+          const holdings = await getTokenHoldings(kp).catch(() => []);
+          const open = trader.getOpenPositions();
+          const checks: any[] = [];
+          for (const p of open) {
+            const h = holdings.find(x => x.mint === p.mint);
+            const onChain = h ? h.amountRaw : 0;
+            const drift = p.tokensRemaining > 0 ? Math.abs(onChain / p.tokensRemaining - 1) : (onChain > 0 ? 1 : 0);
+            checks.push({
+              symbol: p.symbol, bookTokens: p.tokensRemaining, chainTokens: onChain,
+              driftPct: +(drift * 100).toFixed(1),
+              ok: drift < 0.03,
+              entryMC: Math.round(p.entryMC),
+              stopAt: p.entryPrice > 0 ? +(Math.max(p.stopLossPrice, p.trailingActive ? p.trailingStopPrice : 0) / p.entryPrice).toFixed(3) : null,
+            });
+          }
+          const trackedMints = new Set(open.map(p => p.mint));
+          const orphans = holdings.filter(h => !trackedMints.has(h.mint)).map(h => ({ mint: h.mint, amount: h.uiAmount }));
+          out.push({ task: t.name, wallet: kp.publicKey.toBase58(), sol, openPositions: open.length, checks, orphans });
+        }
+        const allOk = out.every(t => t.checks.every((c: any) => c.ok) && t.orphans.length === 0);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ verdict: allOk ? 'BOOK MATCHES CHAIN' : 'MISMATCH — see details', tasks: out }, null, 2));
+      })().catch(err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/api/health') {
       // Data-integrity view: what's on disk, when it last changed, and whether the
       // data directory is a persistent volume (survives deploys) or ephemeral.

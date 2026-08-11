@@ -918,6 +918,29 @@ async function realPositionLoop() {
   }
 }
 
+// ── Reconciliation (every 2 min) — the book is a claim, the wallet is the truth.
+//    Nothing here trusts what the bot recorded about itself.
+
+async function reconcileLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 120_000));
+    try {
+      const results = await taskManager.reconcileAll();
+      for (const r of results) {
+        if (r.fixed.length) log(`🔧 [${r.task}] corrected from chain: ${r.fixed.join(', ')}`);
+        if (r.ghosts.length) log(`👻 [${r.task}] position closed — wallet no longer holds ${r.ghosts.join(', ')}`);
+        if (r.orphans.length) {
+          log(`🚨 [${r.task}] UNTRACKED tokens in wallet: ${r.orphans.join(', ')}`);
+          sendOpsAlert(`⚠️ **${r.task}** holds tokens no position is managing: ${r.orphans.join(', ')}. ` +
+            `These have no stop and will not be sold automatically.`, CONFIG.TRADES_WEBHOOK).catch(() => {});
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Reconcile] ${err.message}`);
+    }
+  }
+}
+
 // ── Stop watchdog (25s) — independent verification that stops actually execute.
 //    The panic seller retries stops that FIRED. This catches the worse case: a stop
 //    that never fired at all because the position stopped being priced (delisted
@@ -1170,6 +1193,9 @@ async function main() {
     });
     stopWatchdog().catch(err => {
       console.error(`[Watchdog] Fatal: ${err.message}`);
+    });
+    reconcileLoop().catch(err => {
+      console.error(`[Reconcile] Fatal: ${err.message}`);
     });
     realPositionLoop().catch(err => {
       console.error(`[RealLoop] Fatal: ${err.message}`);

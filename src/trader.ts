@@ -732,6 +732,53 @@ export class Trader {
     return [];
   }
 
+  /**
+   * Reconcile every open position against the chain. The book is a claim; the
+   * wallet is the truth. Corrects token counts, detects positions the wallet no
+   * longer holds, and finds orphaned bags the book never recorded.
+   */
+  async reconcile(): Promise<{ fixed: string[]; orphans: string[]; ghosts: string[] }> {
+    const fixed: string[] = [], orphans: string[] = [], ghosts: string[] = [];
+    if (this.paper) return { fixed, orphans, ghosts };
+    const tracked = new Set<string>();
+
+    for (const pos of this.positions.values()) {
+      if (pos.status !== 'open') continue;
+      tracked.add(pos.mint);
+      try {
+        const onChain = await getTokenBalance(pos.mint, this.kp());
+        // (a) book says we hold it, wallet says we don't → it was sold elsewhere
+        if (onChain <= 0 && pos.remainingPct >= 0.001) {
+          pos.remainingPct = 0;
+          pos.tokensRemaining = 0;
+          pos.status = 'closed';
+          pos.closedTime = Date.now();
+          pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
+          ghosts.push(pos.symbol);
+          this.flush();
+          continue;
+        }
+        // (b) counts drifted → trust the wallet
+        if (onChain > 0 && Math.abs(onChain / Math.max(1, pos.tokensRemaining) - 1) > 0.03) {
+          pos.tokensRemaining = onChain;
+          if (pos.tokensReceived > 0) pos.remainingPct = Math.min(1, onChain / pos.tokensReceived);
+          fixed.push(`${pos.symbol} tokens→${onChain}`);
+          this.flush();
+        }
+      } catch { /* transient RPC — try next pass */ }
+    }
+
+    // (c) tokens in the wallet that no open position claims — unmanaged bags
+    try {
+      const { getTokenHoldings } = await import('./wallet.js');
+      for (const h of await getTokenHoldings(this.kp())) {
+        if (!tracked.has(h.mint) && h.uiAmount > 0) orphans.push(`${h.mint.slice(0, 8)}…`);
+      }
+    } catch { /* skip */ }
+
+    return { fixed, orphans, ghosts };
+  }
+
   /** Positions whose stop fired but that still hold tokens. */
   getStuckPositions(): RealPosition[] {
     return [...this.positions.values()].filter(p => p.status === 'open' && p.stopTriggered && p.remainingPct >= 0.001);
