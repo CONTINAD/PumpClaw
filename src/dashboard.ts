@@ -1949,7 +1949,7 @@ function taskSummary(task: TradeTask) {
 async function buildTasksHTML(msg?: { ok: boolean; text: string }): Promise<string> {
   const tasks = taskManager.all();
   const balances = await Promise.all(tasks.map(t =>
-    getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
+    t.paper ? Promise.resolve(null) : getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
 
   const rows = tasks.map((t, i) => {
     const addr = taskManager.keypairFor(t).publicKey.toBase58();
@@ -2402,8 +2402,9 @@ export function startDashboard(port?: number): void {
       }
       (async () => {
         const tasks = taskManager.all();
+        // Only real tasks need an on-chain balance; paper wallets are throwaway.
         const balances = await Promise.all(tasks.map(t =>
-          getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
+          t.paper ? Promise.resolve(null) : getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
         const out = tasks.map((t, i) => {
           const s = taskSummary(t);
           return {
@@ -2496,9 +2497,11 @@ export function startDashboard(port?: number): void {
         let balance: number | null = null;
         try {
           // combined balance across enabled task wallets
-          const bals = await Promise.all(taskManager.allEnabled().map(t =>
-            getSolBalance(taskManager.keypairFor(t)).catch(() => 0)));
-          balance = bals.reduce((s, b) => s + b, 0);
+          const realTasks = taskManager.allEnabled().filter(t => !t.paper);
+          const bals = await Promise.all(realTasks.map(t =>
+            getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
+          const known = bals.filter((b): b is number => b !== null);
+          balance = known.length ? known.reduce((s, b) => s + b, 0) : null;
         } catch { /* omit */ }
         const tasks = taskManager.all();
         res.writeHead(200, { 'Content-Type': 'application/json' });
