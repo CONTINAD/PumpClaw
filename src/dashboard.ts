@@ -3121,6 +3121,61 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Shadow page error: ' + err.message);
       }
+    } else if (pathname === '/api/health') {
+      // Data-integrity view: what's on disk, when it last changed, and whether the
+      // data directory is a persistent volume (survives deploys) or ephemeral.
+      try {
+        const files = ['tasks.json', 'calls.json', 'sources.json', 'settings.json',
+          'source-cursors.json', 'pending-entries.json', 'lb-timestamps.json'];
+        const info = files.map(f => {
+          const fp = join(CONFIG.DATA_DIR, f);
+          try {
+            const st = statSync(fp);
+            return { file: f, bytes: st.size, modifiedMinAgo: Math.round((Date.now() - st.mtimeMs) / 60000) };
+          } catch { return { file: f, bytes: 0, modifiedMinAgo: null, missing: true }; }
+        });
+        let positionFiles = 0, candleFiles = 0;
+        try { positionFiles = readdirSync(CONFIG.DATA_DIR).filter(f => f.startsWith('positions')).length; } catch {}
+        try { candleFiles = readdirSync(join(CONFIG.DATA_DIR, 'candles')).length; } catch {}
+        const real = taskManager.all().filter(t => !t.paper);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          dataDir: CONFIG.DATA_DIR,
+          persistentVolume: !CONFIG.DATA_DIR.includes('/app/dist') && CONFIG.DATA_DIR !== './data',
+          uptimeMin: Math.round(process.uptime() / 60),
+          tasks: { total: taskManager.all().length, real: real.length, paper: taskManager.all().length - real.length },
+          liveTasks: real.map(t => ({
+            name: t.name, enabled: t.enabled,
+            wallet: taskManager.keypairFor(t).publicKey.toBase58(),
+            hasWebhook: !!t.webhook,
+            webhookTail: t.webhook ? '…' + t.webhook.slice(-14) : null,
+            strategy: describeStrategy(t.strategy),
+          })),
+          positionFiles, candleFiles,
+          files: info,
+        }, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (pathname === '/api/export') {
+      // Full snapshot download — a manual backup you can keep off-platform
+      if (!authOk(req)) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'auth required' })); return; }
+      try {
+        const bundle: Record<string, any> = { exportedAt: new Date().toISOString() };
+        for (const f of readdirSync(CONFIG.DATA_DIR)) {
+          if (!f.endsWith('.json')) continue;
+          try { bundle[f] = JSON.parse(readFileSync(join(CONFIG.DATA_DIR, f), 'utf-8')); } catch {}
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Disposition': `attachment; filename="pumpclaw-backup-${Date.now()}.json"`,
+        });
+        res.end(JSON.stringify(bundle));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/feed') {
       // Recent buy/sell events across every task — the live activity stream
       try {
