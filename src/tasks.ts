@@ -32,21 +32,89 @@ export interface TradeTask {
 
 export interface TaskExitEvent { task: TradeTask; exit: RealExit }
 
+/** A call a dip-entry task is waiting on: buy only if price falls to `target`. */
+export interface PendingEntry {
+  taskId: string;
+  mint: string;
+  symbol: string;
+  name: string;
+  callPrice: number;
+  target: number;
+  expiresAt: number;
+}
+
+const PENDING_FILE = `${CONFIG.DATA_DIR}/pending-entries.json`;
+
 class TaskManager {
   private tasks = new Map<string, TradeTask>();
   private traders = new Map<string, Trader>();
+  private pending: PendingEntry[] = [];
 
   constructor() {
     this.load();
+    this.loadPending();
     this.migrateLegacy();
     this.seedShadowFleet();
+  }
+
+  // ── Pending dip entries ──
+  private loadPending(): void {
+    try { this.pending = JSON.parse(readFileSync(PENDING_FILE, 'utf-8')); } catch { this.pending = []; }
+  }
+  private savePending(): void {
+    try { writeFileSync(PENDING_FILE, JSON.stringify(this.pending, null, 2)); } catch {}
+  }
+  pendingEntries(): PendingEntry[] {
+    const now = Date.now();
+    return this.pending.filter(p => p.expiresAt > now);
+  }
+
+  /** Fill or expire dip orders against a fresh price. Returns tasks that filled. */
+  async checkPendingEntries(mint: string, price: number, mc: number): Promise<number> {
+    const now = Date.now();
+    const relevant = this.pending.filter(p => p.mint === mint);
+    if (relevant.length === 0) return 0;
+
+    let filled = 0;
+    const keep: PendingEntry[] = [];
+    for (const p of this.pending) {
+      if (p.mint !== mint) { keep.push(p); continue; }
+      if (p.expiresAt <= now) {
+        console.log(`[Tasks] Dip order expired: $${p.symbol} never fell to ${p.target.toPrecision(4)}`);
+        continue;
+      }
+      if (price > p.target) { keep.push(p); continue; }
+
+      const task = this.tasks.get(p.taskId);
+      if (!task || !task.enabled) continue;
+      try {
+        const pos = await this.traderFor(task).buy(p.mint, p.symbol, p.name, price, mc);
+        if (pos) {
+          filled++;
+          console.log(`[Tasks] ✅ Dip filled for "${task.name}": $${p.symbol} at ${((price / p.callPrice - 1) * 100).toFixed(0)}% from call`);
+          if (!task.paper) {
+            sendTradeActivity(task.name, 'buy', p.symbol, p.mint,
+              `**${pos.entrySol} SOL** on a **${((1 - price / p.callPrice) * 100).toFixed(0)}% dip** from the call`,
+              pos.entryTx).catch(() => {});
+          }
+        }
+      } catch (err: any) {
+        console.error(`[Tasks] Dip fill failed (${task.name}/${p.symbol}): ${err.message}`);
+      }
+    }
+    this.pending = keep;
+    this.savePending();
+    return filled;
   }
 
   /** One shadow (paper) task per strategy preset — path-aware ground truth for the
    *  Strategy Lab's peak-model estimates. Runs every call on live prices, no funds. */
   private seedShadowFleet(): void {
-    if (this.all().some(t => t.paper)) return;
-    for (const [key, preset] of Object.entries(STRATEGY_PRESETS)) {
+    const existing = new Set(this.all().filter(t => t.paper).map(t => t.strategy.preset));
+    const missing = Object.keys(STRATEGY_PRESETS).filter(k => !existing.has(k));
+    if (missing.length === 0) return;
+    for (const key of missing) {
+      const preset = STRATEGY_PRESETS[key];
       const id = `shadow-${key}`;
       const task: TradeTask = {
         id,
@@ -60,7 +128,7 @@ class TaskManager {
       this.tasks.set(id, task);
     }
     this.save();
-    console.log(`[Tasks] Seeded shadow fleet: ${Object.keys(STRATEGY_PRESETS).length} paper tasks (one per preset)`);
+    console.log(`[Tasks] Seeded ${missing.length} shadow task(s): ${missing.join(', ')}`);
   }
 
   // ── Persistence ──
@@ -205,8 +273,27 @@ class TaskManager {
 
   /** Buy on all enabled tasks in parallel. Posts each fill to Discord. */
   async buyAll(mint: string, symbol: string, name: string, price: number, mc: number, sourceId: string = PUMPCLAW_SOURCE_ID): Promise<number> {
-    const tasks = this.enabledTasks(sourceId);
+    const all = this.enabledTasks(sourceId);
+    if (all.length === 0) return 0;
+
+    // Dip-entry tasks don't buy the call — they queue an order below it.
+    const tasks = all.filter(t => t.strategy.entryMode !== 'dip');
+    const dipTasks = all.filter(t => t.strategy.entryMode === 'dip');
+    for (const t of dipTasks) {
+      if (this.traderFor(t).getPosition(mint)?.status === 'open') continue;
+      if (this.pending.some(p => p.taskId === t.id && p.mint === mint)) continue;
+      const dip = t.strategy.dipPct ?? 0.2;
+      this.pending.push({
+        taskId: t.id, mint, symbol, name,
+        callPrice: price,
+        target: price * (1 - dip),
+        expiresAt: Date.now() + (t.strategy.dipWindowMin ?? 30) * 60_000,
+      });
+      console.log(`[Tasks] ⏳ "${t.name}" waiting for $${symbol} to dip ${(dip * 100).toFixed(0)}%`);
+    }
+    if (dipTasks.length > 0) this.savePending();
     if (tasks.length === 0) return 0;
+
     const results = await Promise.allSettled(
       tasks.map(t => this.traderFor(t).buy(mint, symbol, name, price, mc)),
     );

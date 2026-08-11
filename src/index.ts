@@ -828,12 +828,15 @@ async function dexSweepLoop() {
     await new Promise(r => setTimeout(r, 5_000));
     try {
       const open = taskManager.openPositions();
-      if (open.length === 0) continue;
-      const mints = [...new Set(open.map(({ pos }) => pos.mint))];
+      const pending = taskManager.pendingEntries();
+      if (open.length === 0 && pending.length === 0) continue;
+      const mints = [...new Set([...open.map(({ pos }) => pos.mint), ...pending.map(p => p.mint)])];
       const data = await fetchBatchMarketData(mints);
       for (const mint of mints) {
         const m = data.get(mint);
         if (!m || m.priceUsd <= 0) continue;
+        // dip orders first — a fill this tick should then be managed by the exit engine
+        await taskManager.checkPendingEntries(mint, m.priceUsd, m.marketCap);
         const events = await taskManager.checkAll(mint, m.priceUsd, m.marketCap);
         for (const { task, exit } of events) {
           log(`${task.paper ? '📄 SHADOW' : '💰 REAL'} EXIT [${task.name}]: ${exit.label} at ${exit.multiplierAtExit.toFixed(2)}X → ${exit.solReceived.toFixed(4)} SOL`);
