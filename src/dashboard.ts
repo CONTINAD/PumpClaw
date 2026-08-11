@@ -208,7 +208,7 @@ function buildDashboardData(range: TimeRange = 'all') {
 
   // ── Calls that ran (peak > 2X) but we may not have traded well ──
   const callsWithPeaks = calls.map(c => ({
-    symbol: c.symbol,
+    mint: c.mint, symbol: c.symbol,
     name: c.name,
     entryMC: c.entryMC,
     peakMultiplier: c.peakMultiplier ?? 1,
@@ -2517,6 +2517,59 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+    } else if (pathname === '/coin') {
+      // Forensics: how did EVERY strategy handle this one coin?
+      try {
+        const mm = url.match(/[?&]mint=([1-9A-HJ-NP-Za-km-z]{32,44})/);
+        const mint = mm ? mm[1] : '';
+        const results: any[] = [];
+        let symbol = mint.slice(0, 6), entryMC = 0, callTime = 0;
+        for (const t of taskManager.all()) {
+          const pos = taskManager.traderFor(t).getPosition(mint);
+          if (!pos) continue;
+          symbol = pos.symbol; entryMC = entryMC || pos.entryMC; callTime = callTime || pos.entryTime;
+          results.push({
+            name: t.name.replace('📄 ', ''), paper: !!t.paper, preset: t.strategy.preset,
+            entryPrice: pos.entryPrice, entryTime: pos.entryTime,
+            dip: t.strategy.entryMode === 'dip' ? Math.round((t.strategy.dipPct ?? 0) * 100) : 0,
+            peak: pos.peakMultiplier, status: pos.status,
+            ret: pos.entrySol > 0 ? pos.totalSolReturned / pos.entrySol : 0,
+            pnl: pos.status === 'closed' ? (pos.finalPnlSol ?? 0) : null,
+            exits: pos.exits.map(e => `${e.label} @ ${e.multiplierAtExit.toFixed(2)}×`).join(' · ') || '—',
+          });
+        }
+        results.sort((a, b) => (b.pnl ?? -99) - (a.pnl ?? -99));
+        const closed = results.filter(r => r.pnl !== null);
+        const winners = closed.filter(r => r.pnl! > 0).length;
+        const rec = (() => { try { return JSON.parse(readFileSync(CONFIG.DATA_FILE, 'utf-8')).find((c: any) => c.mint === mint); } catch { return null; } })();
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>$${symbol} — how every strategy handled it</h3>
+          <div class="kv">Called at <b>${fmtUsd(rec?.entryMC ?? entryMC)}</b> MC${rec ? ` · peaked <b style="color:#10b981">${rec.peakMultiplier.toFixed(2)}×</b> at ${fmtUsd(rec.peakMC)}` : ''}${callTime ? ` · ${new Date(callTime).toISOString().slice(5, 16).replace('T', ' ')}` : ''}</div>
+          <div class="kv"><b>${winners}</b> of ${closed.length} closed strategies made money on this coin${results.length - closed.length ? ` · ${results.length - closed.length} still open` : ''}</div>
+          <div class="kv mono" style="font-size:11px;color:var(--text3);margin-top:6px">${mint}</div>
+          <div style="margin-top:10px"><a href="https://dexscreener.com/solana/${mint}" target="_blank" style="color:#3b82f6;font-size:12px">DexScreener →</a></div>
+        </div>
+        <div class="card" style="max-width:none">
+          <h3>Per-strategy result (${results.length})</h3>
+          ${results.length ? `<div style="overflow-x:auto"><table>
+            <tr><th>Strategy</th><th>Entry</th><th>Bought at</th><th>Exits</th><th>Peak</th><th>Result</th></tr>
+            ${results.map(r => `<tr>
+              <td><a href="/strategy?key=${r.preset}" style="color:var(--text);text-decoration:none;border-bottom:1px dotted var(--border2)">${r.name.slice(0, 30)}</a>${r.paper ? '' : ' <span style="color:#10b981;font-size:10px">LIVE</span>'}</td>
+              <td style="font-size:11px;color:${r.dip ? '#f59e0b' : 'var(--text2)'}">${r.dip ? `−${r.dip}% dip` : 'instant'}</td>
+              <td class="mono" style="font-size:11px">${r.entryPrice.toPrecision(4)}</td>
+              <td style="font-size:11px;color:var(--text2)">${r.exits}</td>
+              <td class="mono">${r.peak.toFixed(2)}×</td>
+              <td class="mono" style="font-weight:700;color:${r.pnl === null ? 'var(--text2)' : r.pnl >= 0 ? '#10b981' : '#ef4444'}">${r.pnl === null ? 'open' : (r.pnl >= 0 ? '+' : '') + r.pnl.toFixed(3) + ' ◎'}</td>
+            </tr>`).join('')}</table></div>` : '<p style="font-size:13px;color:var(--text2)">No strategy traded this coin.</p>'}
+        </div>`, '/shadow');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Coin page error: ' + err.message);
+      }
     } else if (pathname === '/strategy') {
       if (!authOk(req)) {
         res.writeHead(authHash() ? 401 : 200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -2782,6 +2835,23 @@ export function startDashboard(port?: number): void {
         const rows = taskManager.all().filter(t => t.paper).map(t => {
           const positions = taskManager.traderFor(t).getAllPositions();
           const closed = positions.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cutoff);
+          // ── robustness stats: with 100+ strategies running, the leader is probably
+          // luck. These separate "real edge" from "rode 2 lucky trades".
+          const rs = closed.map(p => p.finalPnlSol ?? 0).sort((a, b) => b - a);
+          const n = rs.length;
+          const mean = n ? rs.reduce((s, x) => s + x, 0) / n : 0;
+          const sd = n > 1 ? Math.sqrt(rs.reduce((s, x) => s + (x - mean) ** 2, 0) / (n - 1)) : 0;
+          const stderr = n > 1 ? sd / Math.sqrt(n) : 0;
+          const tStat = stderr > 0 ? mean / stderr : 0;
+          const robust = n > 3 ? rs.slice(3).reduce((s, x) => s + x, 0) / (n - 3) : 0;  // drop best 3
+          const median = n ? rs[Math.floor(n / 2)] : 0;
+          const topShare = n && mean > 0 ? Math.max(0, rs.slice(0, 3).reduce((s, x) => s + x, 0)) / Math.max(1e-9, rs.reduce((s, x) => s + x, 0)) : 0;
+          const verdict = n < 15 ? 'thin'
+            : tStat > 2 && robust > 0.03 ? 'strong'
+            : tStat > 1.5 && robust > 0 ? 'promising'
+            : mean > 0 && robust <= 0 ? 'tail-driven'
+            : mean > 0 ? 'weak'
+            : 'losing';
           const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
           const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
           const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
@@ -2795,6 +2865,12 @@ export function startDashboard(port?: number): void {
             pnlSol: +pnl.toFixed(3),
             avgPerTrade: closed.length ? +(pnl / closed.length).toFixed(4) : 0,
             bestPeak: +best.toFixed(2),
+            // robustness
+            robustAvg: +robust.toFixed(4),
+            median: +median.toFixed(4),
+            tStat: +tStat.toFixed(2),
+            topShare: +topShare.toFixed(2),
+            verdict,
           };
         }).sort((a, b) => b.pnlSol - a.pnlSol);
         res.writeHead(200, { 'Content-Type': 'application/json' });

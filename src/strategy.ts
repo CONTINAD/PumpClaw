@@ -236,6 +236,43 @@ const GRID2: Spec[] = [
 ];
 GRID.push(...GRID2);
 
+// ── Generation 3: structurally NEW mechanics, not parameter tweaks.
+// Each family tests a different idea about how these coins behave.
+const GRID3: Spec[] = [
+  // (a) trail only AFTER a profit threshold — let it breathe first, then protect
+  { key: 'g3_armtrail2',  name: 'Dip −20% → arm trail at 2X',    desc: 'No stop management until 2X, then trail 25%.',      dip: .20, tps: [[2, .01]], trail: .25, trailFrom: 'afterLastTp', stop: .6 },
+  { key: 'g3_armtrail15', name: 'Dip −20% → arm trail at 1.5X',  desc: 'Trail only once it is up 50%.',                     dip: .20, tps: [[1.5, .01]], trail: .2, trailFrom: 'afterLastTp', stop: .6 },
+  { key: 'g3_armtrailin', name: 'Instant → arm trail at 1.5X',   desc: 'Buy the call, protect only after +50%.',                       tps: [[1.5, .01]], trail: .2, trailFrom: 'afterLastTp', stop: .7 },
+  // (b) banked-runner: take almost everything early, leave a lottery ticket with no stop
+  { key: 'g3_bank95',     name: 'Dip −20% → 95%@1.3X + ticket',  desc: 'Bank 95% fast, let 5% ride free.',                  dip: .20, tps: [[1.3, .95]], stop: .5, be: true },
+  { key: 'g3_bank90_15',  name: 'Dip −20% → 90%@1.5X + ticket',  desc: 'Bank 90% at 1.5X, 10% rides.',                      dip: .20, tps: [[1.5, .9]], stop: .5, be: true },
+  { key: 'g3_bank80in',   name: 'Instant → 80%@1.3X + ticket',   desc: 'Bank 80% at 1.3X off the call, rest rides.',                  tps: [[1.3, .8]], stop: .6, be: true },
+  // (c) time-boxed pullback entries — combine the two winning ideas
+  { key: 'g3_dip20h3',    name: 'Dip −20% → hold 3m',            desc: 'Pullback entry, exit at the median peak time.',      dip: .20, hold: 3, stop: .5 },
+  { key: 'g3_dip20h7',    name: 'Dip −20% → hold 7m',            desc: 'Pullback entry, 7-minute clock.',                    dip: .20, hold: 7, stop: .5 },
+  { key: 'g3_dip20h20',   name: 'Dip −20% → hold 20m',           desc: 'Pullback entry, patient 20-minute clock.',           dip: .20, hold: 20, stop: .5 },
+  { key: 'g3_dip25h10',   name: 'Dip −25% → hold 10m',           desc: 'Deeper pullback, 10-minute clock.',                  dip: .25, hold: 10, stop: .5 },
+  { key: 'g3_dip20tp15h', name: 'Dip −20% → 1.5X or 8m',         desc: 'Target or clock, whichever lands first.',            dip: .20, hold: 8, tps: [[1.5, 1]], stop: .6 },
+  { key: 'g3_dip25tp14h', name: 'Dip −25% → 1.4X or 12m',        desc: 'The robust backtest shape with a time cap.',         dip: .25, hold: 12, tps: [[1.4, 1]], stop: .5 },
+  // (d) ultra-scalps — costs are ~3%, so test whether tiny edges survive
+  { key: 'g3_dip20tp11',  name: 'Dip −20% → TP 1.1X',            desc: 'Ten percent scalp — barely clears fees.',            dip: .20, tps: [[1.1, 1]], stop: .9 },
+  { key: 'g3_dip25tp115', name: 'Dip −25% → TP 1.15X',           desc: 'Tiny target from a deep pullback.',                  dip: .25, tps: [[1.15, 1]], stop: .85 },
+  { key: 'g3_dip30tp12',  name: 'Dip −30% → TP 1.2X',            desc: 'Deep flush, small bounce target.',                   dip: .30, tps: [[1.2, 1]], stop: .8 },
+  // (e) patient wide-stop hunters — survive the chop, aim high
+  { key: 'g3_dip25tp4',   name: 'Dip −25% → TP 4X, stop −60%',   desc: 'Very wide stop, hunting a real runner.',             dip: .25, tps: [[4, 1]], stop: .4 },
+  { key: 'g3_dip20tp5',   name: 'Dip −20% → TP 5X, stop −60%',   desc: 'Lottery target with room to breathe.',               dip: .20, tps: [[5, 1]], stop: .4 },
+  { key: 'g3_dip30tp3',   name: 'Dip −30% → TP 3X, stop −55%',   desc: 'Deep entry, patient 3X target.',                     dip: .30, tps: [[3, 1]], stop: .45 },
+  // (f) pyramid ladders — many small rungs vs few big ones
+  { key: 'g3_pyr5',       name: 'Dip −20% → 5-rung ladder',      desc: '20% out at each of 1.2/1.4/1.7/2.2/3X.',             dip: .20, tps: [[1.2, .2], [1.4, .2], [1.7, .2], [2.2, .2], [3, .2]], stop: .6, be: true },
+  { key: 'g3_pyr5in',     name: 'Instant → 5-rung ladder',       desc: 'Same ladder, no waiting.',                                    tps: [[1.2, .2], [1.4, .2], [1.7, .2], [2.2, .2], [3, .2]], stop: .6, be: true },
+  { key: 'g3_frontload',  name: 'Dip −20% → 60%@1.2X + ladder',  desc: 'Heavy early exit, thin tail rungs.',                 dip: .20, tps: [[1.2, .6], [2, .2], [4, .2]], stop: .6, be: true },
+  { key: 'g3_backload',   name: 'Dip −20% → 20%@1.3X + 80%@2.5X',desc: 'Light early, heavy late — the opposite bet.',        dip: .20, tps: [[1.3, .2], [2.5, .8]], stop: .6, be: true },
+  // (g) no-stop patience vs tightest-possible stop, same entry — a clean A/B
+  { key: 'g3_nostop14',   name: 'Dip −20% → 1.4X, no stop',      desc: 'Never cut, wait for 1.4X.',                          dip: .20, tps: [[1.4, 1]], stop: .02 },
+  { key: 'g3_tight14',    name: 'Dip −20% → 1.4X, stop −8%',     desc: 'Same target, brutally tight stop.',                  dip: .20, tps: [[1.4, 1]], stop: .92 },
+];
+GRID.push(...GRID3);
+
 for (const g of GRID) {
   STRATEGY_PRESETS[g.key] = {
     name: g.name,

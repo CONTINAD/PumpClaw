@@ -99,6 +99,11 @@ tbody tr:last-child td{border-bottom:none}
 .chip.dip{color:var(--amber);border-color:rgba(255,179,64,.32);background:rgba(255,179,64,.08)}
 .chip.inst{color:var(--dim);border-color:var(--line2);background:rgba(107,125,148,.07)}
 .chip.live{color:var(--phos);border-color:rgba(61,255,158,.32);background:rgba(61,255,158,.08)}
+.chip.strong{color:var(--phos);border-color:rgba(61,255,158,.4);background:rgba(61,255,158,.1)}
+.chip.promising{color:var(--ice);border-color:rgba(77,216,255,.3);background:rgba(77,216,255,.08)}
+.chip.tail{color:var(--amber);border-color:rgba(255,179,64,.3);background:rgba(255,179,64,.08)}
+.chip.thin{color:var(--faint);border-color:var(--line2)}
+.chip.losing{color:var(--blood);border-color:rgba(255,61,90,.3);background:rgba(255,61,90,.07)}
 /* perf bar behind the avg cell */
 .bar{position:relative;display:block;height:100%}
 .bar i{position:absolute;left:0;top:50%;transform:translateY(-50%);height:16px;border-radius:3px;opacity:.16}
@@ -183,7 +188,8 @@ tbody tr:last-child td{border-bottom:none}
       <div class="panel">
         <h2>◆ Strategy Leaderboard <a href="/shadow">ALL →</a></h2>
         <div class="body flush" id="strats"><div class="empty">loading…</div></div>
-        <div class="foot">Paper trades at 1 SOL each on live prices. <span class="up">Green</span> clears the ~3% real-fee break-even.</div>
+        <div class="foot">Paper trades at 1 SOL each. <b class="up">strong</b> = statistically real (t&gt;2) and survives dropping its best 3 trades ·
+    <b class="ic">promising</b> = trending that way · <b class="warnc">tail-driven</b> = profit comes from 1–3 lucky trades · <b>thin</b> = under 15 trades.</div>
       </div>
       <div class="panel">
         <h2>◆ Entry Timing <span class="tag">the core question</span></h2>
@@ -298,7 +304,7 @@ async function paint() {
     '<th class="num">Peak MC</th><th class="num">Called</th></tr></thead><tbody>' +
     cw.slice(0, 12).map(c => {
       const pk = c.peakMultiplier;
-      return '<tr><td class="sym">$' + c.symbol.slice(0,12) + '</td>' +
+      return '<tr><td class="sym">' + (c.mint ? '<a href="/coin?mint=' + c.mint + '" style="color:var(--txt);text-decoration:none;border-bottom:1px dotted var(--line2)">$' + c.symbol.slice(0,12) + '</a>' : '$' + c.symbol.slice(0,12)) + '</td>' +
         '<td class="num dimc">' + mc(c.entryMC) + '</td>' +
         '<td class="num ' + (pk >= 2 ? 'up' : pk >= 1.2 ? 'warnc' : 'dimc') + '" style="font-weight:600">' + pk.toFixed(2) + '×</td>' +
         '<td class="num dimc">' + mc(c.peakMC) + '</td>' +
@@ -315,7 +321,7 @@ async function paint() {
   const amax = Math.max(0.001, ...top.map(s => Math.abs(s.avgPerTrade)));
   $('strats').innerHTML = !top.length ? '<div class="empty">not enough closed trades yet</div>' :
     '<table><thead><tr><th></th><th>Strategy</th><th>Entry</th><th class="num">n</th>' +
-    '<th class="num">Win</th><th class="num">Avg/trade</th></tr></thead><tbody>' +
+    '<th class="num">Win</th><th class="num">Avg/trade</th><th>Confidence</th></tr></thead><tbody>' +
     top.map((s,i) => {
       const dip = s.strategy.startsWith('Dip');
       const good = s.avgPerTrade >= 0.03;
@@ -326,7 +332,9 @@ async function paint() {
         '<td class="num dimc">' + s.trades + '</td>' +
         '<td class="num ' + (s.winPct >= 60 ? 'up' : 'dimc') + '">' + s.winPct + '%</td>' +
         '<td class="num"><span class="bar"><i style="width:' + w + '%;background:' + (good ? 'var(--phos)' : s.avgPerTrade >= 0 ? 'var(--amber)' : 'var(--blood)') + '"></i>' +
-        '<span class="' + (good ? 'up' : s.avgPerTrade >= 0 ? 'warnc' : 'down') + '">' + fmtSol(s.avgPerTrade) + '</span></span></td></tr>';
+        '<span class="' + (good ? 'up' : s.avgPerTrade >= 0 ? 'warnc' : 'down') + '">' + fmtSol(s.avgPerTrade) + '</span></span></td>' +
+        '<td><span class="chip ' + (s.verdict === 'tail-driven' ? 'tail' : (s.verdict || 'thin')) + '" title="robust avg ' +
+        (s.robustAvg !== undefined ? s.robustAvg.toFixed(3) : '?') + ' · t=' + (s.tStat ?? '?') + '">' + (s.verdict || 'thin') + '</span></td></tr>';
     }).join('') + '</tbody></table>';
 
   // ── entry timing split ──
