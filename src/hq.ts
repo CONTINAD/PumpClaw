@@ -152,7 +152,7 @@ tbody tr:last-child td{border-bottom:none}
   <div class="brand"><span class="mk">◤</span>PUMP<em>CLAW</em></div>
   <div class="pulse"><span class="dot" id="hb"></span><span id="hbtxt">connecting</span></div>
   <nav>
-    <a href="/">HQ</a><a href="/shadow">Strategies</a><a href="/tasks">Tasks</a><a href="/strategies">Lab</a>
+    <a href="/">HQ</a><a href="/live">Live</a><a href="/shadow">Strategies</a><a href="/tasks">Tasks</a><a href="/strategies">Lab</a>
     <a href="/settings">Settings</a><a href="/classic">Classic</a>
   </nav>
 </div>
@@ -195,6 +195,10 @@ tbody tr:last-child td{border-bottom:none}
         <h2>◆ Entry Timing <span class="tag">the core question</span></h2>
         <div class="split" id="entrysplit"></div>
         <div class="foot" id="entrynote">Does waiting for a pullback beat buying the call?</div>
+      </div>
+      <div class="panel" style="border-color:rgba(61,255,158,.28)">
+        <h2 style="color:var(--phos)">◆ Real Money <a href="/live">FULL LOG →</a></h2>
+        <div class="body flush" id="realmoney"><div class="empty">loading…</div></div>
       </div>
       <div class="panel">
         <h2>◆ Go Live <span class="tag">promote a strategy to real money</span></h2>

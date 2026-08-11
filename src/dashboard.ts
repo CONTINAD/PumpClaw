@@ -1614,11 +1614,11 @@ button:hover{filter:brightness(1.1)}
 .mono{font-family:'SF Mono',Menlo,monospace}`;
 
 function settingsShell(inner: string, self = '/settings'): string {
-  const title = self === '/shadow' ? '📄 Shadow Fleet' : self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
-  const wide = self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
+  const title = self === '/live' ? '◆ Live Trading' : self === '/shadow' ? '📄 Shadow Fleet' : self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
+  const wide = self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/shadow">Shadow</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/live">Live</a><a href="/shadow">Shadow</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -2518,7 +2518,7 @@ export function startDashboard(port?: number): void {
         res.end(JSON.stringify({ error: err.message }));
       }
     } else if (pathname === '/coin') {
-      // Forensics: how did EVERY strategy handle this one coin?
+      // Forensics: how did EVERY strategy handle this one coin? (public — read-only)
       try {
         const mm = url.match(/[?&]mint=([1-9A-HJ-NP-Za-km-z]{32,44})/);
         const mint = mm ? mm[1] : '';
@@ -2571,11 +2571,7 @@ export function startDashboard(port?: number): void {
         res.end('Coin page error: ' + err.message);
       }
     } else if (pathname === '/strategy') {
-      if (!authOk(req)) {
-        res.writeHead(authHash() ? 401 : 200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(authHash() ? settingsLoginHTML() : settingsShell('<div class="card"><h3>Locked</h3><p style="font-size:13px">Set DASH_PASSWORD in Railway to view strategy detail.</p></div>', '/shadow'));
-        return;
-      }
+      const canAct = authOk(req);
       try {
         const km = url.match(/[?&]key=([\w-]+)/);
         const key = km ? km[1] : '';
@@ -2639,6 +2635,13 @@ export function startDashboard(port?: number): void {
           <div class="kv"><b>Sizing:</b> ${Math.round(s.entryPct * 100)}% of wallet, min ${s.minEntrySol} ◎${s.maxEntrySol ? `, max ${s.maxEntrySol} ◎` : ''} · ${s.slippageBps / 100}% slippage</div>
         </div>
 
+        ${!canAct ? `<div class="card" style="border-color:#7a5a1a;background:#1f1708">
+          <h3 style="color:#ffd75e">🔒 Log in to run this live</h3>
+          <p style="font-size:13px;line-height:1.6">Viewing is open; creating a real-money task needs the dashboard password.</p>
+          <form method="POST" action="/settings" style="margin-top:8px">
+            <input type="password" name="password" placeholder="dashboard password" autocomplete="current-password">
+            <button type="submit">Unlock</button>
+          </form></div>` : `
         <form method="POST" action="/strategy">
           <input type="hidden" name="key" value="${key}">
           <div class="card" style="border-color:#1e5c3a">
@@ -2656,7 +2659,7 @@ export function startDashboard(port?: number): void {
             <input type="number" name="max_entry" step="0.01" min="0" value="${s.maxEntrySol}">
             <button type="submit">Create live task with this strategy</button>
           </div>
-        </form>
+        </form>`}
 
         <div class="card" style="max-width:none">
           <h3>Every trade (${positions.length})</h3>
@@ -2670,6 +2673,85 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Strategy page error: ' + err.message);
       }
+    } else if (pathname === '/live') {
+      (async () => {
+        const real = taskManager.all().filter(t => !t.paper);
+        const bals = await Promise.all(real.map(t => getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
+        let allPos: { task: TradeTask; pos: RealPosition }[] = [];
+        for (const t of real) for (const p of taskManager.traderFor(t).getAllPositions()) allPos.push({ task: t, pos: p });
+        allPos.sort((a, b) => b.pos.entryTime - a.pos.entryTime);
+        const closed = allPos.filter(x => x.pos.status === 'closed');
+        const openP = allPos.filter(x => x.pos.status === 'open');
+        const realized = closed.reduce((s, x) => s + (x.pos.finalPnlSol ?? 0), 0);
+        const wins = closed.filter(x => (x.pos.finalPnlSol ?? 0) > 0).length;
+
+        const row = (x: { task: TradeTask; pos: RealPosition }) => {
+          const p = x.pos;
+          const pl = p.status === 'closed' ? (p.finalPnlSol ?? 0) : null;
+          const sells = p.exits.map(e => `${e.label} @ ${e.multiplierAtExit.toFixed(2)}× → ${e.solReceived.toFixed(4)} ◎`).join('<br>') || '—';
+          return `<tr>
+            <td><b>$${p.symbol.slice(0, 12)}</b><div style="font-size:10px;color:var(--text3)">${new Date(p.entryTime).toISOString().slice(5, 16).replace('T', ' ')}</div></td>
+            <td style="font-size:11px;color:var(--text2)">${x.task.name.slice(0, 20)}</td>
+            <td class="mono">${p.entrySol} ◎<div style="font-size:10px;color:var(--text3)">${fmtUsd(p.entryMC)} MC</div></td>
+            <td style="font-size:11px;color:var(--text2)">${sells}</td>
+            <td class="mono">${p.peakMultiplier.toFixed(2)}×</td>
+            <td class="mono" style="font-weight:700;color:${pl === null ? 'var(--text2)' : pl >= 0 ? '#10b981' : '#ef4444'}">
+              ${pl === null ? Math.round(p.remainingPct * 100) + '% open' : (pl >= 0 ? '+' : '') + pl.toFixed(4) + ' ◎'}</td>
+            <td><a href="/coin?mint=${p.mint}" style="color:#3b82f6;font-size:11px">detail</a></td></tr>`;
+        };
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none;border-color:#1e5c3a">
+          <h3 style="color:#10b981">◆ Live trading — real money only</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:8px">
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:11px 13px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Realized PnL</div>
+              <div style="font-size:22px;font-weight:700;color:${realized >= 0 ? '#10b981' : '#ef4444'}">${realized >= 0 ? '+' : ''}${realized.toFixed(4)} ◎</div></div>
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:11px 13px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Closed trades</div>
+              <div style="font-size:22px;font-weight:700">${closed.length}<span style="font-size:12px;color:var(--text3)"> · ${closed.length ? Math.round(wins / closed.length * 100) : 0}% win</span></div></div>
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:11px 13px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Open now</div>
+              <div style="font-size:22px;font-weight:700;color:${openP.length ? '#10b981' : 'var(--text)'}">${openP.length}</div></div>
+            <div style="background:var(--bg1);border:1px solid var(--border);border-radius:8px;padding:11px 13px">
+              <div style="font-size:10px;color:var(--text3);text-transform:uppercase">Live wallets</div>
+              <div style="font-size:22px;font-weight:700">${real.length}<span style="font-size:12px;color:var(--text3)"> · ${bals.filter(b => b !== null).reduce((s, b) => s + (b || 0), 0).toFixed(3)} ◎</span></div></div>
+          </div>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Live tasks (${real.length})</h3>
+          ${real.length ? `<div style="overflow-x:auto"><table>
+            <tr><th>Task</th><th>Wallet</th><th>Balance</th><th>Strategy</th><th>Buys</th><th></th></tr>
+            ${real.map((t, i) => {
+              const addr = taskManager.keypairFor(t).publicKey.toBase58();
+              return `<tr><td><span style="color:${t.enabled ? '#10b981' : '#4a5570'}">●</span> <a href="/task?id=${t.id}" style="color:var(--text);font-weight:700">${t.name}</a></td>
+                <td class="mono" style="font-size:11px;color:var(--text2)">${addr.slice(0, 6)}…${addr.slice(-4)}</td>
+                <td class="mono">${bals[i] === null ? '—' : bals[i]!.toFixed(4) + ' ◎'}</td>
+                <td style="font-size:11px;color:var(--text2)">${describeStrategy(t.strategy)}</td>
+                <td style="font-size:11px;color:var(--text2)">${taskManager.sourcesFor(t).map(sourceLabel).join(' + ')}</td>
+                <td><a href="/task?id=${t.id}" style="color:#3b82f6;font-size:11px">manage</a></td></tr>`;
+            }).join('')}</table></div>`
+            : `<p style="font-size:13px;color:var(--text2)">No live tasks yet. Pick a strategy on the <a href="/shadow" style="color:#3b82f6">shadow fleet</a> and hit <b>Go live</b> — or create one from <a href="/tasks" style="color:#3b82f6">Tasks</a>.</p>`}
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Open positions (${openP.length})</h3>
+          ${openP.length ? `<div style="overflow-x:auto"><table><tr><th>Coin</th><th>Task</th><th>Size</th><th>Exits so far</th><th>Peak</th><th>State</th><th></th></tr>${openP.map(row).join('')}</table></div>`
+            : '<p style="font-size:13px;color:var(--text2)">Nothing open right now.</p>'}
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Closed trades (${closed.length})</h3>
+          ${closed.length ? `<div style="overflow-x:auto"><table><tr><th>Coin</th><th>Task</th><th>Size</th><th>Sold at</th><th>Peak</th><th>Result</th><th></th></tr>${closed.slice(0, 80).map(row).join('')}</table></div>`
+            : '<p style="font-size:13px;color:var(--text2)">No completed live trades yet.</p>'}
+        </div>`, '/live');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      })().catch((err: any) => {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Live page error: ' + err.message);
+      });
     } else if (pathname === '/shadow') {
       try {
         // Rolling window — default 24h. Old trades ran under different filter settings,
