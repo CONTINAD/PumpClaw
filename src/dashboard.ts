@@ -2713,6 +2713,62 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Shadow page error: ' + err.message);
       }
+    } else if (pathname === '/api/feed') {
+      // Recent buy/sell events across every task — the live activity stream
+      try {
+        const ev: any[] = [];
+        for (const t of taskManager.all()) {
+          const paper = !!t.paper;
+          for (const p of taskManager.traderFor(t).getAllPositions()) {
+            ev.push({ ts: p.entryTime, task: t.name.replace('📄 ', ''), paper, kind: 'buy',
+              symbol: p.symbol, mint: p.mint, sol: p.entrySol, mc: p.entryMC, detail: 'entry' });
+            for (const x of p.exits) {
+              ev.push({ ts: x.timestamp, task: t.name.replace('📄 ', ''), paper, kind: 'sell',
+                symbol: p.symbol, mint: p.mint, sol: x.solReceived, mult: x.multiplierAtExit, detail: x.label });
+            }
+          }
+        }
+        ev.sort((a, b) => b.ts - a.ts);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ events: ev.slice(0, 60) }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (pathname === '/api/equity') {
+      // Cumulative fleet PnL over time + per-strategy curves for the leaders
+      try {
+        const hm = url.match(/[?&]hours=(\d+)/);
+        const hours = hm ? parseInt(hm[1]) : 24;
+        const cut = Date.now() - hours * 3600_000;
+        const byStrat: Record<string, { ts: number; pnl: number }[]> = {};
+        const fleet: { ts: number; pnl: number }[] = [];
+        for (const t of taskManager.all().filter(x => x.paper)) {
+          const name = t.name.replace('📄 ', '');
+          for (const p of taskManager.traderFor(t).getAllPositions()) {
+            if (p.status !== 'closed' || (p.closedTime ?? 0) < cut) continue;
+            const pt = { ts: p.closedTime!, pnl: p.finalPnlSol ?? 0 };
+            (byStrat[name] ??= []).push(pt);
+            fleet.push(pt);
+          }
+        }
+        const curve = (pts: { ts: number; pnl: number }[]) => {
+          pts.sort((a, b) => a.ts - b.ts);
+          let c = 0;
+          return pts.map(p => ({ ts: p.ts, v: +(c += p.pnl).toFixed(3) }));
+        };
+        const tops = Object.entries(byStrat)
+          .map(([k, v]) => ({ k, n: v.length, tot: v.reduce((s, x) => s + x.pnl, 0) }))
+          .filter(x => x.n >= 5).sort((a, b) => b.tot / b.n - a.tot / a.n).slice(0, 3);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          fleet: curve(fleet),
+          leaders: tops.map(t => ({ name: t.k, curve: curve(byStrat[t.k]) })),
+        }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/shadow') {
       // Read-only: realized performance of each shadow (paper) task on live prices.
       // This is the honest strategy comparison — same calls, same engine, real paths.

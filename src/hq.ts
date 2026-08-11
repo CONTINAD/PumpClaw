@@ -119,6 +119,25 @@ tbody tr:last-child td{border-bottom:none}
 .hourbars div{flex:1;background:linear-gradient(180deg,var(--phos),var(--phos-dim));border-radius:2px 2px 0 0;
   min-height:2px;opacity:.55;transition:.2s}
 .hourbars div:hover{opacity:1}
+.feed{max-height:330px;overflow-y:auto}
+.fi{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px 14px;
+  border-bottom:1px solid rgba(21,29,41,.55);font-size:12px}
+.fi:last-child{border-bottom:none}
+.fi .k{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;text-align:center;
+  padding:2px 0;border-radius:3px}
+.fi .k.buy{color:var(--ice);background:rgba(77,216,255,.09);border:1px solid rgba(77,216,255,.25)}
+.fi .k.sell{color:var(--violet);background:rgba(167,139,250,.09);border:1px solid rgba(167,139,250,.25)}
+.fi .who{font-size:10px;color:var(--faint)}
+.golive{display:flex;flex-direction:column}
+.gl{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:10px 14px;
+  border-bottom:1px solid rgba(21,29,41,.55)}
+.gl:last-child{border-bottom:none}
+.gl b{font-size:12px;font-weight:600}
+.gl .st{font-size:10.5px;color:var(--dim)}
+.gl a{padding:5px 12px;border-radius:5px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  font-weight:700;text-decoration:none;border:1px solid rgba(61,255,158,.4);color:var(--phos);
+  background:rgba(61,255,158,.07);transition:.15s;white-space:nowrap}
+.gl a:hover{background:var(--phos);color:#04120a;box-shadow:0 0 18px rgba(61,255,158,.4)}
 </style>
 </head>
 <body>
@@ -147,8 +166,16 @@ tbody tr:last-child td{border-bottom:none}
         <div class="body flush" id="calls"><div class="empty">loading…</div></div>
       </div>
       <div class="panel">
+        <h2>◆ Fleet Equity <span class="tag" id="eqtag">cumulative PnL · 24h</span></h2>
+        <div class="body"><canvas id="eq" height="150" style="width:100%"></canvas></div>
+      </div>
+      <div class="panel">
         <h2>◆ Call Activity <span class="tag">by hour, UTC</span></h2>
         <div class="body"><div class="hourbars" id="hours"></div></div>
+      </div>
+      <div class="panel">
+        <h2>◆ Live Feed <span class="tag">every buy & sell</span></h2>
+        <div class="body flush" id="feed"><div class="empty">loading…</div></div>
       </div>
     </div>
 
@@ -162,6 +189,15 @@ tbody tr:last-child td{border-bottom:none}
         <h2>◆ Entry Timing <span class="tag">the core question</span></h2>
         <div class="split" id="entrysplit"></div>
         <div class="foot" id="entrynote">Does waiting for a pullback beat buying the call?</div>
+      </div>
+      <div class="panel">
+        <h2>◆ Go Live <span class="tag">promote a strategy to real money</span></h2>
+        <div class="body flush" id="golive"><div class="empty">loading…</div></div>
+        <div class="foot">Opens the strategy's page with a form to run it on your own wallet.</div>
+      </div>
+      <div class="panel">
+        <h2>◆ Best Calls <span class="tag">24h, by peak</span></h2>
+        <div class="body flush" id="best"><div class="empty">loading…</div></div>
       </div>
       <div class="panel">
         <h2>◆ Filter Rejections <span class="tag">why coins get skipped</span></h2>
