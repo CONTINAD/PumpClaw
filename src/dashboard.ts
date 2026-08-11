@@ -7,6 +7,7 @@ import { CONFIG, saveSettingsOverrides } from './config.js';
 import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldings } from './wallet.js';
 import { taskManager, type TradeTask } from './tasks.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
+import { buildHqHTML } from './hq.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import type { CallRecord } from './tracker.js';
@@ -2335,7 +2336,10 @@ export function startDashboard(port?: number): void {
     if (pathname === '/chart.js') {
       res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=86400' });
       res.end(chartJsSource);
-    } else if (pathname === '/' || pathname === '/dashboard') {
+    } else if (pathname === '/' || pathname === '/hq') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(buildHqHTML());
+    } else if (pathname === '/classic' || pathname === '/dashboard') {
       try {
         const range = parseRange(url);
         const data = buildDashboardData(range);
