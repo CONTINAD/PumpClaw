@@ -468,10 +468,18 @@ canvas{max-height:340px}
 </head>
 <body>
 <div class="topbar">
-  <h1>🧪 Strategy Lab</h1>
-  <a href="/?range=${activeRange}">← Dashboard</a>
+  <h1>🧪 Strategy Lab <span style="font-size:12px;color:var(--text3);font-weight:400">(model — superseded)</span></h1>
+  <div style="display:flex;gap:14px"><a href="/shadow">📄 Shadow Fleet</a><a href="/?range=${activeRange}">← Dashboard</a></div>
 </div>
 <div class="wrap">
+  <div style="background:#2a1f0a;border:1px solid #7a5a1a;border-radius:10px;padding:14px 16px;margin-bottom:16px;font-size:13px;line-height:1.6">
+    <b style="color:#ffd75e">⚠️ This page shows only the 6 original strategies, and its model is unreliable.</b><br>
+    It assumes every coin goes entry → peak → down, so a trailing stop always catches the peak. Real price paths
+    dip <i>through</i> the stop first — median drawdown before peak is 29%. That's why this page ranked pure trailing
+    best while it actually lost the most money.<br>
+    <a href="/shadow" style="color:#9be826;font-weight:700">→ Go to the Shadow Fleet</a>
+    <span style="color:var(--text2)">— all 61 strategies paper-trading live prices, with real fills and real paths.</span>
+  </div>
   <div class="tf">
     ${(['24h', '7d', 'all'] as TimeRange[]).map(r =>
       `<a href="/strategies?range=${r}" class="${activeRange === r ? 'active' : ''}">${RANGE_LABELS[r]}</a>`).join('')}
