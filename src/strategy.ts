@@ -703,6 +703,90 @@ for (const dip of [0.10, 0.15, 0.20, 0.25]) {
 }
 GRID.push(...GRID6);
 
+// ── GRID7 (instant entry, 186) ──────────────────────────────
+//
+// The fleet was 506 dip strategies to 170 instant, and 95 of those 170 used a
+// -40% stop — the band the data says loses (-0.0056/trade against +0.0315 for
+// -0 to -20%). So the entry mode that actually fills was both under-represented
+// and mostly configured in the losing region.
+//
+// A dip strategy that never fills has no edge; it just has no trades. Four winners
+// on 08-12 (FROG 6.5x, TOADER 5.4x, Ace 2.9x, ELEPHANT 2.7x) went straight up and
+// the 20% dip order caught none of them.
+//
+// These concentrate where instant entry has actually worked: tight stops, modest
+// targets, and short holds. Best live instant performers were 1.8X/-15%, 1.8X/-20%
+// and a flat 2-minute clock.
+const GRID7: Spec[] = [];
+
+// A. tight-stop take-profit grid (54)
+for (const tp of [1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.5]) {
+  for (const st of [8, 12, 15, 18, 20, 25]) {
+    GRID7.push({
+      key: `ix${String(tp).replace('.', '')}s${st}`,
+      name: `Instant → ${tp}X, stop −${st}%`,
+      desc: `Buys the call, takes ${tp}X, cuts at −${st}%. Tight stops are where instant entry has worked.`,
+      tps: [[tp, 1]], stop: (100 - st) / 100,
+    });
+  }
+}
+
+// B. fast clock exits (28)
+for (const hold of [1, 2, 3, 4, 5, 7, 10]) {
+  for (const tp of [0, 1.2, 1.35, 1.5]) {
+    GRID7.push({
+      key: `ixc${hold}_${String(tp).replace('.', '')}`,
+      name: tp ? `Instant → ${tp}X or ${hold}m` : `Instant → hold ${hold}m`,
+      desc: `Half of all doublers get there within 11 minutes, so a short clock may capture the move without waiting for a target.`,
+      hold, tps: tp ? [[tp, 1]] : undefined, stop: 0.8,
+    });
+  }
+}
+
+// C. break-even after the first take (30)
+for (const tp of [1.2, 1.3, 1.4, 1.5, 1.6]) {
+  for (const sell of [0.5, 0.7, 0.85]) {
+    for (const st of [12, 20]) {
+      GRID7.push({
+        key: `ixb${String(tp).replace('.', '')}_${Math.round(sell * 100)}_${st}`,
+        name: `Instant → ${Math.round(sell * 100)}%@${tp}X, then break-even (stop −${st}%)`,
+        desc: `Banks most of it early and moves the stop to entry, so the remainder cannot turn into a loss.`,
+        tps: [[tp, sell], [tp * 4, 1 - sell]], stop: (100 - st) / 100, be: true,
+      });
+    }
+  }
+}
+
+// D. tight trailing from entry (24)
+for (const tr of [8, 10, 12, 15, 18, 20, 25, 30]) {
+  for (const st of [20, 30, 40]) {
+    GRID7.push({
+      key: `ixt${tr}_${st}`,
+      name: `Instant → trail ${tr}%, stop −${st}%`,
+      desc: `No target — rides with a ${tr}% trail. Tests whether a tight trail beats a fixed exit on instant entry.`,
+      trail: tr / 100, trailFrom: 'entry', stop: (100 - st) / 100,
+    });
+  }
+}
+
+// E. bank most early, leave a runner (50)
+for (const tp of [1.2, 1.3, 1.4, 1.5, 1.75]) {
+  for (const front of [0.6, 0.75, 0.85, 0.95]) {
+    for (const tail of [3, 10]) {
+      if (GRID7.length >= 186) break;
+      GRID7.push({
+        key: `ixr${String(tp).replace('.', '')}_${Math.round(front * 100)}_${tail}`,
+        name: `Instant → ${Math.round(front * 100)}%@${tp}X + ${Math.round((1 - front) * 100)}% to ${tail}X`,
+        desc: `Takes the likely move and leaves a free runner. One 100X pays for a lot of small losses.`,
+        tps: [[tp, front], [tail, 1 - front]], stop: 0.8,
+      });
+    }
+  }
+}
+
+GRID.push(...GRID7);
+
+
 
 
 for (const g of GRID) {
