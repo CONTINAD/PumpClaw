@@ -356,19 +356,23 @@ async function maintenanceCycle() {
       continue;
     }
 
-    // Only cross-check with Jupiter if DexScreener price looks stale (barely moved)
+    // Cross-check with Jupiter. This used to fire only when DexScreener looked
+    // stale AND Jupiter was higher — so a price that was too HIGH (the dangerous
+    // direction: fake peaks, stops that never trip) was never caught.
     const dexMult = current.priceUsd / rec.entryPrice;
-    if (dexMult < 1.3 && dexMult > 0.7) {
+    const needsCheck = (dexMult < 1.3 && dexMult > 0.7)          // looks stuck
+      || current.priceConfidence === 'low'                        // pairs disagree
+      || current.volume5m === 0;                                  // nothing traded
+    if (needsCheck) {
       const solPrice = await getSolPrice();
       const jup = await jupiterGetPrice(rec.mint, solPrice);
       if (jup && jup.priceUsd > 0) {
         const jupMult = jup.priceUsd / rec.entryPrice;
-        if (jupMult > dexMult * 1.2) {
-          log(`🔄 Jupiter price correction for $${rec.symbol}: DexScreener ${dexMult.toFixed(2)}X vs Jupiter ${jupMult.toFixed(2)}X — using Jupiter`);
+        const off = Math.abs(jupMult / dexMult - 1);
+        if (off > 0.2) {
+          log(`🔄 Price correction $${rec.symbol}: DexScreener ${dexMult.toFixed(2)}X vs Jupiter ${jupMult.toFixed(2)}X — trusting Jupiter`);
           current.priceUsd = jup.priceUsd;
-          if (current.marketCap > 0 && dexMult > 0) {
-            current.marketCap = current.marketCap * (jupMult / dexMult);
-          }
+          if (current.marketCap > 0 && dexMult > 0) current.marketCap = current.marketCap * (jupMult / dexMult);
         }
       }
     }
@@ -460,7 +464,8 @@ async function maintenanceCycle() {
           const jup = await jupiterGetPrice(rec.mint, solPrice);
           if (jup && jup.priceUsd > 0) {
             const jupMult = jup.priceUsd / rec.entryPrice;
-            if (jupMult > dexMult * 1.2) {
+            // Correct in BOTH directions — an inflated price fakes milestones.
+            if (Math.abs(jupMult / dexMult - 1) > 0.2) {
               market.priceUsd = jup.priceUsd;
               if (market.marketCap > 0 && dexMult > 0) {
                 market.marketCap = market.marketCap * (jupMult / dexMult);

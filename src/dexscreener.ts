@@ -25,7 +25,21 @@ export interface MarketData {
   dexId: string;
   pairCreatedAt: number;
   imageUrl?: string;
+  /** How many tradeable pairs backed this quote, and whether they agreed. */
+  pairCount?: number;
+  priceConfidence?: 'high' | 'low';
 }
+
+/**
+ * Minimum liquidity for a pair's price to be believed.
+ *
+ * Post-migration the pump.fun bonding-curve pair sticks around forever reporting
+ * its final price (~$3.1e-5 for EVERY graduated coin) with $0 liquidity, and
+ * Meteora leaves dust pairs holding $1-2. Those are not prices, they are
+ * fossils — but they are real DexScreener rows, so they used to win the pick
+ * whenever the live pair happened to have no trades in the last 5 minutes.
+ */
+const MIN_TRUSTED_LIQ = 500;
 
 function parsePair(pair: any): MarketData | null {
   const mint = pair.baseToken?.address;
@@ -57,6 +71,45 @@ function parsePair(pair: any): MarketData | null {
     pairCreatedAt: pair.pairCreatedAt ?? 0,
     imageUrl: pair.info?.imageUrl ?? undefined,
   };
+}
+
+/**
+ * Choose which pair's price to believe for a token.
+ *
+ * Order of preference:
+ *   1. Pairs with real liquidity — dead bonding curves and dust pairs are dropped.
+ *   2. Among those, the one actually trading (highest 5m volume).
+ *   3. When nothing has traded in 5 minutes, the deepest pool — never insertion order.
+ *
+ * Also flags the quote 'low' confidence when the liquid pairs disagree by >25%,
+ * so callers can require a second opinion before acting on it.
+ */
+export function pickPair(all: MarketData[]): MarketData | null {
+  if (!all.length) return null;
+  const dedup = new Map<string, MarketData>();
+  for (const p of all) if (p.priceUsd > 0) dedup.set(p.pairAddress || Math.random().toString(), p);
+  const usable = [...dedup.values()];
+  if (!usable.length) return null;
+
+  let pool = usable.filter(p => p.liquidity >= MIN_TRUSTED_LIQ);
+  // Nothing meets the bar (very early coin) — fall back to the deepest thing there is,
+  // but never to a zero-liquidity fossil if any pool holds anything at all.
+  if (!pool.length) {
+    const anyLiq = usable.filter(p => p.liquidity > 0);
+    pool = anyLiq.length ? anyLiq : usable;
+  }
+
+  const traded = pool.filter(p => p.volume5m > 0);
+  const ranked = (traded.length ? traded : pool).sort((a, b) =>
+    (b.volume5m - a.volume5m) || (b.liquidity - a.liquidity));
+  const best = ranked[0];
+
+  // Do the liquid pairs agree? Compare against the deepest pool as reference.
+  const deep = [...pool].sort((a, b) => b.liquidity - a.liquidity)[0];
+  const disagree = deep && deep.priceUsd > 0
+    ? Math.abs(best.priceUsd / deep.priceUsd - 1) > 0.25 : false;
+
+  return { ...best, pairCount: pool.length, priceConfidence: disagree ? 'low' : 'high' };
 }
 
 /**
@@ -94,14 +147,18 @@ export async function fetchBatchMarketData(mints: string[]): Promise<Map<string,
       pairs.push(...(legacyResult.value?.pairs ?? []));
     }
 
+    // Group every pair per mint first — picking a winner one-at-a-time made the
+    // choice depend on API response order whenever 5m volumes tied at zero.
+    const byMint = new Map<string, MarketData[]>();
     for (const pair of pairs) {
       const parsed = parsePair(pair);
       if (!parsed) continue;
-      const existing = result.get(parsed.mint);
-      // Keep pair with highest 5m volume
-      if (!existing || parsed.volume5m > existing.volume5m) {
-        result.set(parsed.mint, parsed);
-      }
+      const list = byMint.get(parsed.mint);
+      if (list) list.push(parsed); else byMint.set(parsed.mint, [parsed]);
+    }
+    for (const [mint, all] of byMint) {
+      const chosen = pickPair(all);
+      if (chosen) result.set(mint, chosen);
     }
 
     // Small delay between chunks to avoid rate limits

@@ -46,9 +46,13 @@ export async function capturePath(mint: string, symbol: string, callTs: number):
       headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10_000),
     });
     const ds: any = await dsRes.json();
-    const pairs = (ds.pairs ?? []).filter((p: any) => p.chainId === 'solana');
-    if (!pairs.length) return false;
-    const pair = pairs.sort((a: any, b: any) => (+b.volume?.h24 || 0) - (+a.volume?.h24 || 0))[0];
+    // Ignore dead bonding curves and dust pairs — their candles are flat lines
+    // at a fossil price and would poison every backtest run against them.
+    const all = (ds.pairs ?? []).filter((p: any) => p.chainId === 'solana' && p.baseToken?.address === mint);
+    const pairs = all.filter((p: any) => (p.liquidity?.usd ?? 0) >= 500);
+    const usable = pairs.length ? pairs : all.filter((p: any) => (p.liquidity?.usd ?? 0) > 0);
+    if (!usable.length) return false;
+    const pair = usable.sort((a: any, b: any) => (+b.volume?.h24 || 0) - (+a.volume?.h24 || 0))[0];
 
     const before = Math.floor(callTs / 1000) + 6 * 3600;
     const url = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}` +

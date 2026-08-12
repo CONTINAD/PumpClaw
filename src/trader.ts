@@ -8,7 +8,7 @@ import type { Keypair } from '@solana/web3.js';
 import { CONFIG } from './config.js';
 import { getSolBalance, getTokenBalance, closeTokenAccount, getConnection } from './wallet.js';
 import { getSolPrice } from './dexscreener.js';
-import { jupiterBuy, jupiterSell, type SwapResult, type SwapOpts } from './jupiter.js';
+import { jupiterBuy, jupiterSell, jupiterGetPrice, type SwapResult, type SwapOpts } from './jupiter.js';
 import { STRATEGY_PRESETS, type Strategy } from './strategy.js';
 import { sendOpsAlert } from './discord.js';
 import { CONFIG as CFG } from './config.js';
@@ -618,6 +618,19 @@ export class Trader {
     const ladderMode = strat.trailingFrom === 'afterLastTp';
 
     // ── Stop checks ──
+    // On real money, a stop is irreversible, so a single bad print must not fire it.
+    // Confirm the drop against Jupiter's executable quote before dumping the bag.
+    if (!this.paper && pos.remainingPct >= 0.001 &&
+        (currentPrice <= pos.stopLossPrice || (pos.trailingActive && currentPrice <= pos.trailingStopPrice))) {
+      const confirmed = await this.confirmPrice(mint, currentPrice);
+      if (confirmed !== null && confirmed > currentPrice * 1.08) {
+        console.log(`🛡 ignored stop on $${pos.symbol} — feed said ${currentPrice.toExponential(2)}, ` +
+            `Jupiter says ${confirmed.toExponential(2)} (+${((confirmed / currentPrice - 1) * 100).toFixed(0)}%). Bad print.`);
+        return newExits;
+      }
+      if (confirmed !== null) currentPrice = confirmed;   // act on the real, sellable price
+    }
+
     if (pos.remainingPct >= 0.001) {
       if (pos.trailingActive && currentPrice <= pos.trailingStopPrice) {
         pos.stopTriggered = true; this.save();
@@ -660,6 +673,22 @@ export class Trader {
    * progressively smaller chunks — thin liquidity often rejects the full size
    * but accepts a quarter of it. Returns any exits that cleared.
    */
+  /**
+   * Second opinion on a price, from the venue we'd actually sell into.
+   * Returns null if Jupiter can't quote — in that case we trust the feed and
+   * let the stop stand, since refusing to ever sell is the worse failure.
+   */
+  private async confirmPrice(mint: string, feedPrice: number): Promise<number | null> {
+    try {
+      const solUsd = await getSolPrice();
+      const jup = await jupiterGetPrice(mint, solUsd);
+      if (!jup || !(jup.priceUsd > 0)) return null;
+      // Absurd quotes (>5x apart) mean something is broken; don't act on either.
+      if (jup.priceUsd > feedPrice * 5 || jup.priceUsd < feedPrice / 5) return null;
+      return jup.priceUsd;
+    } catch { return null; }
+  }
+
   async panicSell(mint: string): Promise<RealExit[]> {
     const pos = this.positions.get(mint);
     if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
