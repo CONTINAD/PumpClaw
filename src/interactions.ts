@@ -107,6 +107,79 @@ async function buildMogCard(ca: string): Promise<any> {
   };
 }
 
+
+// ── /mogboard leaderboard ───────────────────────────────────
+
+const WINDOWS: Record<string, { label: string; ms: number }> = {
+  '24h': { label: 'last 24 hours', ms: 24 * 3600_000 },
+  '7d':  { label: 'last 7 days',   ms: 7 * 24 * 3600_000 },
+  '30d': { label: 'last 30 days',  ms: 30 * 24 * 3600_000 },
+  'all': { label: 'all time',      ms: Number.MAX_SAFE_INTEGER },
+};
+
+const MEDALS = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
+
+/** Pad to a visual width — Discord's ansi block is monospaced. */
+function pad(str: string, width: number): string {
+  return str.length >= width ? str.slice(0, width) : str + ' '.repeat(width - str.length);
+}
+
+function buildLeaderboard(window: string): any {
+  const win = WINDOWS[window] ?? WINDOWS['24h'];
+  const cutoff = win.ms === Number.MAX_SAFE_INTEGER ? 0 : Date.now() - win.ms;
+  const inWindow = loadCalls().filter(c => c.entryTime >= cutoff);
+
+  if (inWindow.length === 0) {
+    return { content: `No PumpClaw calls in the ${win.label}.`, flags: 64 };
+  }
+
+  const ranked = [...inWindow].sort((a, b) => (b.peakMultiplier ?? 1) - (a.peakMultiplier ?? 1));
+  const top = ranked.slice(0, 5);
+
+  // Aggregates over the whole window, not just the podium — the top 5 alone
+  // would flatter any window, however bad the rest of it was.
+  const doubles = inWindow.filter(c => (c.peakMultiplier ?? 1) >= 2).length;
+  const best = ranked[0]?.peakMultiplier ?? 1;
+  const median = [...inWindow].sort((a, b) => (a.peakMultiplier ?? 1) - (b.peakMultiplier ?? 1))
+    [Math.floor(inWindow.length / 2)]?.peakMultiplier ?? 1;
+
+  const rows: string[] = ['```ansi'];
+  top.forEach((c, i) => {
+    const mult = c.peakMultiplier ?? 1;
+    const pct = (mult - 1) * 100;
+    // green for a winner, red for a call that never went up
+    const color = mult >= 2 ? '2;32' : mult >= 1 ? '2;33' : '2;31';
+    const bold = i === 0 ? '\u001b[1m' : '';
+    rows.push(`\u001b[${color}m${bold}${pad(`${i + 1}. $${c.symbol}`, 18)}` +
+      `${pad(`${mult.toFixed(2)}X`, 9)}${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%\u001b[0m`);
+  });
+  rows.push('```');
+
+  const detail = top.map((c, i) => {
+    const mult = c.peakMultiplier ?? 1;
+    return `${MEDALS[i]}  **$${c.symbol}** · ${fmtUsd(c.entryMC)} → **${fmtUsd(c.peakMC ?? c.entryMC)}**  ` +
+      `\`${mult.toFixed(2)}X\``;
+  }).join('\n');
+
+  return {
+    embeds: [{
+      author: { name: 'PumpClaw · Leaderboard' },
+      title: `🏆  Top 5 mogs — ${win.label}`,
+      description: [
+        rows.join('\n'),
+        detail,
+        '',
+        `📊  **${inWindow.length}** calls  ·  **${doubles}** hit 2X+ (${Math.round(doubles / inWindow.length * 100)}%)  ` +
+        `·  median **${median.toFixed(2)}X**`,
+      ].join('\n'),
+      color: cardColor(best),
+      ...(top[0]?.imageUri ? { thumbnail: { url: top[0].imageUri } } : {}),
+      footer: { text: `Ranked by peak multiple since the call  ·  ${win.label}` },
+      timestamp: new Date().toISOString(),
+    }],
+  };
+}
+
 /** Render the PNG card and attach it to the deferred interaction response. */
 async function followUpWithCard(token: string, mint: string): Promise<void> {
   const url = `https://discord.com/api/v10/webhooks/${CONFIG.DISCORD_APP_ID}/${token}/messages/@original`;
@@ -158,6 +231,11 @@ export async function handleInteraction(payload: any): Promise<any> {
     return { type: 5 }; // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
   }
 
+  if (payload.type === 2 && payload.data?.name === 'mogboard') {
+    const win = String(payload.data.options?.find((o: any) => o.name === 'timeframe')?.value ?? '24h');
+    return { type: 4, data: buildLeaderboard(win) };
+  }
+
   return { type: 4, data: { content: 'Unknown command', flags: 64 } };
 }
 
@@ -170,6 +248,18 @@ export async function registerSlashCommands(): Promise<void> {
     options: [{
       type: 3, name: 'ca', description: 'Contract address of the called coin', required: true,
     }],
+  }, {
+    name: 'mogboard',
+    description: 'Top 5 PumpClaw calls by peak multiple',
+    options: [{
+      type: 3, name: 'timeframe', description: 'How far back to rank (default 24h)', required: false,
+      choices: [
+        { name: 'Last 24 hours', value: '24h' },
+        { name: 'Last 7 days', value: '7d' },
+        { name: 'Last 30 days', value: '30d' },
+        { name: 'All time', value: 'all' },
+      ],
+    }],
   }];
   try {
     const res = await fetch(`https://discord.com/api/v10/applications/${CONFIG.DISCORD_APP_ID}/commands`, {
@@ -177,7 +267,7 @@ export async function registerSlashCommands(): Promise<void> {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bot ${CONFIG.DISCORD_BOT_TOKEN}` },
       body: JSON.stringify(cmd),
     });
-    if (res.ok) console.log('[Interactions] /mog slash command registered');
+    if (res.ok) console.log('[Interactions] /mog + /mogboard slash commands registered');
     else console.error(`[Interactions] Command registration failed ${res.status}: ${await res.text()}`);
   } catch (err: any) {
     console.error(`[Interactions] Command registration error: ${err.message}`);
