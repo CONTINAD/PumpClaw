@@ -10,6 +10,8 @@ import { sendTradeActivity } from './discord.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
 import { buildHqHTML } from './hq.js';
 import { fmtUsd } from './discord.js';
+import { getSolPrice } from './dexscreener.js';
+import { jupiterGetPrice } from './jupiter.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { loadPaths, backtest, type BacktestCfg } from './candles.js';
@@ -3598,44 +3600,27 @@ export function startDashboard(port?: number): void {
         res.end(JSON.stringify({ error: 'Invalid mint address' }));
         return;
       }
-      // Fetch real price via Jupiter quote API and update tracker data
+      // Price via the shared Jupiter helper. This block used to re-derive the
+      // price inline and repeated the bug it was written to work around: the
+      // quote's outAmount is raw units, and dividing by it without scaling by the
+      // mint's decimals gives a price 10^decimals too small. It also carried a
+      // hardcoded 140 SOL fallback, which is not a price, it is a guess from
+      // whenever the line was written.
       (async () => {
         try {
-          // Quote: how many tokens for 0.1 SOL?
-          const WSOL = 'So11111111111111111111111111111111111111112';
-          const lamportsIn = 100_000_000; // 0.1 SOL
-          const quoteRes = await fetch(
-            `https://lite-api.jup.ag/swap/v1/quote?inputMint=${WSOL}&outputMint=${mint}&amount=${lamportsIn}&slippageBps=100`,
-            { signal: AbortSignal.timeout(10_000) },
-          );
-          if (!quoteRes.ok) {
+          const solPriceUsd = await getSolPrice();
+          if (!(solPriceUsd > 0)) {
             res.writeHead(502, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Jupiter quote API returned ' + quoteRes.status }));
+            res.end(JSON.stringify({ error: 'could not resolve SOL price' }));
             return;
           }
-          const quote: any = await quoteRes.json();
-          const tokensOut = parseInt(quote.outAmount);
-          if (!tokensOut || tokensOut <= 0) {
+          const jup = await jupiterGetPrice(mint, solPriceUsd);
+          if (!jup || !(jup.priceUsd > 0)) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'No quote data from Jupiter for this mint' }));
             return;
           }
-          // Derive price: SOL/token * SOL-USD = USD/token
-          const solPerToken = (lamportsIn / 1e9) / tokensOut;
-          // Get SOL price from DexScreener (cached)
-          const solRes = await fetch(
-            `https://api.dexscreener.com/tokens/v1/solana/${WSOL}`,
-            { signal: AbortSignal.timeout(10_000) },
-          );
-          let solPriceUsd = 140; // fallback
-          if (solRes.ok) {
-            const solPairs: any[] = await solRes.json();
-            const usdcPair = solPairs
-              .filter((p: any) => p.quoteToken?.symbol === 'USDC' || p.quoteToken?.symbol === 'USDT')
-              .sort((a: any, b: any) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
-            if (usdcPair) solPriceUsd = parseFloat(usdcPair.priceUsd || '140');
-          }
-          const currentPriceUsd = solPerToken * solPriceUsd;
+          const currentPriceUsd = jup.priceUsd;
 
           // Load and update calls.json
           const callsPath = join(CONFIG.DATA_DIR, 'calls.json');
@@ -3648,6 +3633,13 @@ export function startDashboard(port?: number): void {
           }
 
           const oldPeak = rec.peakMultiplier;
+          // A zero entry price would make this Infinity, and the block below
+          // writes it straight to calls.json. Refuse rather than persist garbage.
+          if (!(rec.entryPrice > 0)) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'record has no entry price — cannot compute a multiple' }));
+            return;
+          }
           const newMult = currentPriceUsd / rec.entryPrice;
           const updatedFields: Record<string, any> = {
             entryPrice: rec.entryPrice,

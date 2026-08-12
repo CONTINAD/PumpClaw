@@ -451,7 +451,9 @@ async function maintenanceCycle() {
 
       for (const rec of allCalls) {
         const market = marketData.get(rec.mint);
-        if (!market || market.priceUsd === 0) continue;
+        // Without a positive entry price every multiple below is Infinity or NaN,
+        // and those propagate into peaks, milestones and Discord embeds.
+        if (!market || !(market.priceUsd > 0) || !(rec.entryPrice > 0)) continue;
 
         const ageMs = now - rec.entryTime;
         const dexMult = market.priceUsd / rec.entryPrice;

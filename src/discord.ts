@@ -8,6 +8,10 @@ import { tgSendAlert, tgUpdateAlert, tgSendMilestone, tgSendLeaderboard, tgSendT
 // ── Formatting helpers ──────────────────────────────────────
 
 export function fmtUsd(n: number): string {
+  // A non-finite value here renders as "$InfinityM" or "$NaN" in a public message.
+  // Say nothing rather than say nonsense — the callers that can produce these now
+  // guard upstream, this is the backstop for the ones that appear later.
+  if (!Number.isFinite(n)) return '—';
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
   if (n >= 1) return `$${n.toFixed(2)}`;
@@ -16,6 +20,7 @@ export function fmtUsd(n: number): string {
 }
 
 export function fmtPct(n: number): string {
+  if (!Number.isFinite(n)) return '—';
   const sign = n >= 0 ? '+' : '';
   return `${sign}${n.toFixed(2)}%`;
 }
@@ -127,7 +132,9 @@ function buildAlertEmbed(
   lines.push(buyRow(coin.mint));
 
   // ── Performance section (live only — no historical snapshots) ──
-  if (liveData) {
+  // market.priceUsd is the entry here. Rendering a performance block against a
+  // zero or missing entry produces Infinity/NaN percentages in a public message.
+  if (liveData && market.priceUsd > 0 && liveData.currentPrice > 0) {
     const currentPct = ((liveData.currentPrice - market.priceUsd) / market.priceUsd) * 100;
     const peakPct = ((liveData.peakPrice - market.priceUsd) / market.priceUsd) * 100;
     const curBar = currentPct >= 0 ? '🟩' : '🟥';
