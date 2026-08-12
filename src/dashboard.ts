@@ -3087,7 +3087,7 @@ export function startDashboard(port?: number): void {
           btn.onclick = function () {
             // Irreversible from the UI's point of view, so make the user say it twice.
             // The server still snapshots the files, but a misclick should not need that.
-            if (!confirm('Remove $${symbol} from the leaderboard and every strategy stat?\n\nReal trade history is kept so P&L still matches the wallet.')) return;
+            if (!confirm('Remove $${symbol} from the leaderboard and every strategy stat? Real trade history is kept so P&L still matches the wallet.')) return;
             btn.disabled = true; msg.textContent = 'removing…';
             fetch('/api/forget', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
