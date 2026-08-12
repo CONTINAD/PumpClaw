@@ -6,6 +6,7 @@ import { fetchCoinDetails } from './pumpfun.js';
 import { fetchBatchMarketData, fetchSingleMarketData, getSolPrice, type MarketData } from './dexscreener.js';
 import { sendAlert, updateWithPerformance, sendMilestoneAlert, sendLeaderboard, sendMonthlyLeaderboard, sendFullCallListReport, fmtUsd, fmtPct, type LeaderboardEntry, type MonthlyLeaderboardEntry } from './discord.js';
 import { PerformanceTracker, type PerformanceSnapshot } from './tracker.js';
+import { registerRuntime } from './runtime.js';
 import { PaperTrader } from './paper-trader.js';
 import { taskManager } from './tasks.js';
 import { getWallet, getSolBalance } from './wallet.js';
@@ -59,6 +60,8 @@ const _lbTs = loadLbTimestamps();
 
 const tracker = new PerformanceTracker();
 const paperTrader = new PaperTrader();
+// Share the live instances with the dashboard — it must mutate these, not copies.
+registerRuntime(tracker, paperTrader);
 const seenTgMsgIds = new Set<string>();
 const recentCallTimes: number[] = [];
 let lastMilestoneCheck = 0;

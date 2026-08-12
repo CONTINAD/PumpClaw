@@ -224,6 +224,13 @@ export class PaperTrader {
 
   // ── Persistence ──────────────────────────────────────────
 
+  /** Drop a coin's paper trade. In-memory first — the file is written from it. */
+  forget(mint: string): boolean {
+    const had = this.trades.delete(mint);
+    if (had) this.save();
+    return had;
+  }
+
   private save(): void {
     try {
       mkdirSync(dirname(CONFIG.PAPER_DATA_FILE), { recursive: true });

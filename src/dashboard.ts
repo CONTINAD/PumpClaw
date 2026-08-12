@@ -10,6 +10,7 @@ import { sendTradeActivity } from './discord.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
 import { buildHqHTML } from './hq.js';
 import { fmtUsd } from './discord.js';
+import { runtime } from './runtime.js';
 import { getSolPrice } from './dexscreener.js';
 import { jupiterGetPrice } from './jupiter.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
@@ -2582,50 +2583,35 @@ export function startDashboard(port?: number): void {
             res.end(JSON.stringify({ error: 'pass { mints: ["<mint>", ...] }' }));
             return;
           }
-          const target = new Set(mints);
           const stamp = Date.now();
-          const report: Record<string, any> = { requested: mints.length, removed: {}, backups: [] };
-
-          const prune = (file: string, key = 'mint') => {
-            const full = join(CONFIG.DATA_DIR, file);
-            if (!existsSync(full)) return;
-            let rows: any[];
-            try { rows = JSON.parse(readFileSync(full, 'utf-8')); } catch { return; }
-            if (!Array.isArray(rows)) return;
-            const kept = rows.filter(r => !target.has(r?.[key]));
-            const dropped = rows.length - kept.length;
-            if (dropped === 0) { report.removed[file] = 0; return; }
-            const bak = `${full}.bak-${stamp}`;
-            writeFileSync(bak, JSON.stringify(rows));       // full snapshot before touching it
-            writeFileSync(full, JSON.stringify(kept, null, 2));
-            report.removed[file] = dropped;
-            report.backups.push(bak);
+          const report: Record<string, any> = {
+            requested: mints.length, calls: 0, paperTrades: 0,
+            taskHistories: 0, paperPositions: 0, realPositions: 0, backups: [],
           };
 
-          prune('calls.json');
-          prune('trades.json');
-          if (alsoReal) prune('positions.json');
-
-          // Task position files live one per task and hold the paper fleet's history.
-          let taskFilesTouched = 0, taskRowsDropped = 0;
-          const posDir = join(CONFIG.DATA_DIR, 'positions');
-          if (existsSync(posDir)) {
-            for (const f of readdirSync(posDir).filter(x => x.endsWith('.json'))) {
-              const full = join(posDir, f);
-              let rows: any[];
-              try { rows = JSON.parse(readFileSync(full, 'utf-8')); } catch { continue; }
-              if (!Array.isArray(rows)) continue;
-              const isReal = !f.includes('shadow') && !f.includes('paper');
-              if (isReal && !alsoReal) continue;
-              const kept = rows.filter(r => !target.has(r?.mint));
-              if (kept.length === rows.length) continue;
-              writeFileSync(`${full}.bak-${stamp}`, JSON.stringify(rows));
-              writeFileSync(full, JSON.stringify(kept, null, 2));
-              taskFilesTouched++; taskRowsDropped += rows.length - kept.length;
-            }
+          // Snapshot first. Everything below mutates live objects that persist
+          // themselves, so there is no undo without this.
+          for (const f of ['calls.json', 'trades.json']) {
+            const full = join(CONFIG.DATA_DIR, f);
+            if (!existsSync(full)) continue;
+            try {
+              writeFileSync(`${full}.bak-${stamp}`, readFileSync(full));
+              report.backups.push(`${f}.bak-${stamp}`);
+            } catch { /* a failed backup must not block the removal */ }
           }
-          report.removed['positions/*.json'] = taskRowsDropped;
-          report.taskFilesTouched = taskFilesTouched;
+
+          // Go through the live objects. Editing these files directly does nothing
+          // lasting: each is rewritten from memory on the next save, which is why
+          // the first version of this endpoint appeared to work and changed nothing.
+          for (const mint of mints) {
+            if (runtime.tracker?.forget(mint)) report.calls++;
+            if (runtime.paperTrader?.forget(mint)) report.paperTrades++;
+            const r = taskManager.forgetMint(mint, alsoReal);
+            report.taskHistories += r.tasks;
+            report.paperPositions += r.paper;
+            report.realPositions += r.real;
+          }
+
           report.realTradesKept = !alsoReal;
           report.note = alsoReal
             ? 'Real trades removed too — dashboard P&L will no longer match the wallet.'

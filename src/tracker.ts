@@ -284,6 +284,18 @@ export class PerformanceTracker {
 
   // ── Persistence ──
 
+  /**
+   * Drop a call entirely — used when a bad call would otherwise skew the
+   * leaderboard and every strategy's numbers forever. Removes it from memory
+   * first, because the file is written FROM memory: editing calls.json on disk
+   * is undone by the next save.
+   */
+  forget(mint: string): boolean {
+    const had = this.calls.delete(mint);
+    if (had) this.save();
+    return had;
+  }
+
   private save(): void {
     try {
       mkdirSync(dirname(CONFIG.DATA_FILE), { recursive: true });

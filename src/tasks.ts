@@ -194,6 +194,23 @@ class TaskManager {
 
   // ── Accessors ──
   all(): TradeTask[] { return [...this.tasks.values()]; }
+
+  /**
+   * Drop a coin from every task's position history.
+   * Paper tasks only by default: a real position moved actual money, and deleting
+   * it makes the dashboard's P&L disagree with the wallet.
+   */
+  forgetMint(mint: string, includeReal = false): { tasks: number; paper: number; real: number } {
+    let tasks = 0, paper = 0, real = 0;
+    for (const t of this.tasks.values()) {
+      if (!t.paper && !includeReal) continue;
+      if (this.traderFor(t).forget(mint)) {
+        tasks++;
+        if (t.paper) paper++; else real++;
+      }
+    }
+    return { tasks, paper, real };
+  }
   get(id: string): TradeTask | undefined { return this.tasks.get(id); }
 
   keypairFor(task: TradeTask): Keypair {

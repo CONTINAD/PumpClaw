@@ -828,6 +828,19 @@ export class Trader {
 
   /** Debounced write. Paper tasks tolerate a short delay; real tasks flush at once
    *  so a crash can never lose a live position record. */
+  /** Drop a position from this task's history and persist immediately. */
+  forget(mint: string): boolean {
+    const had = this.positions.delete(mint);
+    if (had) { this.dirty = true; this.flushNow(); }
+    return had;
+  }
+
+  /** Force an immediate write, bypassing the debounce. */
+  private flushNow(): void {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
+    this.flush();
+  }
+
   private save(): void {
     if (!this.paper) { this.flush(); return; }
     this.dirty = true;
