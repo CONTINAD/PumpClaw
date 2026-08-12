@@ -3075,8 +3075,32 @@ export function startDashboard(port?: number): void {
           <div class="kv">Called at <b>${fmtUsd(rec?.entryMC ?? entryMC)}</b> MC${rec ? ` · peaked <b style="color:#10b981">${rec.peakMultiplier.toFixed(2)}×</b> at ${fmtUsd(rec.peakMC)}` : ''}${callTime ? ` · ${new Date(callTime).toISOString().slice(5, 16).replace('T', ' ')}` : ''}</div>
           <div class="kv"><b>${winners}</b> of ${closed.length} closed strategies made money on this coin${results.length - closed.length ? ` · ${results.length - closed.length} still open` : ''}</div>
           <div class="kv mono" style="font-size:11px;color:var(--text3);margin-top:6px">${mint}</div>
-          <div style="margin-top:10px"><a href="https://dexscreener.com/solana/${mint}" target="_blank" style="color:#3b82f6;font-size:12px">DexScreener →</a></div>
+          <div style="margin-top:10px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+            <a href="https://dexscreener.com/solana/${mint}" target="_blank" style="color:#3b82f6;font-size:12px">DexScreener →</a>
+            <button id="forget-btn" style="background:transparent;border:1px solid #ef4444;color:#ef4444;border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer">Remove from stats</button>
+            <span id="forget-msg" style="font-size:12px;color:var(--text3)"></span>
+          </div>
         </div>
+        <script>
+        (function () {
+          var btn = document.getElementById('forget-btn'), msg = document.getElementById('forget-msg');
+          btn.onclick = function () {
+            // Irreversible from the UI's point of view, so make the user say it twice.
+            // The server still snapshots the files, but a misclick should not need that.
+            if (!confirm('Remove $${symbol} from the leaderboard and every strategy stat?\n\nReal trade history is kept so P&L still matches the wallet.')) return;
+            btn.disabled = true; msg.textContent = 'removing…';
+            fetch('/api/forget', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mints: ['${mint}'] }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+              if (d.error) { msg.textContent = 'failed: ' + d.error; btn.disabled = false; return; }
+              var n = Object.values(d.removed || {}).reduce(function (a, b) { return a + b; }, 0);
+              msg.innerHTML = '<span style="color:#10b981">removed ' + n + ' record(s) — backed up</span>';
+              btn.textContent = 'Removed';
+            }).catch(function (e) { msg.textContent = 'failed: ' + e.message; btn.disabled = false; });
+          };
+        })();
+        </script>
         <div class="card" style="max-width:none">
           <h3>Per-strategy result (${results.length})</h3>
           ${results.length ? `<div style="overflow-x:auto"><table>
