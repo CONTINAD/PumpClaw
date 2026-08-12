@@ -166,6 +166,9 @@ async function fastScanCycle() {
   const cheapPass = freshPosts.filter(post => {
     const m = marketData.get(post.mint);
     if (!m) return false;
+    // Ceiling first: it is free, and it stops us spending ~20 RPC calls of bundle
+    // work on a coin we were never going to call.
+    if (CONFIG.MAX_ENTRY_MC > 0 && m.marketCap > CONFIG.MAX_ENTRY_MC) return false;
     const vt = m.marketCap < CONFIG.MICRO_MC_THRESHOLD ? CONFIG.MIN_5M_VOLUME_MICRO_MC
       : m.marketCap < CONFIG.LOW_MC_THRESHOLD ? CONFIG.MIN_5M_VOLUME_LOW_MC : CONFIG.MIN_5M_VOLUME_HIGH_MC;
     return m.volume5m >= vt && m.priceChange5m >= -25;
@@ -178,6 +181,15 @@ async function fastScanCycle() {
   for (const post of freshPosts) {
     const market = marketData.get(post.mint);
     if (!market) continue;
+
+    // Entry ceiling. A coin already at six figures has made its move; in the 7-day
+    // sample nothing called above $100K reached 2x, median peak 1.06x.
+    if (CONFIG.MAX_ENTRY_MC > 0 && market.marketCap > CONFIG.MAX_ENTRY_MC) {
+      log(`⚠ HIGH_MC — skipping ${post.name}: ${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)} ceiling`);
+      recordSkip(post, 'HIGH_MC', `${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)}`, market.marketCap);
+      continue;
+    }
+
     const volThreshold = market.marketCap < CONFIG.MICRO_MC_THRESHOLD
       ? CONFIG.MIN_5M_VOLUME_MICRO_MC
       : market.marketCap < CONFIG.LOW_MC_THRESHOLD

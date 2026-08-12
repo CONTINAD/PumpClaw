@@ -42,6 +42,12 @@ export const CONFIG = {
   MIN_5M_VOLUME_LOW_MC: 8_000,   // required 5m vol if MC 20k-50k
   MIN_5M_VOLUME_HIGH_MC: 15_000, // required 5m vol if MC >= 50k
   MIN_LIQUIDITY: 7_000,          // skip below this liquidity (rug fodder)
+  // Upper bound on entry market cap. Above this the calls have not worked: in the
+  // 7-day sample every call over $100K peaked at 1.06x median and none reached 2x,
+  // while the $50-100K band hit 2x 60% of the time. A coin that has already run to
+  // six figures has done its move — we are buying the exit liquidity.
+  // 0 disables the ceiling.
+  MAX_ENTRY_MC: 100_000,
   MAX_CALLS_PER_HOUR: 6,         // hard cap — a spam hour means the signal is degraded
   MICRO_MC_THRESHOLD: 20_000,    // MC cutoff for micro tier
   LOW_MC_THRESHOLD: 50_000,      // MC cutoff between low and high tiers
