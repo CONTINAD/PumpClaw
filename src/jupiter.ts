@@ -102,31 +102,65 @@ async function getSwapTransaction(
   return data.swapTransaction;
 }
 
-/** Sign and send a Jupiter swap transaction. skipPreflight for faster submission —
- *  Jupiter already simulated the route, preflight only adds latency on hot coins. */
+/**
+ * Sign, send, and actually confirm a Jupiter swap.
+ *
+ * The previous version confirmed against a blockhash fetched AFTER sending, so it
+ * waited on a deadline unrelated to the transaction, threw on any confirmation
+ * hiccup, and never rebroadcast — a dropped transaction simply never landed and
+ * the caller recorded a failure. On a take-profit that retired the level for good.
+ *
+ * Now: confirm against the transaction's own blockhash, rebroadcast while that
+ * blockhash is alive, and re-check the signature once more before giving up, so a
+ * transaction that landed at the edge is reported as the success it was.
+ */
 async function signAndSend(swapTxBase64: string, keypair?: Keypair): Promise<string> {
   const wallet = keypair ?? getWallet();
   const connection = getConnection();
 
-  const txBuf = Buffer.from(swapTxBase64, 'base64');
-  const tx = VersionedTransaction.deserialize(txBuf);
+  const tx = VersionedTransaction.deserialize(Buffer.from(swapTxBase64, 'base64'));
   tx.sign([wallet]);
-
   const rawTx = tx.serialize();
-  const txSig = await connection.sendRawTransaction(rawTx, {
-    skipPreflight: true,
-    maxRetries: 2,
-  });
+  const txBlockhash = tx.message.recentBlockhash;
 
-  // Confirm the transaction
-  const latestBlockhash = await connection.getLatestBlockhash();
-  await connection.confirmTransaction({
-    signature: txSig,
-    blockhash: latestBlockhash.blockhash,
-    lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-  }, 'confirmed');
+  const txSig = await connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 5 });
 
-  return txSig;
+  const settled = async (): Promise<'ok' | 'pending' | string> => {
+    try {
+      const st = await connection.getSignatureStatuses([txSig]);
+      const s = st.value[0];
+      if (!s) return 'pending';
+      if (s.err) return `on-chain failure: ${JSON.stringify(s.err)}`;
+      if (s.confirmationStatus === 'confirmed' || s.confirmationStatus === 'finalized') return 'ok';
+      return 'pending';
+    } catch { return 'pending'; }
+  };
+
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const r = await settled();
+    if (r === 'ok') return txSig;
+    if (r !== 'pending') throw new Error(r);
+
+    let alive = true;
+    try {
+      alive = (await connection.isBlockhashValid(txBlockhash, { commitment: 'confirmed' })).value;
+    } catch { /* RPC hiccup — keep waiting rather than abandon a live tx */ }
+
+    if (!alive) {
+      // The window closed. It may still have landed on the final slot.
+      await new Promise(r => setTimeout(r, 1500));
+      if (await settled() === 'ok') return txSig;
+      throw new Error(`blockhash expired before confirmation (${txSig})`);
+    }
+
+    // Keep it in front of the leader; validators drop transactions under load.
+    connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 0 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  if (await settled() === 'ok') return txSig;
+  throw new Error(`confirmation timed out after 90s (${txSig})`);
 }
 
 /**
