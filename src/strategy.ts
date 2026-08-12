@@ -103,6 +103,7 @@ export const STRATEGY_PRESETS: Record<string, { name: string; desc: string; make
 type Spec = {
   key: string; name: string; desc: string;
   dip?: number;                       // undefined = instant entry
+  win?: number;                       // dip window in minutes (default 30)
   hold?: number;                      // hard time exit in minutes
   tps?: [number, number][];
   trail?: number;
@@ -565,6 +566,145 @@ const GRID4: Spec[] = [
 ];
 GRID.push(...GRID4);
 
+// ── GRID5 (200) ─────────────────────────────────────────────
+//
+// Built around one thing the previous 419 could not answer: every existing dip
+// strategy hardcoded a 30-minute window, so "how long should we wait for the dip"
+// has never been tested. A long window keeps buying knives that are still falling
+// — the fill happens at the bottom of a window only in hindsight. These vary the
+// window from 3 to 15 minutes as a first-class axis.
+//
+// The other families target gaps rather than adding grid points:
+//   B  break-even after TP1 — barely represented, and the cheapest way to turn a
+//      winner that round-trips into a scratch instead of a loss ($Lego went 1.7x
+//      then gave it all back to a -50% trailer).
+//   C  fast scalps — hold minutes, not hours, on the theory that a call's edge
+//      decays quickly.
+//   D  asymmetric ladders — bank most of the position early, let a free tail run.
+//      $Plumber did 124x; a 5% tail costs almost nothing and pays for many losses.
+//   E  instant entry, tight stop — the direct counterpoint to dip entry. If the
+//      dip families win, this is the control that proves it.
+const GRID5: Spec[] = [];
+
+// ── A: short dip windows (60) ──
+for (const dip of [0.08, 0.12, 0.15, 0.20, 0.25]) {
+  for (const win of [3, 5, 8, 10]) {
+    for (const [tag, tps, trail, stop] of [
+      ['q', [[1.4, 0.9], [3, 0.1]] as [number, number][], undefined, 0.6],
+      ['r', [[1.8, 0.8], [4, 0.2]] as [number, number][], undefined, 0.55],
+      ['t', [] as [number, number][], 0.3, 0.5],
+    ] as [string, [number, number][], number | undefined, number][]) {
+      const d = Math.round(dip * 100);
+      GRID5.push({
+        key: `w${win}d${d}${tag}`,
+        name: `Dip −${d}% in ${win}m → ${tag === 't' ? 'trail 30%' : tps.map(x => `${x[0]}X`).join('/')}`,
+        desc: `Only buys if the pullback arrives within ${win} minutes — a dip that takes longer is a downtrend, not an entry.`,
+        dip, win, tps: tps.length ? tps : undefined, trail, stop,
+      });
+    }
+  }
+}
+
+// ── B: break-even after TP1 (30) ──
+for (const [dip, win] of [[undefined, undefined], [0.10, 5], [0.15, 8], [0.20, 10]] as [number | undefined, number | undefined][]) {
+  for (const tp1 of [1.3, 1.5, 1.75, 2.0, 2.5]) {
+    for (const sell of [0.5, 0.7]) {
+      if (GRID5.length >= 90) break;
+      const tag = dip ? `d${Math.round(dip * 100)}w${win}` : 'inst';
+      GRID5.push({
+        key: `be${String(tp1).replace('.', '')}s${Math.round(sell * 100)}${tag}`,
+        name: `${dip ? `Dip −${Math.round(dip * 100)}% ${win}m` : 'Instant'} → ${Math.round(sell * 100)}%@${tp1}X, then break-even`,
+        desc: `Takes ${Math.round(sell * 100)}% at ${tp1}X and moves the stop to entry, so the rest cannot become a loss.`,
+        dip, win, tps: [[tp1, sell], [tp1 * 3, 1 - sell]], stop: 0.6, be: true,
+      });
+    }
+  }
+}
+
+// ── C: fast scalps (30) ──
+for (const hold of [1, 2, 3, 5, 8]) {
+  for (const tp of [1.15, 1.25, 1.4]) {
+    for (const dipCfg of [undefined, 0.10] as (number | undefined)[]) {
+      GRID5.push({
+        key: `sc${hold}m${String(tp).replace('.', '')}${dipCfg ? 'd' : 'i'}`,
+        name: `${dipCfg ? 'Dip −10% 5m' : 'Instant'} → ${tp}X or ${hold}m`,
+        desc: `Takes ${tp}X quickly or leaves after ${hold} minutes — treats the call's edge as short-lived.`,
+        dip: dipCfg, win: dipCfg ? 5 : undefined, hold, tps: [[tp, 1]], stop: 0.7,
+      });
+    }
+  }
+}
+
+// ── D: asymmetric ladders with a free tail (40) ──
+for (const front of [0.75, 0.85, 0.9, 0.95]) {
+  for (const tp1 of [1.3, 1.5, 1.8, 2.2, 3.0]) {
+    for (const tail of [8, 20] as number[]) {
+      GRID5.push({
+        key: `tl${Math.round(front * 100)}_${String(tp1).replace('.', '')}_${tail}`,
+        name: `${Math.round(front * 100)}%@${tp1}X + ${Math.round((1 - front) * 100)}% tail to ${tail}X`,
+        desc: `Banks the position at ${tp1}X and lets a small free tail ride to ${tail}X — one runner pays for many losers.`,
+        tps: [[tp1, front], [tail, 1 - front]], stop: 0.55,
+      });
+    }
+  }
+}
+
+// ── E: instant entry, tight stop (40) ──
+for (const stop of [0.8, 0.85, 0.9]) {
+  for (const tp of [1.2, 1.35, 1.5, 1.8, 2.2, 3.0, 4.0]) {
+    GRID5.push({
+      key: `it${String(tp).replace('.', '')}s${Math.round((1 - stop) * 100)}`,
+      name: `Instant → ${tp}X, stop −${Math.round((1 - stop) * 100)}%`,
+      desc: `No waiting, cut fast. The control against every dip-entry family.`,
+      tps: [[tp, 1]], stop,
+    });
+  }
+}
+for (const trail of [0.15, 0.2, 0.25, 0.3, 0.35]) {
+  for (const arm of [1.3, 1.6, 2.0, 2.5] as number[]) {
+    GRID5.push({
+      key: `ar${Math.round(trail * 100)}_${String(arm).replace('.', '')}`,
+      name: `Arm ${Math.round(trail * 100)}% trail after ${arm}X`,
+      desc: `Runs a hard stop until ${arm}X, then switches to a ${Math.round(trail * 100)}% trail — protects the move without capping it.`,
+      tps: [[arm, 0.001]], trail, trailFrom: 'afterLastTp', stop: 0.6,
+    });
+  }
+}
+
+GRID.push(...GRID5);
+
+// ── GRID6: controlled dip-window sweep (56) ─────────────────
+//
+// Everything above varies several things at once, which tells you a strategy is
+// good but not WHY. Here the exit shape is held identical and only the dip depth
+// and window move, so the comparison is clean: if a 5-minute window beats a
+// 30-minute one at the same depth and same exit, the window is doing the work.
+//
+// The long windows are deliberately included as controls. Without 20/30/45 in the
+// set there is nothing to beat, and "short windows are better" stays an opinion.
+const GRID6: Spec[] = [];
+for (const dip of [0.10, 0.15, 0.20, 0.25]) {
+  for (const win of [3, 5, 10, 15, 20, 30, 45]) {
+    const d = Math.round(dip * 100);
+    // Shape 1: bank most at 1.6X, small tail. Shape 2: pure 25% trail.
+    GRID6.push({
+      key: `sw${d}_${win}a`,
+      name: `SWEEP −${d}% / ${win}m → 85%@1.6X`,
+      desc: `Window sweep, identical exit. Only the ${win}-minute wait differs.`,
+      dip, win, tps: [[1.6, 0.85], [6, 0.15]], stop: 0.55,
+    });
+    GRID6.push({
+      key: `sw${d}_${win}b`,
+      name: `SWEEP −${d}% / ${win}m → trail 25%`,
+      desc: `Window sweep, identical exit. Only the ${win}-minute wait differs.`,
+      dip, win, trail: 0.25, stop: 0.5,
+    });
+  }
+}
+GRID.push(...GRID6);
+
+
+
 for (const g of GRID) {
   STRATEGY_PRESETS[g.key] = {
     name: g.name,
@@ -574,7 +714,7 @@ for (const g of GRID) {
       preset: g.key,
       entryMode: g.dip ? ('dip' as const) : ('instant' as const),
       dipPct: g.dip ?? 0.2,
-      dipWindowMin: 30,
+      dipWindowMin: g.win ?? 30,
       maxHoldMin: g.hold ?? 0,
       tps: (g.tps ?? []).map(([mult, sellPct]) => ({ mult, sellPct })),
       // No trail configured => keep trailing OFF (armed only after TPs) so stopLossPct
