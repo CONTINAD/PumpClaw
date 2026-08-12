@@ -642,7 +642,7 @@ export class Trader {
       if (stopLevel > 0 && currentPrice <= stopLevel * 1.4) {
         try {
           const solUsd = await getSolPrice();
-          const jup = await jupiterGetPrice(mint, solUsd);
+          const jup = await jupiterGetPrice(mint, solUsd, true);   // urgent: this decides a sell
           // Ignore an absurd quote; a broken reading must not trigger a sale either.
           if (jup && jup.priceUsd > 0 && jup.priceUsd > currentPrice / 5 && jup.priceUsd < currentPrice * 5) {
             if (jup.priceUsd < currentPrice) {
