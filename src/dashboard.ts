@@ -2158,6 +2158,63 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
             }
           } catch (e) {}
         }
+        // ── sell plan: every level an open position will exit at ──
+        const ep = document.getElementById('exit-plan');
+        if (ep) {
+          if (!d.open || !d.open.length) {
+            ep.innerHTML = '';
+          } else {
+            const mc = v => !v ? '—' : v >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? '$' + Math.round(v / 1e3) + 'K' : '$' + Math.round(v);
+            let cards = '';
+            for (const pos of d.open) {
+              const live = prices[pos.mint] ? prices[pos.mint].price : null;
+              const liveMult = live && pos.entryPrice > 0 ? live / pos.entryPrice : null;
+              const liveMC = liveMult && pos.entryMC ? pos.entryMC * liveMult : null;
+
+              // rows: take-profits above, the live stop below — the order they'd fire in
+              const levels = [...(pos.ladder || [])];
+              if (pos.liveStop) levels.push(pos.liveStop);
+              levels.sort((a, b) => b.mult - a.mult);
+
+              let rows = '';
+              for (const L of levels) {
+                const isStop = L.kind === 'trail' || L.kind === 'stop';
+                const away = liveMult ? (L.mult / liveMult - 1) * 100 : null;
+                const col = L.hit ? 'var(--text3)' : isStop ? '#ef4444' : '#10b981';
+                rows +=
+                  '<tr style="opacity:' + (L.hit ? '.45' : '1') + '">' +
+                  '<td style="padding:5px 8px;border-top:1px solid var(--border);color:' + col + ';font-weight:700">' +
+                    (L.hit ? '✓ ' : isStop ? '▼ ' : '▲ ') + L.label + '</td>' +
+                  '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border)">' + L.mult.toFixed(2) + '×</td>' +
+                  '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border);color:' + col + ';font-weight:700">' + mc(L.mc) + '</td>' +
+                  '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text2)">$' + L.price.toExponential(2) + '</td>' +
+                  '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border)">sells ' + L.sellPct + '%</td>' +
+                  '<td class="mono" style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text3)">' +
+                    (L.hit ? 'done' : away === null ? '—' : (away > 0 ? '+' : '') + away.toFixed(1) + '%') + '</td>' +
+                  '</tr>';
+              }
+              const pnlPct = liveMult ? (liveMult - 1) * 100 : null;
+              cards +=
+                '<div class="card" style="max-width:none;border-left:3px solid ' + (pos.stopTriggered ? '#ef4444' : '#10b981') + '">' +
+                '<h3>🎯 Sell plan — $' + pos.symbol + (pos.stopTriggered ? ' <span style="color:#ef4444;font-size:12px">SELLING NOW</span>' : '') + '</h3>' +
+                '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text2);margin:-4px 0 8px">' +
+                  '<span>entry <b style="color:var(--text)">' + mc(pos.entryMC) + '</b></span>' +
+                  '<span>now <b style="color:' + (pnlPct === null ? 'var(--text)' : pnlPct >= 0 ? '#10b981' : '#ef4444') + '">' +
+                    (liveMC ? mc(liveMC) : '—') + (liveMult ? ' (' + liveMult.toFixed(2) + '×)' : '') + '</b></span>' +
+                  '<span>peak <b style="color:#f59e0b">' + (pos.peakMultiplier || 1).toFixed(2) + '×</b></span>' +
+                  '<span>unsold <b style="color:var(--text)">' + Math.round(pos.remainingPct * 100) + '%</b></span>' +
+                  (pos.timeExitMin !== null ? '<span>clock exit in <b style="color:var(--text)">' + pos.timeExitMin + 'm</b></span>' : '') +
+                '</div>' +
+                '<div style="overflow-x:auto"><table style="width:100%">' +
+                '<tr><th style="text-align:left">Level</th><th style="text-align:left">Mult</th><th style="text-align:left">Market cap</th><th style="text-align:left">Price</th><th style="text-align:left">Size</th><th style="text-align:left">Away</th></tr>' +
+                rows + '</table></div>' +
+                '<p style="font-size:11px;color:var(--text3);margin:8px 0 0">The trailing stop moves up as the coin runs — this is where it sits right now, not where it started.</p>' +
+                '</div>';
+            }
+            ep.innerHTML = cards;
+          }
+        }
+
         // ── waiting to buy: calls queued behind a dip that hasn't happened yet ──
         const wq = document.getElementById('waiting-queue');
         if (wq) {
@@ -2258,6 +2315,7 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
   })();
   </script>
 
+  <div id="exit-plan"></div>
   <div id="waiting-queue"></div>
 
   <div class="card" style="max-width:none">
@@ -2534,11 +2592,52 @@ export function startDashboard(port?: number): void {
           symByMint[pos.mint] = pos.symbol;
           if (pos.status === 'open') openMints.add(pos.mint);
         }
-        const open = positions.filter(pp => pp.status === 'open').map(pp => ({
-          mint: pp.mint, symbol: pp.symbol, entrySol: pp.entrySol, entryPrice: pp.entryPrice,
-          entryTime: pp.entryTime, remainingPct: pp.remainingPct, totalSolReturned: pp.totalSolReturned,
-          trailingStopPrice: pp.trailingStopPrice, peakMultiplier: pp.peakMultiplier,
-        }));
+        const strat = task.strategy;
+        const open = positions.filter(pp => pp.status === 'open').map(pp => {
+          const mcAt = (mult: number) => pp.entryMC > 0 ? pp.entryMC * mult : 0;
+          const hits = pp.tpHits ?? [pp.tp1Hit, pp.tp2Hit, pp.tp3Hit];
+
+          // Every level this position will sell at, in the order it would happen.
+          const ladder = (strat.tps ?? []).map((tp, i) => ({
+            kind: 'tp' as const,
+            label: `TP${i + 1}`,
+            mult: tp.mult,
+            sellPct: Math.round(tp.sellPct * 100),
+            price: pp.entryPrice * tp.mult,
+            mc: mcAt(tp.mult),
+            hit: !!hits[i],
+          }));
+
+          // Stops: the live one is whichever sits higher (the tighter of the two).
+          const trailMult = pp.entryPrice > 0 ? pp.trailingStopPrice / pp.entryPrice : 0;
+          const stopMult = pp.entryPrice > 0 ? pp.stopLossPrice / pp.entryPrice : 0;
+          const stops = [
+            pp.trailingActive && pp.trailingStopPrice > 0 ? {
+              kind: 'trail' as const,
+              label: `Trailing −${Math.round((strat.trailingDrop ?? 0) * 100)}% (from ${(pp.trailingHighPrice / (pp.entryPrice || 1)).toFixed(2)}× high)`,
+              mult: trailMult, sellPct: Math.round(pp.remainingPct * 100),
+              price: pp.trailingStopPrice, mc: mcAt(trailMult), hit: false,
+            } : null,
+            pp.stopLossPrice > 0 ? {
+              kind: 'stop' as const,
+              label: pp.beStopArmed ? 'Break-even stop' : `Stop −${Math.round((1 - (strat.stopLossPct ?? 0)) * 100)}%`,
+              mult: stopMult, sellPct: Math.round(pp.remainingPct * 100),
+              price: pp.stopLossPrice, mc: mcAt(stopMult), hit: false,
+            } : null,
+          ].filter(Boolean);
+          // Only the higher stop can actually fire first.
+          const liveStop = stops.sort((a: any, b: any) => b.mult - a.mult)[0] ?? null;
+
+          const heldMin = (Date.now() - pp.entryTime) / 60_000;
+          return {
+            mint: pp.mint, symbol: pp.symbol, entrySol: pp.entrySol, entryPrice: pp.entryPrice,
+            entryMC: pp.entryMC, entryTime: pp.entryTime, remainingPct: pp.remainingPct,
+            totalSolReturned: pp.totalSolReturned, trailingStopPrice: pp.trailingStopPrice,
+            peakMultiplier: pp.peakMultiplier, stopTriggered: !!pp.stopTriggered,
+            ladder, liveStop,
+            timeExitMin: strat.maxHoldMin ? Math.max(0, Math.round(strat.maxHoldMin - heldMin)) : null,
+          };
+        });
         // Stats + cumulative realized PnL curve from closed positions
         const closed = positions.filter(pp => pp.status === 'closed').sort((a, b) => (a.closedTime ?? 0) - (b.closedTime ?? 0));
         let cum = 0;
