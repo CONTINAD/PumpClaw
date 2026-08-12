@@ -54,6 +54,8 @@ export interface PendingEntry {
   callPrice: number;
   target: number;
   expiresAt: number;
+  callMC?: number;      // market cap when the call landed
+  targetMC?: number;    // the market cap the buy actually triggers at
 }
 
 const PENDING_FILE = `${CONFIG.DATA_DIR}/pending-entries.json`;
@@ -357,6 +359,8 @@ class TaskManager {
         callPrice: price,
         target: price * (1 - dip),
         expiresAt: Date.now() + (t.strategy.dipWindowMin ?? 30) * 60_000,
+        callMC: mc,
+        targetMC: mc > 0 ? mc * (1 - dip) : undefined,
       });
       console.log(`[Tasks] ⏳ "${t.name}" waiting for $${symbol} to dip ${(dip * 100).toFixed(0)}%`);
     }

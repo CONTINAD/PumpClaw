@@ -2146,7 +2146,8 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
         const st = document.getElementById('h-status');
         const body = document.getElementById('h-body');
         st.textContent = (d.enabled ? 'running' : 'paused') + ' · ' + d.strategy + ' · refreshes 15s';
-        const mints = [...new Set([...d.holdings.map(h => h.mint), ...d.open.map(p => p.mint)])].slice(0, 30);
+        const mints = [...new Set([...d.holdings.map(h => h.mint), ...d.open.map(p => p.mint),
+          ...(d.pending || []).map(p => p.mint)])].slice(0, 30);
         let prices = {};
         if (mints.length) {
           try {
@@ -2157,6 +2158,47 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
             }
           } catch (e) {}
         }
+        // ── waiting to buy: calls queued behind a dip that hasn't happened yet ──
+        const wq = document.getElementById('waiting-queue');
+        if (wq) {
+          if (!d.pending || !d.pending.length) {
+            wq.innerHTML = '';
+          } else {
+            const mc = v => !v ? '—' : v >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? '$' + Math.round(v / 1e3) + 'K' : '$' + Math.round(v);
+            let rows = '';
+            for (const p of d.pending) {
+              const live = prices[p.mint] ? prices[p.mint].price : null;
+              // how much further it still has to fall from here
+              const away = live ? (1 - p.target / live) * 100 : null;
+              const liveMC = (live && p.callPrice > 0 && p.callMC) ? p.callMC * (live / p.callPrice) : null;
+              const mins = Math.max(0, Math.round((p.expiresAt - Date.now()) / 60000));
+              const close = away !== null && away <= 3;
+              rows +=
+                '<tr>' +
+                '<td style="padding:6px 8px;border-top:1px solid var(--border)"><b>$' + p.symbol + '</b>' +
+                  '<div style="font-size:10px;color:var(--text3)">called at ' + mc(p.callMC) + '</div></td>' +
+                '<td class="mono" style="padding:6px 8px;border-top:1px solid var(--border);color:#f59e0b">' +
+                  (liveMC ? mc(liveMC) : '—') + '<div style="font-size:10px;color:var(--text3)">now</div></td>' +
+                '<td class="mono" style="padding:6px 8px;border-top:1px solid var(--border);color:#10b981;font-weight:700">' +
+                  (p.targetMC ? mc(p.targetMC) : '$' + p.target.toExponential(2)) +
+                  '<div style="font-size:10px;color:var(--text3)">triggers here (−' + Math.round(p.dipPct) + '%)</div></td>' +
+                '<td class="mono" style="padding:6px 8px;border-top:1px solid var(--border);color:' + (close ? '#10b981' : 'var(--text2)') + '">' +
+                  (away === null ? '—' : away <= 0 ? 'filling…' : '−' + away.toFixed(1) + '% to go') + '</td>' +
+                '<td class="mono" style="padding:6px 8px;border-top:1px solid var(--border);color:' + (mins <= 5 ? '#ef4444' : 'var(--text2)') + '">' +
+                  mins + 'm left</td>' +
+                '<td style="padding:6px 8px;border-top:1px solid var(--border)"><a style="font-size:11px;color:#3b82f6" href="https://dexscreener.com/solana/' + p.mint + '" target="_blank">chart</a></td>' +
+                '</tr>';
+            }
+            wq.innerHTML =
+              '<div class="card" style="max-width:none;border-left:3px solid #f59e0b">' +
+              '<h3>⏳ Waiting to buy (' + d.pending.length + ')</h3>' +
+              '<p style="font-size:12px;color:var(--text2);margin:-4px 0 8px">This strategy enters on a dip, so these calls are queued — no SOL is spent unless the price falls to the trigger. A fast drop can fill below it, which is a cheaper entry, not a worse one.</p>' +
+              '<div style="overflow-x:auto"><table style="width:100%">' +
+              '<tr><th style="text-align:left">Coin</th><th style="text-align:left">Market cap</th><th style="text-align:left">Target</th><th style="text-align:left">Distance</th><th style="text-align:left">Window</th><th></th></tr>' +
+              rows + '</table></div></div>';
+          }
+        }
+
         // ── stats tiles + sparkline ──
         if (d.stats) {
           const s2 = d.stats;
@@ -2215,6 +2257,8 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
     setInterval(tick, 15000);
   })();
   </script>
+
+  <div id="waiting-queue"></div>
 
   <div class="card" style="max-width:none">
     <h3>Positions (last 40)</h3>
@@ -2473,6 +2517,16 @@ export function startDashboard(port?: number): void {
           getSolBalance(kp).catch(() => null),
           getTokenHoldings(kp).catch(() => []),
         ]);
+        const pending = taskManager.pendingEntries()
+          .filter(p => p.taskId === task.id)
+          .map(p => {
+            // Orders queued before callMC was recorded: recover it from the call.
+            const allCalls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+            const rec = allCalls.find((c: CallRecord) => c.mint === p.mint);
+            const callMC = p.callMC ?? rec?.entryMC ?? 0;
+            const dipPct = p.callPrice > 0 ? (1 - p.target / p.callPrice) * 100 : 0;
+            return { ...p, callMC, dipPct, targetMC: p.targetMC ?? (callMC > 0 ? callMC * (1 - dipPct / 100) : 0) };
+          });
         const positions = taskManager.traderFor(task).getAllPositions();
         const symByMint: Record<string, string> = {};
         const openMints = new Set<string>();
@@ -2506,7 +2560,7 @@ export function startDashboard(port?: number): void {
           strategy: describeStrategy(task.strategy),
           sol, stats,
           holdings: holdings.map(h => ({ ...h, symbol: symByMint[h.mint] ?? null, isOpen: openMints.has(h.mint) })),
-          open,
+          open, pending,
         }));
       })().catch(err => {
         res.writeHead(500, { 'Content-Type': 'application/json' });
