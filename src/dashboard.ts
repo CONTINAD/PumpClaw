@@ -2556,6 +2556,22 @@ export function startDashboard(port?: number): void {
       return;
     }
 
+    if (pathname === '/api/poolprice') {
+      (async () => {
+        const { watchStats, poolPriceUsd } = await import('./pool-price.js');
+        const stats = watchStats();
+        const rows = await Promise.all(stats.map(async w => ({
+          ...w, priceUsd: await poolPriceUsd(w.mint).catch(() => null),
+        })));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ watching: rows.length, pools: rows }));
+      })().catch(err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
+      return;
+    }
+
     if (pathname === '/api/task') {
       if (!authOk(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });

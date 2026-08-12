@@ -131,6 +131,11 @@ export const CONFIG = {
   // competes for a slot; a tip buys inclusion. Exits bid higher than entries
   // because failing to get out costs far more than the tip.
   JITO_ENABLED: process.env.JITO_ENABLED !== 'false',
+
+  // Price open positions from the pool's own reserves, pushed on every trade,
+  // instead of an aggregate that lags. Falls back to DexScreener whenever the
+  // subscription is missing or stale — it can only add an opinion, never block one.
+  POOL_PRICE_ENABLED: process.env.POOL_PRICE_ENABLED !== 'false',
   TRADE_MIN_SOL_BALANCE: 0.05,         // don't trade if wallet SOL below this
   // Exit strategy: 'trailing' = always-on -45% trailing stop from entry, no TPs —
   // backtested 1.76X avg/call on 306 recorded calls vs 1.26X for the TP ladder

@@ -926,6 +926,32 @@ async function realPositionLoop() {
 // ── Reconciliation (every 2 min) — the book is a claim, the wallet is the truth.
 //    Nothing here trusts what the bot recorded about itself.
 
+/**
+ * Pool-price observation (30s).
+ *
+ * Deliberately isolated from every trading decision: it subscribes, measures, and
+ * reports, and nothing reads its output to size or exit a position. The reserve
+ * maths is exact on some pools and 30% low on others — always low, which would trip
+ * a stop early — so it earns its way into the trading path by being demonstrably
+ * right in production first, not by looking right in a test.
+ */
+async function poolPriceLoop() {
+  const { watchMint, pruneWatches, revalidate } = await import('./pool-price.js');
+  let ticks = 0;
+  while (true) {
+    await new Promise(r => setTimeout(r, 30_000));
+    try {
+      const real = taskManager.openPositions().filter(({ task }) => !task.paper);
+      const mints = new Set(real.map(({ pos }) => pos.mint));
+      pruneWatches(mints);
+      for (const m of mints) await watchMint(m);
+      if (++ticks % 10 === 0 && mints.size) await revalidate();
+    } catch (err: any) {
+      console.error(`[PoolPrice] loop: ${err.message}`);
+    }
+  }
+}
+
 async function reconcileLoop() {
   while (true) {
     await new Promise(r => setTimeout(r, 120_000));
@@ -1204,6 +1230,9 @@ async function main() {
     });
     realPositionLoop().catch(err => {
       console.error(`[RealLoop] Fatal: ${err.message}`);
+    });
+    poolPriceLoop().catch(err => {
+      console.error(`[PoolPrice] Fatal: ${err.message}`);
     });
   }
 
