@@ -104,6 +104,7 @@ export class Trader {
   private positions = new Map<string, RealPosition>();
   private positionsFile: string;
   private sellFailCounts = new Map<string, number>();
+  private tpFailCounts = new Map<string, number>();
   private lastSellFailAlert = new Map<string, number>();
 
   /**
@@ -588,12 +589,27 @@ export class Trader {
     for (let i = 0; i < strat.tps.length; i++) {
       const tp = strat.tps[i];
       if (!pos.tpHits[i] && mult >= tp.mult) {
-        pos.tpHits[i] = true;
-        if (i < 3) (pos as any)[`tp${i + 1}Hit`] = true;
-        await executeSell(`tp${i + 1}`, `TP${i + 1} ${tp.mult}X`, tp.sellPct, tp.mult);
-        if (i === 0 && strat.breakEvenAfterTp1 && !pos.beStopArmed) {
-          pos.beStopArmed = true;
-          pos.stopLossPrice = pos.entryPrice;
+        // Mark the level hit only once the sell actually lands. Marking first meant
+        // a failed sell retired the level permanently: the position kept 100% of
+        // its size, never retried, and rode a taken profit back down to the stop.
+        const exit = await executeSell(`tp${i + 1}`, `TP${i + 1} ${tp.mult}X`, tp.sellPct, tp.mult);
+        if (exit) {
+          pos.tpHits[i] = true;
+          if (i < 3) (pos as any)[`tp${i + 1}Hit`] = true;
+          if (i === 0 && strat.breakEvenAfterTp1 && !pos.beStopArmed) {
+            pos.beStopArmed = true;
+            pos.stopLossPrice = pos.entryPrice;
+          }
+        } else if (!this.paper) {
+          const fails = (this.tpFailCounts.get(mint) ?? 0) + 1;
+          this.tpFailCounts.set(mint, fails);
+          console.error(`[Trader] ⚠ TP${i + 1} sell FAILED for $${pos.symbol} at ${mult.toFixed(2)}X ` +
+            `(attempt ${fails}) — level stays armed, retrying next cycle`);
+          if (fails === 2 || fails % 10 === 0) {
+            sendOpsAlert(`**$${pos.symbol}** hit **TP${i + 1} (${tp.mult}X)** but the sell has failed ` +
+              `${fails}x — still holding ${Math.round(pos.remainingPct * 100)}%. Sell manually if it persists: ` +
+              `https://pump.fun/${mint}`, CFG.TRADES_WEBHOOK).catch(() => {});
+          }
         }
       }
     }
