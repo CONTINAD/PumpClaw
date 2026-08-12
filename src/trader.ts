@@ -664,22 +664,6 @@ export class Trader {
    * progressively smaller chunks — thin liquidity often rejects the full size
    * but accepts a quarter of it. Returns any exits that cleared.
    */
-  /**
-   * Second opinion on a price, from the venue we'd actually sell into.
-   * Returns null if Jupiter can't quote — in that case we trust the feed and
-   * let the stop stand, since refusing to ever sell is the worse failure.
-   */
-  private async confirmPrice(mint: string, feedPrice: number): Promise<number | null> {
-    try {
-      const solUsd = await getSolPrice();
-      const jup = await jupiterGetPrice(mint, solUsd);
-      if (!jup || !(jup.priceUsd > 0)) return null;
-      // Absurd quotes (>5x apart) mean something is broken; don't act on either.
-      if (jup.priceUsd > feedPrice * 5 || jup.priceUsd < feedPrice / 5) return null;
-      return jup.priceUsd;
-    } catch { return null; }
-  }
-
   async panicSell(mint: string): Promise<RealExit[]> {
     const pos = this.positions.get(mint);
     if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
