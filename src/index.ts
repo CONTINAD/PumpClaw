@@ -216,10 +216,18 @@ async function fastScanCycle() {
 
     const bundle = await (bundlePromises.get(post.mint) ?? checkBundle(post.mint));
     if (!bundle.safe) {
-      log(`⚠ BUNDLED — skipping ${post.name}: ${bundle.details}`);
-      recordSkip(post, 'BUNDLED', bundle.details, market.marketCap);
+      // Separate "this coin looks like a farm" from "we could not judge this coin".
+      // Both block, but they mean different things: a run of the second is a degraded
+      // RPC quietly turning into a call drought, which is exactly how five days of
+      // silence happened before. Lumping them under one label hid that.
+      const blind = /\[UNVERIFIABLE\]|fail closed/.test(bundle.details);
+      const reason = blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
+      log(`⚠ ${reason} — skipping ${post.name}: ${bundle.details}`);
+      recordSkip(post, reason, bundle.details, market.marketCap);
+      if (blind) noteBlindBlock(post.name); else blindBlocks = 0;
       continue;
     }
+    blindBlocks = 0;
     if (bundle.totalChecked > 0) {
       log(`✅ Bundle check passed: ${bundle.details}`);
     }
@@ -909,6 +917,27 @@ function plausible(candidate: number, reference: number): boolean {
   if (!(candidate > 0) || !(reference > 0)) return false;
   const r = candidate / reference;
   return r > 0.25 && r < 4;
+}
+
+// ── Blind-block alarm ───────────────────────────────────────
+// Blocking what we cannot verify is correct, but it is indistinguishable from the
+// scanner being broken unless someone says so. Five consecutive blind blocks means
+// the RPC is degraded, not that every coin is a farm.
+let blindBlocks = 0;
+let lastBlindAlert = 0;
+
+function noteBlindBlock(name: string): void {
+  blindBlocks++;
+  if (blindBlocks < 5) return;
+  if (Date.now() - lastBlindAlert < 15 * 60_000) return;
+  lastBlindAlert = Date.now();
+  log(`🚨 ${blindBlocks} coins blocked as UNVERIFIABLE in a row — RPC likely degraded`);
+  sendOpsAlert(
+    `⚠️ **${blindBlocks} coins blocked in a row** because their holders could not be verified ` +
+    `(most recent: ${name}). Calls are being suppressed on purpose, but a run this long usually ` +
+    `means the RPC is failing rather than every coin being a farm. Check the Helius key.`,
+    CONFIG.TRADES_WEBHOOK,
+  ).catch(() => {});
 }
 
 async function realPositionLoop() {

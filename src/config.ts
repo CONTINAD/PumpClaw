@@ -74,11 +74,17 @@ export const CONFIG = {
   BUNDLE_WIDE_CLUSTER_PCT: 60,      // skip if 60%+ of fresh holders funded within same 7-day window
   BUNDLE_MIN_FRESH_WALLETS: 5,      // hour/day/wide checks need at least this many fresh-wallet samples
   // Block when the top holders are ALL high-activity wallets: every funding-time check
-  // becomes vacuous (0/0 = 0%) and bundles sail through. Fail closed instead.
-  // Tradeoff: also blocks legit sniper-heavy launches — set false to allow them.
-  // Superseded by the wallet-graph check, which detects farms built from ACTIVE
-  // wallets directly instead of blanket-blocking every coin we can't age-verify.
-  BUNDLE_BLOCK_UNVERIFIABLE: false,
+  // becomes vacuous (0/0 = 0%) and bundles sail through.
+  //
+  // This was disabled on the reasoning that the wallet-graph check superseded it. It
+  // does not: the guard only fires when the graph ALSO has no data (graph.checked < 3),
+  // so a coin with graph coverage still passes on its merits. What the flag actually
+  // decides is what happens when we can judge a coin on NOTHING — no funding times and
+  // no graph — and calling those was the one fail-open path left in the pipeline.
+  // $SAFETOAD, a 100% cluster, went out through exactly this gap.
+  //
+  // Every other failure here already fails closed. This one now does too.
+  BUNDLE_BLOCK_UNVERIFIABLE: true,
   BUNDLE_MIN_VERIFIABLE: 3,         // need this many fresh wallets to trust a PASS
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.
