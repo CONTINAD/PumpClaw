@@ -1,6 +1,7 @@
 import { VersionedTransaction, type Keypair } from '@solana/web3.js';
 import { getWallet, getConnection } from './wallet.js';
 import { CONFIG } from './config.js';
+import { tipLamports, sendViaJito, type Urgency } from './jito.js';
 
 /** Per-call swap options — task wallets pass their own keypair + params.
  *  Omitted fields fall back to the legacy singleton wallet / global CONFIG. */
@@ -8,6 +9,12 @@ export interface SwapOpts {
   keypair?: Keypair;
   slippageBps?: number;
   priorityFeeLamports?: number;
+  /** How much this transaction is worth paying to land. Exits bid higher. */
+  urgency?: Urgency;
+  /** 1-based retry count — each attempt outbids the last. */
+  attempt?: number;
+  /** Upper bound on the Jito tip, normally a small % of the position's value. */
+  maxTipLamports?: number;
 }
 
 const JUPITER_QUOTE = 'https://lite-api.jup.ag/swap/v1/quote';
@@ -74,12 +81,42 @@ async function getQuote(
   throw lastErr!;
 }
 
-/** Get a serialized swap transaction from Jupiter. */
+/**
+ * Get a serialized swap transaction from Jupiter.
+ *
+ * The old call passed a flat lamport number, which Jupiter spreads as a compute
+ * -budget price — on a quiet quote that came out at 224 lamports, nowhere near
+ * enough to win a slot under load. Now the fee is sized per transaction: a Jito
+ * tip when enabled, otherwise Jupiter's own live priority estimate.
+ */
 async function getSwapTransaction(
   quoteResponse: any,
   userPublicKey: string,
-  priorityFeeLamports?: number,
-): Promise<string> {
+  opts: SwapOpts = {},
+): Promise<{ tx: string; tipUsed: number; viaJito: boolean }> {
+  const urgency: Urgency = opts.urgency ?? 'normal';
+  const attempt = opts.attempt ?? 1;
+
+  let prioritization: any;
+  let tipUsed = 0;
+  const viaJito = CONFIG.JITO_ENABLED && !opts.priorityFeeLamports;
+
+  if (viaJito) {
+    tipUsed = await tipLamports(urgency, attempt, opts.maxTipLamports);
+    prioritization = { jitoTipLamports: tipUsed };
+  } else if (opts.priorityFeeLamports) {
+    prioritization = opts.priorityFeeLamports;
+  } else {
+    // No Jito: still let Jupiter price the fee against the live network instead
+    // of a constant that is wrong most of the time.
+    prioritization = {
+      priorityLevelWithMaxLamports: {
+        priorityLevel: urgency === 'critical' ? 'veryHigh' : urgency === 'high' ? 'high' : 'medium',
+        maxLamports: urgency === 'critical' ? 2_000_000 : 500_000,
+      },
+    };
+  }
+
   const res = await fetch(JUPITER_SWAP, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -89,7 +126,7 @@ async function getSwapTransaction(
       userPublicKey,
       dynamicComputeUnitLimit: true,
       dynamicSlippage: false,
-      prioritizationFeeLamports: priorityFeeLamports ?? CONFIG.TRADE_PRIORITY_FEE_LAMPORTS,
+      prioritizationFeeLamports: prioritization,
     }),
   });
 
@@ -97,9 +134,8 @@ async function getSwapTransaction(
     const text = await res.text();
     throw new Error(`Jupiter swap failed (${res.status}): ${text}`);
   }
-
   const data: any = await res.json();
-  return data.swapTransaction;
+  return { tx: data.swapTransaction, tipUsed, viaJito };
 }
 
 /**
@@ -114,7 +150,7 @@ async function getSwapTransaction(
  * blockhash is alive, and re-check the signature once more before giving up, so a
  * transaction that landed at the edge is reported as the success it was.
  */
-async function signAndSend(swapTxBase64: string, keypair?: Keypair): Promise<string> {
+async function signAndSend(swapTxBase64: string, keypair?: Keypair, viaJito = false): Promise<string> {
   const wallet = keypair ?? getWallet();
   const connection = getConnection();
 
@@ -123,6 +159,10 @@ async function signAndSend(swapTxBase64: string, keypair?: Keypair): Promise<str
   const rawTx = tx.serialize();
   const txBlockhash = tx.message.recentBlockhash;
 
+  // Broadcast both ways. The tip is already inside the transaction, so whichever
+  // path lands it, it lands once — and a block-engine outage cannot strand a stop.
+  const b64 = Buffer.from(rawTx).toString('base64');
+  if (viaJito) sendViaJito(b64).catch(() => {});
   const txSig = await connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 5 });
 
   const settled = async (): Promise<'ok' | 'pending' | string> => {
@@ -156,6 +196,7 @@ async function signAndSend(swapTxBase64: string, keypair?: Keypair): Promise<str
 
     // Keep it in front of the leader; validators drop transactions under load.
     connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 0 }).catch(() => {});
+    if (viaJito) sendViaJito(b64).catch(() => {});
     await new Promise(r => setTimeout(r, 2000));
   }
 
@@ -178,9 +219,9 @@ export async function jupiterBuy(mint: string, solAmount: number, opts: SwapOpts
   const priceImpact = parseFloat(quote.priceImpactPct ?? '0');
   console.log(`[Jupiter] Quote: ${quote.outAmount} tokens, impact: ${(priceImpact * 100).toFixed(2)}%`);
 
-  const swapTx = await getSwapTransaction(quote, wallet.publicKey.toBase58(), opts.priorityFeeLamports);
-  console.log(`[Jupiter] Sending buy tx...`);
-  const txSig = await signAndSend(swapTx, opts.keypair);
+  const built = await getSwapTransaction(quote, wallet.publicKey.toBase58(), { ...opts, urgency: opts.urgency ?? 'normal' });
+  console.log(`[Jupiter] Sending buy tx${built.viaJito ? ` via Jito (tip ${built.tipUsed} lamports)` : ''}...`);
+  const txSig = await signAndSend(built.tx, opts.keypair, built.viaJito);
   console.log(`[Jupiter] ✅ Buy confirmed: ${txSig}`);
 
   return {
@@ -274,9 +315,9 @@ export async function jupiterSell(mint: string, tokenAmount: number, opts: SwapO
   const solOut = parseInt(quote.outAmount) / 1e9;
   console.log(`[Jupiter] Quote: ${solOut.toFixed(6)} SOL out, impact: ${(priceImpact * 100).toFixed(2)}%`);
 
-  const swapTx = await getSwapTransaction(quote, wallet.publicKey.toBase58(), opts.priorityFeeLamports);
-  console.log(`[Jupiter] Sending sell tx...`);
-  const txSig = await signAndSend(swapTx, opts.keypair);
+  const built = await getSwapTransaction(quote, wallet.publicKey.toBase58(), { ...opts, urgency: opts.urgency ?? 'high' });
+  console.log(`[Jupiter] Sending sell tx${built.viaJito ? ` via Jito (tip ${built.tipUsed} lamports)` : ''}...`);
+  const txSig = await signAndSend(built.tx, opts.keypair, built.viaJito);
   console.log(`[Jupiter] ✅ Sell confirmed: ${txSig}`);
 
   return {

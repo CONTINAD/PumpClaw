@@ -125,7 +125,12 @@ export const CONFIG = {
   // ~2.1k lamports, p90 ~32k. 100k was ~47x the median — pure waste on small clips.
   // High slippage tolerance is also what makes a trade worth sandwiching.
   TRADE_SLIPPAGE_BPS: 1500,            // 15% (was 30%) — realized slippage median is ~0bps
-  TRADE_PRIORITY_FEE_LAMPORTS: 30_000, // ~p90 of landed fees, still lands promptly
+  TRADE_PRIORITY_FEE_LAMPORTS: 30_000, // fallback only — real fees are now sized per-transaction
+
+  // Route trades through Jito's block engine with a tip. A flat priority fee
+  // competes for a slot; a tip buys inclusion. Exits bid higher than entries
+  // because failing to get out costs far more than the tip.
+  JITO_ENABLED: process.env.JITO_ENABLED !== 'false',
   TRADE_MIN_SOL_BALANCE: 0.05,         // don't trade if wallet SOL below this
   // Exit strategy: 'trailing' = always-on -45% trailing stop from entry, no TPs —
   // backtested 1.76X avg/call on 306 recorded calls vs 1.26X for the TP ladder

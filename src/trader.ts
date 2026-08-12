@@ -224,7 +224,7 @@ export class Trader {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         console.log(`[Trader] Buying $${symbol} with ${entrySol} SOL (${(entryPct * 100).toFixed(0)}% of ${balance!.toFixed(4)} SOL)${attempt > 1 ? ` [RETRY #${attempt}]` : ''}...`);
-        result = await jupiterBuy(mint, entrySol, this.swapOpts());
+        result = await jupiterBuy(mint, entrySol, { ...this.swapOpts(), urgency: 'normal', maxTipLamports: Math.floor(entrySol * 1e9 * 0.01) });
         break;
       } catch (err: any) {
         console.error(`[Trader] Buy failed for $${symbol} (attempt ${attempt}): ${err.message}`);
@@ -457,9 +457,14 @@ export class Trader {
 
           const finalSellAmount = attempt === 1 ? sellAmount : tokensNow;
           const opts = this.swapOpts();
+          const fails = this.sellFailCounts.get(mint) ?? 0;
+          // Bid to land. A stop that misses its slot is the expensive failure, so
+          // it outbids everything; each retry outbids the attempt before it.
+          opts.urgency = isStopExit ? 'critical' : 'high';
+          opts.attempt = attempt + fails;
+          opts.maxTipLamports = Math.floor(pos.entrySol * actualPct * 1e9 * 0.01);
           if (isStopExit) {
             // failure count for this mint escalates slippage: 50% → 90%
-            const fails = this.sellFailCounts.get(mint) ?? 0;
             if (attempt > 1 || fails > 0) opts.slippageBps = Math.max(opts.slippageBps ?? 3000, fails >= 2 ? 9000 : 5000);
           }
           console.log(`[Trader] Selling ${finalSellAmount} tokens of $${pos.symbol} (${label})${attempt > 1 ? ` [RETRY #${attempt}]` : ''} slip:${(opts.slippageBps ?? 3000) / 100}%...`);
@@ -725,8 +730,13 @@ export class Trader {
       const amount = Math.floor(onChain * frac);
       if (amount <= 0) continue;
       try {
-        console.log(`[Panic:${this.taskId}] Selling ${(frac * 100).toFixed(0)}% of $${pos.symbol} — slip ${slippageBps / 100}%, prio ${priorityFeeLamports}`);
-        const result = await jupiterSell(mint, amount, { keypair: this.kp(), slippageBps, priorityFeeLamports });
+        // No explicit priority fee here: passing one opts out of Jito, and the
+        // panic seller is precisely the transaction that most needs to land.
+        console.log(`[Panic:${this.taskId}] Selling ${(frac * 100).toFixed(0)}% of $${pos.symbol} — slip ${slippageBps / 100}%, critical bid (retry ${fails + 1})`);
+        const result = await jupiterSell(mint, amount, {
+          keypair: this.kp(), slippageBps, urgency: 'critical', attempt: fails + 1,
+          maxTipLamports: Math.floor(pos.entrySol * pos.remainingPct * frac * 1e9 * 0.01),
+        });
         const solReceived = result.outputAmount / 1e9;
         const soldPct = pos.remainingPct * frac;
         const exitMult = pos.entrySol > 0 && soldPct > 0 ? solReceived / (pos.entrySol * soldPct) : 0;
