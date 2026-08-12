@@ -343,13 +343,23 @@ async function fastScanCycle() {
       log(`✅ Bundle check passed: ${bundle.details}`);
     }
 
-    // Smart wallet check: informational, not blocking. Most fresh pump.fun coins
-    // won't yet have any of our 186 tracked wallets in them — skipping them all
-    // would mean we miss almost everything. Just log it as a positive signal.
-    const smartCheck = await checkSmartWallets(post.mint);
-    if (smartCheck.holders > 0) {
-      log(`💎 SMART HOLDERS — ${smartCheck.holders} tracked wallet(s) holding $${post.name}`);
-    }
+    // Smart wallet check: informational, never blocking.
+    //
+    // It queries all 186 tracked wallets and has returned zero hits across 100
+    // calls, while costing 0.6-0.9s of the decision. Awaiting it delayed every
+    // call for a signal that has never once fired. It now runs in the background
+    // and back-fills the record if it does find something, so the call is not
+    // held up by a check that only ever adds colour.
+    let smartHolders = 0;
+    checkSmartWallets(post.mint).then(r => {
+      smartHolders = r.holders;
+      if (r.holders > 0) {
+        log(`💎 SMART HOLDERS — ${r.holders} tracked wallet(s) holding $${post.name}`);
+        const rec = tracker.getByMint(post.mint);
+        if (rec) rec.entrySmartHolders = r.holders;
+      }
+    }).catch(() => {});
+    const smartCheck = { holders: smartHolders };
 
     // Fee floor — a migrated coin that hasn't generated real fees hasn't been
     // genuinely traded. Scales with market cap: bigger claimed cap demands more
@@ -1160,6 +1170,7 @@ async function reconcileLoop() {
   while (true) {
     await new Promise(r => setTimeout(r, 120_000));
     try {
+      taskManager.prunePending();
       const results = await taskManager.reconcileAll();
       for (const r of results) {
         if (r.fixed.length) log(`🔧 [${r.task}] corrected from chain: ${r.fixed.join(', ')}`);

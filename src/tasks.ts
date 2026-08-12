@@ -87,6 +87,27 @@ class TaskManager {
     return this.pending.filter(p => p.expiresAt > now);
   }
 
+  /**
+   * Drop dip orders that have expired.
+   *
+   * They were only ever removed inside checkPendingEntries, which runs per-mint and
+   * only while that coin is still being swept. A coin that fell out of tracking left
+   * its dead orders in the array permanently — the file had grown to 220KB, and every
+   * new call rewrote the whole thing. Filtering on read hid the growth rather than
+   * stopping it.
+   */
+  prunePending(): number {
+    const now = Date.now();
+    const before = this.pending.length;
+    this.pending = this.pending.filter(p => p.expiresAt > now);
+    const dropped = before - this.pending.length;
+    if (dropped > 0) {
+      this.savePending();
+      console.log(`[Tasks] Pruned ${dropped} expired dip order(s), ${this.pending.length} live`);
+    }
+    return dropped;
+  }
+
   /** Fill or expire dip orders against a fresh price. Returns tasks that filled. */
   async checkPendingEntries(mint: string, price: number, mc: number): Promise<number> {
     const now = Date.now();

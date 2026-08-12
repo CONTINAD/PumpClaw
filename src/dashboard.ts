@@ -1623,7 +1623,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -2769,6 +2769,10 @@ export function startDashboard(port?: number): void {
           // correctly stopped at 0.60x, which looks like a fault and is not one.
           stopLossPrice: p.stopLossPrice,
           beStopArmed: p.beStopArmed,
+          // Was never exposed here, only on /api/task. Reading it off this endpoint
+          // returned undefined, which reads identically to "the stop never fired"
+          // and sent me down the wrong path twice while diagnosing a stuck position.
+          stopTriggered: !!p.stopTriggered,
           effectiveStopPrice: Math.max(p.stopLossPrice, p.trailingActive ? p.trailingStopPrice : 0),
           trailingActive: p.trailingActive,
         }));
@@ -3208,6 +3212,88 @@ export function startDashboard(port?: number): void {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Strategy page error: ' + err.message);
+      }
+    } else if (pathname === '/exits') {
+      // Why real money actually left a position.
+      //
+      // Realised PnL says a strategy lost; this says which rule spent it. Seven of
+      // eleven exits on 08-12 were the -50% trailing stop, five of them on coins
+      // that had been 1.3x-2.3x up — the calls were fine and the exit rule gave the
+      // gains back. That is invisible in a PnL number and obvious here.
+      try {
+        const rows: { sym: string; reason: string; group: string; mult: number; sol: number; ts: number; task: string }[] = [];
+        for (const t of taskManager.all().filter(x => !x.paper)) {
+          for (const p of taskManager.traderFor(t).getAllPositions()) {
+            for (const x of p.exits) {
+              const l = x.label || '';
+              const group = /TP\d/.test(l) ? 'Take profit'
+                : /Trailing/.test(l) ? 'Trailing stop'
+                : /Break-Even/.test(l) ? 'Break-even stop'
+                : /Stop Loss/.test(l) ? 'Hard stop'
+                : /Time exit/.test(l) ? 'Clock'
+                : /Circuit/.test(l) ? 'Circuit breaker'
+                : /Panic|Emergency|Stop exit/.test(l) ? 'Forced exit'
+                : 'Other';
+              rows.push({ sym: p.symbol, reason: l, group, mult: x.multiplierAtExit, sol: x.solReceived, ts: x.timestamp, task: t.name });
+            }
+          }
+        }
+        rows.sort((a, b) => b.ts - a.ts);
+        const groups = new Map<string, typeof rows>();
+        for (const r of rows) {
+          if (!groups.has(r.group)) groups.set(r.group, []);
+          groups.get(r.group)!.push(r);
+        }
+        const summary = [...groups.entries()].map(([g, rs]) => {
+          const avg = rs.reduce((a, r) => a + r.mult, 0) / rs.length;
+          const above = rs.filter(r => r.mult >= 1).length;
+          // How much was on the table at the position's best, versus what the exit got.
+          return { g, n: rs.length, avg, above, sol: rs.reduce((a, r) => a + r.sol, 0) };
+        }).sort((a, b) => b.n - a.n);
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>🚪 How real positions actually ended</h3>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6">
+            Realised PnL tells you a strategy lost money. This tells you <b>which rule spent it</b>.
+            An exit rule that repeatedly fires below 1× on coins that were well up is giving back
+            gains the calls earned — that is a different problem from calling badly, and it is
+            invisible in a PnL figure.
+          </p>
+          ${rows.length === 0 ? '<p style="font-size:13px;color:var(--text2)">No real exits recorded yet.</p>' : `
+          <div style="overflow-x:auto"><table style="width:100%">
+            <tr><th style="text-align:left">Exit rule</th><th>Times</th><th>Avg multiple</th><th>Ended at/above entry</th><th>SOL returned</th></tr>
+            ${summary.map(x => `<tr>
+              <td style="font-weight:700;white-space:nowrap">${x.g}</td>
+              <td class="mono">${x.n}</td>
+              <td class="mono" style="color:${x.avg >= 1 ? '#10b981' : '#ef4444'};font-weight:700">${x.avg.toFixed(2)}×</td>
+              <td class="mono" style="color:${x.above === x.n ? '#10b981' : x.above === 0 ? '#ef4444' : 'var(--text2)'}">${x.above} / ${x.n}</td>
+              <td class="mono">${x.sol.toFixed(3)} ◎</td>
+            </tr>`).join('')}
+          </table></div>`}
+        </div>
+
+        ${rows.length === 0 ? '' : `<div class="card" style="max-width:none">
+          <h3>Every real exit (${rows.length})</h3>
+          <div style="overflow-x:auto"><table style="width:100%">
+            <tr><th style="text-align:left">Coin</th><th style="text-align:left">Rule</th><th>Multiple</th><th>SOL</th><th>When</th></tr>
+            ${rows.slice(0, 80).map(r => {
+              const mins = Math.round((Date.now() - r.ts) / 60_000);
+              return `<tr>
+                <td style="font-weight:700">$${r.sym}</td>
+                <td style="font-size:12px;color:var(--text2)">${r.reason.slice(0, 40)}</td>
+                <td class="mono" style="color:${r.mult >= 1 ? '#10b981' : '#ef4444'};font-weight:700">${r.mult.toFixed(2)}×</td>
+                <td class="mono">${r.sol.toFixed(4)}</td>
+                <td class="mono" style="color:var(--text3);font-size:11px">${mins < 60 ? mins + 'm' : mins < 1440 ? Math.floor(mins / 60) + 'h' : Math.floor(mins / 1440) + 'd'} ago</td>
+              </tr>`;
+            }).join('')}
+          </table></div>
+        </div>`}`, '/exits');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html.replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · Exit analysis</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(`<pre>Exits error: ${err.message}</pre>`);
       }
     } else if (pathname === '/live') {
       (async () => {
