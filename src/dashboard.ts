@@ -3232,8 +3232,16 @@ export function startDashboard(port?: number): void {
           }
         }
         ev.sort((a, b) => b.ts - a.ts);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ events: ev.slice(0, 60) }));
+        // Real money never gets buried by the paper fleet: real events keep their
+        // own retention, and ?real=1 returns only them.
+        const realOnly = /[?&]real=1/.test(url);
+        const real = ev.filter(e => !e.paper);
+        const paper = ev.filter(e => e.paper);
+        res.end(JSON.stringify({
+          // Live money is always listed first, never mixed into the paper stream.
+          events: realOnly ? real.slice(0, 200) : [...real.slice(0, 80), ...paper.slice(0, 40)],
+          realCount: real.length,
+        }));
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));

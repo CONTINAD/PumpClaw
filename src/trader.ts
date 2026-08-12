@@ -67,6 +67,12 @@ export interface RealPosition {
   // panic seller keeps hammering regardless of what price feeds say afterwards.
   stopTriggered?: boolean;
 
+  // Entry audit — proves the recorded basis came from the chain, not a quote.
+  quotedPrice?: number;      // what the feed said when we decided to buy
+  quotedTokens?: number;     // what Jupiter's quote promised
+  fillSlipPct?: number;      // (fill / quote - 1) * 100
+  entrySource?: 'chain' | 'quote';
+
   // State
   status: 'open' | 'closed' | 'error';
   closedTime?: number;
@@ -295,6 +301,10 @@ export class Trader {
       entrySol,
       entryPrice: fillPrice,
       entryMC: fillMC,
+      quotedPrice: currentPrice,
+      quotedTokens: result.outputAmount,
+      fillSlipPct: currentPrice > 0 ? +((fillPrice / currentPrice - 1) * 100).toFixed(2) : 0,
+      entrySource: realTokens !== result.outputAmount ? 'chain' : 'quote',
       entryTime: Date.now(),
       entryTx: result.txSignature,
       tokensReceived: realTokens,
@@ -325,7 +335,13 @@ export class Trader {
     this.positions.set(mint, position);
     this.save();
 
-    console.log(`[Trader] ✅ Bought ${result.outputAmount} tokens of $${symbol} for ${entrySol} SOL (tx: ${result.txSignature.slice(0, 16)}...)`);
+    console.log(`[Trader] ✅ Bought ${realTokens} tokens of $${symbol} for ${entrySol} SOL — entry ${fillMC.toFixed(0)} MC ` +
+      `(${position.entrySource}, ${position.fillSlipPct! >= 0 ? '+' : ''}${position.fillSlipPct}% vs quote) tx ${result.txSignature.slice(0, 16)}…`);
+    if (Math.abs(position.fillSlipPct ?? 0) > 10) {
+      sendOpsAlert(`⚠️ **$${symbol}** filled **${position.fillSlipPct}%** away from the quoted price ` +
+        `(expected ${currentMC.toFixed(0)} MC, got ${fillMC.toFixed(0)} MC). All targets and the stop are keyed to the real fill.`,
+        CFG.TRADES_WEBHOOK).catch(() => {});
+    }
     return position;
   }
 

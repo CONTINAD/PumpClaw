@@ -160,6 +160,11 @@ tbody tr:last-child td{border-bottom:none}
 <div class="wrap">
   <div class="kpis" id="kpis"></div>
 
+  <div class="panel" id="livebanner" style="border-color:rgba(61,255,158,.4);background:linear-gradient(180deg,rgba(13,31,22,.7),var(--panel));display:none">
+    <h2 style="color:var(--phos)">◆◆ LIVE MONEY <a href="/live">FULL LOG →</a></h2>
+    <div class="body flush" id="livetop"></div>
+  </div>
+
   <div class="cols">
     <div>
       <div class="panel">
