@@ -413,7 +413,18 @@ async function fastScanCycle() {
         `Price ${fmtUsd(liveMarket.priceUsd)} — SOL TRENDING ✅`,
     );
 
-    const adjustedMarket = { ...liveMarket, priceUsd: liveMarket.priceUsd * 0.96, marketCap: liveMarket.marketCap * 0.96 };
+    // Record what was actually observed.
+    //
+    // This used to multiply price and market cap by 0.96 as a slippage model, but
+    // slippage on a BUY means paying more, not less. Booking a cheaper entry than
+    // reality inflated every reported multiple by ~4.2% and understated every
+    // market cap shown — a call at $137K displayed as $131K, and the error
+    // compounds into peak multiples, milestone alerts and all 676 paper strategies.
+    //
+    // Costs are already modelled where they belong: the paper fill takes a 2%
+    // haircut on the way OUT, and real fills pay their actual fees. Discounting the
+    // entry on top was double-counting in the flattering direction.
+    const adjustedMarket = liveMarket;
 
     const paperTrade = paperTrader.openTrade(
       coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
