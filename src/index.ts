@@ -103,7 +103,31 @@ function log(msg: string) {
 
 // ── Fast scan loop — Telegram scrape + alert + buy (never blocked by milestones) ──
 
+/**
+ * The bundle check's wallet caches live in memory, so a deploy empties them. The
+ * first scan after a restart therefore judges every holder on a cold RPC burst,
+ * and thin results are not evidence of anything — they are evidence we just
+ * started. Under the old fail-open flag that read as "safe": all four bad calls
+ * on 08-12, including both $SAFETOAD clusters, landed within three minutes of a
+ * deploy, one of them nine seconds after a push.
+ *
+ * Failing closed fixes the wrong answer. Not answering until the caches are warm
+ * avoids being asked the question under the worst possible conditions.
+ */
+const BOOT_TS = Date.now();
+const SCAN_WARMUP_MS = 90_000;
+let warmupLogged = false;
+
 async function fastScanCycle() {
+  const sinceBoot = Date.now() - BOOT_TS;
+  if (sinceBoot < SCAN_WARMUP_MS) {
+    if (!warmupLogged) {
+      warmupLogged = true;
+      log(`⏳ Warm-up — not calling for ${Math.round((SCAN_WARMUP_MS - sinceBoot) / 1000)}s while wallet caches fill`);
+    }
+    return;
+  }
+
   const posts = await scrapeTrendingPosts();
 
   if (posts.length === 0) {
