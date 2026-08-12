@@ -622,10 +622,18 @@ export class Trader {
     // Confirm the drop against Jupiter's executable quote before dumping the bag.
     if (!this.paper && pos.remainingPct >= 0.001 &&
         (currentPrice <= pos.stopLossPrice || (pos.trailingActive && currentPrice <= pos.trailingStopPrice))) {
+      // The stop level this price actually breached.
+      const breached = Math.max(
+        currentPrice <= pos.stopLossPrice ? pos.stopLossPrice : 0,
+        pos.trailingActive && currentPrice <= pos.trailingStopPrice ? pos.trailingStopPrice : 0);
       const confirmed = await this.confirmPrice(mint, currentPrice);
-      if (confirmed !== null && confirmed > currentPrice * 1.08) {
-        console.log(`🛡 ignored stop on $${pos.symbol} — feed said ${currentPrice.toExponential(2)}, ` +
-            `Jupiter says ${confirmed.toExponential(2)} (+${((confirmed / currentPrice - 1) * 100).toFixed(0)}%). Bad print.`);
+      // Only a price that is BACK ABOVE THE STOP means the feed was wrong. A quote
+      // that is merely higher than the feed still leaves us stopped out — an
+      // illiquid pool routinely quotes ~10% off its aggregate, and treating that
+      // as a bad print blocks the stop on every single check while the coin bleeds.
+      if (confirmed !== null && confirmed > breached) {
+        console.log(`🛡 ignored stop on $${pos.symbol} — feed ${currentPrice.toExponential(2)}, ` +
+            `Jupiter ${confirmed.toExponential(2)}, still above stop ${breached.toExponential(2)}. Bad print.`);
         return newExits;
       }
       if (confirmed !== null) currentPrice = confirmed;   // act on the real, sellable price
