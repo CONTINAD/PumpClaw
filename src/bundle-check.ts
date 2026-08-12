@@ -10,6 +10,26 @@ export interface BundleResult {
   details: string;
   wideClusterPct?: number;   // cluster % using wider window (7 days)
   wideMaxCluster?: number;
+  /**
+   * Everything the check learned, kept rather than reduced to a yes/no.
+   *
+   * These numbers were computed on every call and discarded, which made it
+   * impossible to ask the only question that matters over time: which of them
+   * actually predicts a loss. A verdict tells you what was blocked; these tell
+   * you whether the threshold was in the right place.
+   */
+  metrics?: {
+    freshWallets: number;      // holders young enough to have a readable funding time
+    veterans: number;          // high-activity holders, excluded from funding-time maths
+    graphChecked: number;      // holders the wallet graph could resolve
+    graphHubPct: number;       // share funded by one address
+    graphPeerPct: number;      // share that funded each other
+    devHoldPct?: number;       // largest non-pool wallet's share of supply
+    cohortSpanDays?: number;   // spread of veteran activity spans
+    sameFunderPct?: number;
+    lowBalPct?: number;
+    exchangeFundedPct?: number;
+  };
 }
 
 // ── Wallet funding time cache (survives across token checks) ──
@@ -280,6 +300,10 @@ function noteRpcFailure(): void {
 }
 
 async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
+  // Kept across the whole check so the final result can report what was measured,
+  // not just what was decided.
+  let devHoldPct: number | undefined;
+  let cohortSpan: number | undefined;
   try {
     // 1. Top token accounts
     const largest = await rpc('getTokenLargestAccounts', [mint]);
@@ -310,6 +334,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
         if (supply > 0 && amounts.length >= 2) {
           const topNonPool = amounts[1];              // [0] is the pool
           const pctHeld = (topNonPool / supply) * 100;
+          devHoldPct = pctHeld;
           if (pctHeld >= CONFIG.MAX_SINGLE_HOLDER_PCT) {
             return {
               safe: false, clusterPct: 0, maxCluster: 0, totalChecked: tokenAccts.length,
@@ -405,6 +430,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
     if (CONFIG.COHORT_SPAN_DAYS > 0 && fundingTimes.length === 0 && veteranSpans.length >= CONFIG.COHORT_MIN_VETERANS) {
       const lo = Math.min(...veteranSpans), hi = Math.max(...veteranSpans);
       const spread = hi - lo;
+      cohortSpan = spread;
       if (spread <= CONFIG.COHORT_SPAN_DAYS) {
         return {
           safe: false, clusterPct: 0, maxCluster: 0, totalChecked: ownerWallets.length,
@@ -509,6 +535,19 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       wideClusterPct,
       wideMaxCluster,
       totalChecked: fundingTimes.length,
+      metrics: {
+        freshWallets: fundingTimes.length,
+        veterans: veteranCount,
+        graphChecked: graph.checked,
+        graphHubPct: graph.hubPct,
+        graphPeerPct: graph.peerLinkPct,
+        devHoldPct,
+        cohortSpanDays: cohortSpan,
+        sameFunderPct,
+        lowBalPct,
+        exchangeFundedPct: walletData.totalWithFunder > 0
+          ? Math.round(walletData.exchangeFundedCount / walletData.totalWithFunder * 100) : undefined,
+      },
       details: reasons.join(' | ') + (narrowFail ? ' [NARROW FAIL]' : '') + (hourFail ? ' [TIME-LINKED 1H FAIL]' : '') + (dayFail ? ' [TIME-LINKED 24H FAIL]' : '') + (wideFail ? ' [WIDE FAIL]' : '') + (sameFunderFail ? ` [SAME FUNDER: ${topFunder.slice(0,8)}...]` : '') + (balanceFail ? ' [BALANCE CLUSTER]' : '') + (lowBalFail ? ' [LOW BAL HOLDERS]' : ''),
     };
   } catch (err: any) {

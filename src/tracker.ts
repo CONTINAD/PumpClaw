@@ -52,6 +52,29 @@ export interface CallRecord {
   entrySmartHolders?: number;    // # smart wallets holding at call time
   entryBundleSafe?: boolean;     // bundle check verdict
 
+  /** Everything the holder analysis measured at call time. Stored so that after a
+   *  few days it is possible to ask which of these actually predicts a loss,
+   *  instead of guessing at thresholds. */
+  entryHolders?: {
+    freshWallets?: number;
+    veterans?: number;
+    graphChecked?: number;
+    graphHubPct?: number;
+    graphPeerPct?: number;
+    devHoldPct?: number;
+    cohortSpanDays?: number;
+    sameFunderPct?: number;
+    lowBalPct?: number;
+    exchangeFundedPct?: number;
+  };
+
+  /** Outcome shape, filled in as the coin plays out. A peak alone cannot tell you
+   *  whether it was reachable — these say how fast it moved and how much pain came
+   *  first, which is what decides whether any entry could have captured it. */
+  minMultiplier?: number;        // worst price seen, as a multiple of entry
+  minAtMin?: number;             // minutes from call to that low
+  peakAtMin?: number;            // minutes from call to the peak
+
   // Performance snapshots (5m, 15m, 30m, 1h — edits original message)
   snapshots: PerformanceSnapshot[];
   nextSnapshotIndex: number;
@@ -83,7 +106,7 @@ export class PerformanceTracker {
     coin: PumpFunCoin,
     market: MarketData,
     alertMessageId: string,
-    extra?: { smartHolders?: number; bundleSafe?: boolean },
+    extra?: { smartHolders?: number; bundleSafe?: boolean; holders?: CallRecord['entryHolders'] },
   ): CallRecord {
     const ageMin = market.pairCreatedAt > 0
       ? Math.floor((Date.now() - market.pairCreatedAt) / 60_000)
@@ -113,6 +136,9 @@ export class PerformanceTracker {
       entryAgeMin: ageMin,
       entrySmartHolders: extra?.smartHolders,
       entryBundleSafe: extra?.bundleSafe,
+      entryHolders: extra?.holders,
+      minMultiplier: 1,
+      minAtMin: 0,
       // Tracking state
       snapshots: [],
       nextSnapshotIndex: 0,
@@ -157,7 +183,15 @@ export class PerformanceTracker {
     }
     // Update peak
     const mult = snapshot.price / rec.entryPrice;
+    // Record the worst point too. A 5x peak that first drew down 60% is a very
+    // different trade from one that never dipped, and only the pair of them says
+    // whether an entry could have survived to see the peak.
+    if (mult < (rec.minMultiplier ?? 1)) {
+      rec.minMultiplier = mult;
+      rec.minAtMin = Math.round((Date.now() - rec.entryTime) / 60_000);
+    }
     if (mult > rec.peakMultiplier) {
+      rec.peakAtMin = Math.round((Date.now() - rec.entryTime) / 60_000);
       rec.peakMultiplier = mult;
       rec.peakPrice = snapshot.price;
       rec.peakMC = snapshot.marketCap;

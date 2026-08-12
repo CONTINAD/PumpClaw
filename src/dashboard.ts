@@ -1623,7 +1623,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/calls">Calls</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -3288,6 +3288,116 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Live page error: ' + err.message);
       });
+    } else if (pathname === '/features') {
+      // Which measurable thing about a call predicts a bad outcome?
+      //
+      // Generic on purpose: every numeric feature is bucketed the same way and
+      // scored against the same outcome, so nothing is privileged by how it was
+      // written up. A feature earns attention by having a bucket that loses
+      // consistently across enough calls, not because it seemed important.
+      try {
+        const dm = url.match(/[?&]days=(\d+|all)/);
+        const days = dm ? dm[1] : 'all';
+        const cut = days === 'all' ? 0 : Date.now() - parseInt(days) * 86400_000;
+        const all: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+        const calls = all.filter(c => c.entryTime >= cut && (c.peakMultiplier ?? 0) > 0);
+        const n = calls.length;
+
+        const GOOD = 2;   // a call is "good" if it reached this multiple
+        type Feat = { label: string; get: (c: CallRecord) => number | undefined; fmt: (v: number) => string };
+        const feats: Feat[] = [
+          { label: 'Entry market cap',      get: c => c.entryMC,                fmt: v => fmtUsd(v) },
+          { label: 'Entry liquidity',       get: c => c.entryLiquidity,         fmt: v => fmtUsd(v) },
+          { label: '5m volume',             get: c => c.entryVolume5m,          fmt: v => fmtUsd(v) },
+          { label: '5m vol as % of 1h',     get: c => c.entryVolume1h ? (c.entryVolume5m / c.entryVolume1h) * 100 : undefined, fmt: v => v.toFixed(0) + '%' },
+          { label: 'Buy/sell ratio 5m',     get: c => c.entrySells5m ? (c.entryBuys5m ?? 0) / c.entrySells5m : undefined, fmt: v => v.toFixed(2) },
+          { label: 'Token age at call',     get: c => c.entryAgeMin,            fmt: v => v < 60 ? `${Math.round(v)}m` : `${(v / 60).toFixed(1)}h` },
+          { label: '5m price change',       get: c => c.entryPriceChange5m,     fmt: v => v.toFixed(0) + '%' },
+          { label: '1h price change',       get: c => c.entryPriceChange1h,     fmt: v => v.toFixed(0) + '%' },
+          { label: 'Smart holders',         get: c => c.entrySmartHolders,      fmt: v => String(Math.round(v)) },
+          { label: 'Dev holding %',         get: c => c.entryHolders?.devHoldPct, fmt: v => v.toFixed(1) + '%' },
+          { label: 'Graph hub %',           get: c => c.entryHolders?.graphHubPct, fmt: v => v.toFixed(0) + '%' },
+          { label: 'Fresh wallets',         get: c => c.entryHolders?.freshWallets, fmt: v => String(Math.round(v)) },
+          { label: 'Veteran holders',       get: c => c.entryHolders?.veterans,  fmt: v => String(Math.round(v)) },
+          { label: 'Cohort span (days)',    get: c => c.entryHolders?.cohortSpanDays, fmt: v => v.toFixed(0) + 'd' },
+          { label: 'Low-balance holders %', get: c => c.entryHolders?.lowBalPct, fmt: v => v.toFixed(0) + '%' },
+          { label: 'Same-funder %',         get: c => c.entryHolders?.sameFunderPct, fmt: v => v.toFixed(0) + '%' },
+          { label: 'Drawdown before peak',  get: c => c.minMultiplier !== undefined ? (1 - c.minMultiplier) * 100 : undefined, fmt: v => '-' + v.toFixed(0) + '%' },
+        ];
+
+        const analyse = (f: Feat) => {
+          const pts = calls.map(c => ({ v: f.get(c), peak: c.peakMultiplier ?? 1 }))
+            .filter((x): x is { v: number; peak: number } => typeof x.v === 'number' && Number.isFinite(x.v));
+          if (pts.length < 8) return null;
+          pts.sort((a, b) => a.v - b.v);
+          // Quartiles keep the bucket count honest regardless of the feature's scale.
+          const q = 4, per = Math.floor(pts.length / q);
+          const buckets: { lo: number; hi: number; n: number; good: number; med: number }[] = [];
+          for (let i = 0; i < q; i++) {
+            const seg = i === q - 1 ? pts.slice(i * per) : pts.slice(i * per, (i + 1) * per);
+            if (!seg.length) continue;
+            const peaks = seg.map(x => x.peak).sort((a, b) => a - b);
+            buckets.push({
+              lo: seg[0].v, hi: seg[seg.length - 1].v, n: seg.length,
+              good: seg.filter(x => x.peak >= GOOD).length,
+              med: peaks[Math.floor(peaks.length / 2)],
+            });
+          }
+          if (buckets.length < 2) return null;
+          const rates = buckets.map(b => b.good / b.n);
+          const spread = Math.max(...rates) - Math.min(...rates);
+          return { f, buckets, spread, coverage: pts.length };
+        };
+
+        const results = feats.map(analyse).filter(Boolean) as NonNullable<ReturnType<typeof analyse>>[];
+        results.sort((a, b) => b.spread - a.spread);
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>🔍 What predicts a bad call</h3>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6">
+            Every measurable feature of a call, split into quartiles and scored on how often that
+            quartile reached <b>${GOOD}×</b>. Sorted by spread — the features at the top separate good
+            calls from bad ones most sharply, and are the only ones worth turning into a filter.
+            A feature whose quartiles all score the same tells you nothing, however sensible it sounds.
+          </p>
+          <div style="display:flex;gap:6px;margin:10px 0">
+            ${['3', '7', '30', 'all'].map(dd => `<a href="/features?days=${dd}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${dd === days ? 'var(--border2)' : 'var(--border)'};background:${dd === days ? 'var(--bg3)' : 'transparent'};color:${dd === days ? 'var(--text)' : 'var(--text2)'}">${dd === 'all' ? 'All time' : dd + 'd'}</a>`).join('')}
+          </div>
+          <div style="font-size:12px;color:var(--text3)">${n} calls in range · ${results.length} features with enough coverage to score</div>
+        </div>
+
+        ${results.map(r => {
+          const rates = r.buckets.map(b => b.good / b.n);
+          const worst = Math.min(...rates), best = Math.max(...rates);
+          const strong = r.spread >= 0.25 && r.coverage >= 20;
+          return `<div class="card" style="max-width:none;${strong ? 'border-left:3px solid #f59e0b' : ''}">
+            <h3>${r.f.label} <span style="font-size:11px;color:${strong ? '#f59e0b' : 'var(--text3)'};font-weight:400">
+              ${(r.spread * 100).toFixed(0)}pp spread · ${r.coverage} calls${strong ? ' · worth acting on' : ''}</span></h3>
+            <table style="width:100%">
+              <tr><th style="text-align:left">Range</th><th>Calls</th><th>Hit ${GOOD}×</th><th>Median peak</th><th></th></tr>
+              ${r.buckets.map(b => {
+                const rate = b.good / b.n;
+                const col = rate === best ? '#10b981' : rate === worst ? '#ef4444' : 'var(--text2)';
+                return `<tr>
+                  <td class="mono" style="font-size:12px;white-space:nowrap">${r.f.fmt(b.lo)} – ${r.f.fmt(b.hi)}</td>
+                  <td class="mono">${b.n}</td>
+                  <td class="mono" style="color:${col};font-weight:700">${Math.round(rate * 100)}%</td>
+                  <td class="mono" style="color:${b.med >= 2 ? '#10b981' : 'var(--text2)'}">${b.med.toFixed(2)}×</td>
+                  <td><span style="display:inline-block;height:8px;width:${Math.round(rate * 100)}%;background:${col};border-radius:3px;vertical-align:middle"></span></td>
+                </tr>`;
+              }).join('')}
+            </table>
+          </div>`;
+        }).join('')}
+
+        ${results.length === 0 ? '<div class="card" style="max-width:none"><p style="font-size:13px;color:var(--text2)">Not enough calls with these features recorded yet. Holder metrics only started being stored recently, so this fills in as new calls come through.</p></div>' : ''}`, '/features');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html.replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · Feature analysis</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(`<pre>Features error: ${err.message}</pre>`);
+      }
     } else if (pathname === '/calls') {
       // Call quality, judged on its own terms.
       //

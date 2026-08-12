@@ -344,6 +344,7 @@ async function fastScanCycle() {
     tracker.add(coin, adjustedMarket, 'pending', {
       smartHolders: smartCheck.holders,
       bundleSafe: bundle.safe,
+      holders: bundle.metrics,
     });
     alertCount++;
 
