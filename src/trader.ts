@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { Keypair } from '@solana/web3.js';
 import { CONFIG } from './config.js';
-import { getSolBalance, getTokenBalance, closeTokenAccount, getConnection } from './wallet.js';
+import { getSolBalance, getTokenBalance, closeTokenAccount, getConnection, mintDecimals } from './wallet.js';
 import { getSolPrice } from './dexscreener.js';
 import { jupiterBuy, jupiterSell, jupiterGetPrice, type SwapResult, type SwapOpts } from './jupiter.js';
 import { STRATEGY_PRESETS, type Strategy } from './strategy.js';
@@ -80,23 +80,6 @@ export interface RealPosition {
   error?: string;
 }
 
-const decimalsCache = new Map<string, number>();
-/** SPL mint decimals — pump.fun is 6, but never assume. */
-async function mintDecimals(mint: string): Promise<number> {
-  const hit = decimalsCache.get(mint);
-  if (hit !== undefined) return hit;
-  try {
-    const { PublicKey } = await import('@solana/web3.js');
-    const info: any = await getConnection().getParsedAccountInfo(new PublicKey(mint));
-    const d = info?.value?.data?.parsed?.info?.decimals;
-    const v = typeof d === 'number' ? d : 6;
-    decimalsCache.set(mint, v);
-    return v;
-  } catch {
-    decimalsCache.set(mint, 6);
-    return 6;
-  }
-}
 
 // ── Trader class ─────────────────────────────────────────────
 

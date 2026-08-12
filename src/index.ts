@@ -366,7 +366,7 @@ async function maintenanceCycle() {
     if (needsCheck) {
       const solPrice = await getSolPrice();
       const jup = await jupiterGetPrice(rec.mint, solPrice);
-      if (jup && jup.priceUsd > 0) {
+      if (jup && jup.priceUsd > 0 && plausible(jup.priceUsd, current.priceUsd)) {
         const jupMult = jup.priceUsd / rec.entryPrice;
         const off = Math.abs(jupMult / dexMult - 1);
         if (off > 0.2) {
@@ -462,7 +462,7 @@ async function maintenanceCycle() {
 
         if (isRecent || nearMilestone) {
           const jup = await jupiterGetPrice(rec.mint, solPrice);
-          if (jup && jup.priceUsd > 0) {
+          if (jup && jup.priceUsd > 0 && plausible(jup.priceUsd, market.priceUsd)) {
             const jupMult = jup.priceUsd / rec.entryPrice;
             // Correct in BOTH directions — an inflated price fakes milestones.
             if (Math.abs(jupMult / dexMult - 1) > 0.2) {
@@ -893,6 +893,21 @@ async function fastMilestoneLoop() {
 // ── Real-position loop (1.5s) — REAL money gets its own fast lane.
 //    The paper fleet shares a 5s batched sweep; live positions are checked far more
 //    often and never queue behind 400 paper tasks.
+
+/**
+ * Is a second-opinion price close enough to the primary to be worth acting on?
+ *
+ * Two independent venues pricing the same token disagree by percent, not by orders
+ * of magnitude. Anything outside 4x either way is a broken reading — a bad route, a
+ * unit mistake, a dead pool — and must be discarded rather than allowed to overwrite
+ * a good price. Without this, one malformed quote reported a live coin at -100% with
+ * a market cap of five cents, and that number reached Discord.
+ */
+function plausible(candidate: number, reference: number): boolean {
+  if (!(candidate > 0) || !(reference > 0)) return false;
+  const r = candidate / reference;
+  return r > 0.25 && r < 4;
+}
 
 async function realPositionLoop() {
   while (true) {

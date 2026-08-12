@@ -1,7 +1,8 @@
 import { VersionedTransaction, type Keypair } from '@solana/web3.js';
-import { getWallet, getConnection } from './wallet.js';
+import { getWallet, getConnection, mintDecimals } from './wallet.js';
 import { CONFIG } from './config.js';
 import { tipLamports, sendViaJito, type Urgency } from './jito.js';
+
 
 /** Per-call swap options — task wallets pass their own keypair + params.
  *  Omitted fields fall back to the legacy singleton wallet / global CONFIG. */
@@ -285,11 +286,20 @@ export async function jupiterGetPrice(mint: string, solPriceUsd?: number): Promi
     const tokensOut = parseInt(quote.outAmount);
     if (!tokensOut || tokensOut <= 0) return null;
 
+    // outAmount is in RAW units, so it must be scaled by the mint's decimals before
+    // it means anything as a price. Without this the result is 10^decimals too
+    // small — a factor of a million on a 6-decimal token. That went unnoticed for
+    // as long as the only caller compared it one-directionally and the absurdly
+    // low value could never win; the moment the comparison became two-sided it
+    // started overwriting good prices, reporting live coins at -100% and market
+    // caps of a few cents.
+    const decimals = await mintDecimals(mint);
+    const uiTokens = tokensOut / Math.pow(10, decimals);
+    if (!(uiTokens > 0)) return null;
+
     // priceNative = SOL per token = (SOL spent) / (tokens received)
     const solSpent = lamportsIn / 1e9; // 0.1
-    // Need token decimals — derive from the quote's output decimal context
-    // The outAmount is in raw units, so price = SOL / rawTokens
-    const priceNative = solSpent / tokensOut;
+    const priceNative = solSpent / uiTokens;
 
     // Convert to USD if SOL price provided
     const priceUsd = solPriceUsd ? priceNative * solPriceUsd : 0;

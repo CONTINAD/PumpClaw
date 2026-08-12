@@ -172,3 +172,26 @@ export async function closeTokenAccount(mint: string, keypair?: Keypair): Promis
   }
   return null;
 }
+
+const decimalsCache = new Map<string, number>();
+
+/**
+ * SPL mint decimals — pump.fun is 6, but never assume.
+ * Lives here rather than in trader so jupiter can use it without a circular import.
+ * Decimals are immutable for a mint, so the cache never expires.
+ */
+export async function mintDecimals(mint: string): Promise<number> {
+  const hit = decimalsCache.get(mint);
+  if (hit !== undefined) return hit;
+  try {
+    const info: any = await getConnection().getParsedAccountInfo(new PublicKey(mint));
+    const d = info?.value?.data?.parsed?.info?.decimals;
+    const v = typeof d === 'number' ? d : 6;
+    decimalsCache.set(mint, v);
+    return v;
+  } catch {
+    // Not cached on failure — a transient RPC error must not pin a wrong value
+    // for the life of the process.
+    return 6;
+  }
+}
