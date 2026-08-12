@@ -226,3 +226,26 @@ export async function mintDecimals(mint: string): Promise<number> {
     return 6;
   }
 }
+
+const supplyCache = new Map<string, number>();
+
+/**
+ * Circulating supply for a mint, cached for the process lifetime.
+ *
+ * Supply is fixed once a pump.fun token launches, so one lookup covers it forever.
+ * Used to derive market cap as price x supply rather than trusting DexScreener's
+ * marketCap field, which is sampled independently of its price field and drifts up
+ * to ~10% from it on a fast-moving coin — enough that a reported cap and the price
+ * a trade was made at can describe different moments.
+ */
+export async function mintSupply(mint: string): Promise<number> {
+  const hit = supplyCache.get(mint);
+  if (hit !== undefined) return hit;
+  try {
+    const info: any = await withTimeout(
+      getConnection().getTokenSupply(new PublicKey(mint)), RPC_TIMEOUT_MS, 'getTokenSupply');
+    const v = parseFloat(info?.value?.uiAmountString ?? info?.value?.uiAmount ?? '0');
+    if (v > 0) { supplyCache.set(mint, v); return v; }
+  } catch { /* fall through */ }
+  return 0;   // not cached — a transient failure must not pin zero forever
+}

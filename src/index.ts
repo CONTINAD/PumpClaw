@@ -9,7 +9,7 @@ import { PerformanceTracker, type PerformanceSnapshot } from './tracker.js';
 import { registerRuntime } from './runtime.js';
 import { PaperTrader } from './paper-trader.js';
 import { taskManager } from './tasks.js';
-import { getWallet, getSolBalance, withTimeout } from './wallet.js';
+import { getWallet, getSolBalance, withTimeout, mintSupply } from './wallet.js';
 import { describeStrategy } from './strategy.js';
 import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
@@ -424,7 +424,23 @@ async function fastScanCycle() {
     // Costs are already modelled where they belong: the paper fill takes a 2%
     // haircut on the way OUT, and real fills pay their actual fees. Discounting the
     // entry on top was double-counting in the flattering direction.
-    const adjustedMarket = liveMarket;
+    // Derive market cap from the price we are actually recording, so the two can
+    // never describe different moments. DexScreener samples its marketCap field
+    // separately from priceUsd and the pair drifts up to ~10% apart on a fast
+    // mover; a call reported at one cap and traded at another price is exactly how
+    // stats go quietly wrong.
+    let adjustedMarket = liveMarket;
+    try {
+      const supply = await mintSupply(coin.mint);
+      if (supply > 0 && liveMarket.priceUsd > 0) {
+        const derived = liveMarket.priceUsd * supply;
+        // Only trust it when it is in the same ballpark; a wrong supply reading
+        // must not rewrite a sane market cap.
+        if (derived > liveMarket.marketCap / 3 && derived < liveMarket.marketCap * 3) {
+          adjustedMarket = { ...liveMarket, marketCap: derived, fdv: derived };
+        }
+      }
+    } catch { /* keep the venue's figure */ }
 
     const paperTrade = paperTrader.openTrade(
       coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,

@@ -216,9 +216,15 @@ function buildDashboardData(range: TimeRange = 'all') {
     mint: c.mint, symbol: c.symbol,
     name: c.name,
     entryMC: c.entryMC,
+    // Exposed so a reported multiple can be checked against the market rather than
+    // taken on trust. Without it every number here has to be believed as given.
+    entryPrice: c.entryPrice,
+    peakPrice: c.peakPrice,
     peakMultiplier: c.peakMultiplier ?? 1,
     peakMC: c.peakMC ?? c.entryMC,
     entryTime: c.entryTime,
+    minMultiplier: c.minMultiplier,
+    peakAtMin: c.peakAtMin,
     milestones: (c.hitMilestones ?? []).map(m => m.multiplier),
   })).sort((a, b) => b.peakMultiplier - a.peakMultiplier);
 
