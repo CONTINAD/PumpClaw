@@ -1623,7 +1623,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/calls">Calls</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -3288,6 +3288,145 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Live page error: ' + err.message);
       });
+    } else if (pathname === '/calls') {
+      // Call quality, judged on its own terms.
+      //
+      // Separate from the strategy pages on purpose: those ask "what is the best way
+      // to trade a call", this asks "is the call any good in the first place". A
+      // strategy cannot rescue a bad signal, and mixing the two hides which is at fault.
+      try {
+        const hm = url.match(/[?&]days=(\d+|all)/);
+        const days = hm ? hm[1] : '7';
+        const cut = days === 'all' ? 0 : Date.now() - parseInt(days) * 86400_000;
+        const all: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+        const calls = all.filter(c => c.entryTime >= cut).sort((a, b) => b.entryTime - a.entryTime);
+        const n = calls.length;
+        const peaks = calls.map(c => c.peakMultiplier ?? 1).sort((a, b) => a - b);
+        const med = n ? peaks[Math.floor(n / 2)] : 0;
+        const mean = n ? peaks.reduce((a, b) => a + b, 0) / n : 0;
+        const hit = (x: number) => calls.filter(c => (c.peakMultiplier ?? 1) >= x).length;
+        const pct = (k: number) => n ? Math.round(k / n * 100) : 0;
+
+        const kpi = (label: string, val: string, sub: string, colour = 'var(--text)') => `
+          <div style="background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:13px 15px">
+            <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em">${label}</div>
+            <div style="font-size:26px;font-weight:800;color:${colour};line-height:1.25">${val}</div>
+            <div style="font-size:11px;color:var(--text3)">${sub}</div>
+          </div>`;
+
+        // Peak distribution
+        const BUCKETS: [string, number, number][] = [
+          ['rug (<1x)', 0, 1], ['1-1.5x', 1, 1.5], ['1.5-2x', 1.5, 2], ['2-3x', 2, 3],
+          ['3-5x', 3, 5], ['5-10x', 5, 10], ['10x+', 10, 1e9],
+        ];
+        const maxB = Math.max(1, ...BUCKETS.map(([, lo, hi]) => calls.filter(c => (c.peakMultiplier ?? 1) >= lo && (c.peakMultiplier ?? 1) < hi).length));
+
+        // Entry market cap vs outcome — the actionable one
+        const MCB: [string, number, number][] = [
+          ['< $20K', 0, 20_000], ['$20-35K', 20_000, 35_000], ['$35-50K', 35_000, 50_000],
+          ['$50-100K', 50_000, 100_000], ['$100K+', 100_000, 1e12],
+        ];
+
+        // How long winners take to double, from the milestone timestamps
+        const to2x = calls.map(c => {
+          const m = (c.hitMilestones ?? []).find(x => x.multiplier === 2);
+          return m ? (m.timestamp - c.entryTime) / 60_000 : null;
+        }).filter((x): x is number => x !== null).sort((a, b) => a - b);
+        const med2x = to2x.length ? to2x[Math.floor(to2x.length / 2)] : 0;
+
+        const bar = (v: number, max: number, colour: string) =>
+          `<span style="display:inline-block;height:8px;width:${max ? Math.round(v / max * 100) : 0}%;min-width:${v ? 3 : 0}px;background:${colour};border-radius:3px;vertical-align:middle"></span>`;
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>📞 Call quality — ${days === 'all' ? 'all time' : `last ${days} days`}</h3>
+          <div style="display:flex;gap:6px;margin:10px 0">
+            ${['1', '3', '7', '30', 'all'].map(d => `<a href="/calls?days=${d}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${d === days ? 'var(--border2)' : 'var(--border)'};background:${d === days ? 'var(--bg3)' : 'transparent'};color:${d === days ? 'var(--text)' : 'var(--text2)'}">${d === 'all' ? 'All time' : d + 'd'}</a>`).join('')}
+          </div>
+          ${n === 0 ? '<p style="color:var(--text2);font-size:13px">No calls in this window.</p>' : `
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px">
+            ${kpi('Calls', String(n), days === 'all' ? 'all time' : `in ${days} days`)}
+            ${kpi('Hit 2X', pct(hit(2)) + '%', `${hit(2)} of ${n}`, pct(hit(2)) >= 50 ? '#10b981' : '#f59e0b')}
+            ${kpi('Hit 5X', pct(hit(5)) + '%', `${hit(5)} of ${n}`, '#10b981')}
+            ${kpi('Hit 10X', pct(hit(10)) + '%', `${hit(10)} of ${n}`, '#8b5cf6')}
+            ${kpi('Median peak', med.toFixed(2) + '×', 'the typical call', med >= 2 ? '#10b981' : 'var(--text)')}
+            ${kpi('Rugged', pct(calls.filter(c => (c.peakMultiplier ?? 1) < 1).length) + '%', 'never went up', '#ef4444')}
+          </div>
+          <p style="font-size:11px;color:var(--text3);margin-top:12px;line-height:1.6">
+            Median is the headline rather than the mean (<b>${mean.toFixed(2)}×</b>) because one 100× call drags an
+            average far above anything you would actually experience. Peaks are the best price after the call —
+            they are what the signal offered, not what a strategy captured. ${to2x.length ? `Half the calls that doubled did it within <b>${med2x < 60 ? Math.round(med2x) + ' minutes' : (med2x / 60).toFixed(1) + ' hours'}</b>.` : ''}
+          </p>`}
+        </div>
+
+        ${n === 0 ? '' : `
+        <div class="card" style="max-width:none">
+          <h3>Where calls end up</h3>
+          <table style="width:100%">
+            ${BUCKETS.map(([label, lo, hi]) => {
+              const k = calls.filter(c => (c.peakMultiplier ?? 1) >= lo && (c.peakMultiplier ?? 1) < hi).length;
+              const colour = lo < 1 ? '#ef4444' : lo < 2 ? '#f59e0b' : lo < 5 ? '#10b981' : '#8b5cf6';
+              return `<tr>
+                <td style="width:90px;font-size:12px;color:var(--text2);white-space:nowrap">${label}</td>
+                <td style="width:52px" class="mono">${k}</td>
+                <td style="width:46px;font-size:11px;color:var(--text3)">${pct(k)}%</td>
+                <td>${bar(k, maxB, colour)}</td>
+              </tr>`;
+            }).join('')}
+          </table>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Does entry market cap predict the outcome?</h3>
+          <div style="overflow-x:auto"><table style="width:100%">
+            <tr><th style="text-align:left">Entry MC</th><th>Calls</th><th>Hit 2X</th><th>Hit 5X</th><th>Median peak</th></tr>
+            ${MCB.map(([label, lo, hi]) => {
+              const g = calls.filter(c => (c.entryMC ?? 0) >= lo && (c.entryMC ?? 0) < hi);
+              if (!g.length) return `<tr><td style="color:var(--text2)">${label}</td><td colspan="4" style="color:var(--text3);font-size:11px">no calls</td></tr>`;
+              const gp = g.map(c => c.peakMultiplier ?? 1).sort((a, b) => a - b);
+              const gm = gp[Math.floor(gp.length / 2)];
+              const h2 = Math.round(g.filter(c => (c.peakMultiplier ?? 1) >= 2).length / g.length * 100);
+              const h5 = Math.round(g.filter(c => (c.peakMultiplier ?? 1) >= 5).length / g.length * 100);
+              return `<tr>
+                <td style="font-weight:700;color:var(--text)">${label}</td>
+                <td class="mono">${g.length}</td>
+                <td class="mono" style="color:${h2 >= 50 ? '#10b981' : h2 >= 30 ? '#f59e0b' : '#ef4444'}">${h2}%</td>
+                <td class="mono" style="color:${h5 >= 25 ? '#10b981' : 'var(--text2)'}">${h5}%</td>
+                <td class="mono" style="color:${gm >= 2 ? '#10b981' : 'var(--text2)'};font-weight:700">${gm.toFixed(2)}×</td>
+              </tr>`;
+            }).join('')}
+          </table></div>
+          <p style="font-size:11px;color:var(--text3);margin-top:10px">
+            If one band clearly beats the others across enough calls, that is a filter worth setting. Read it with the
+            sample sizes in view — a band with four calls is a story, not a statistic.
+          </p>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Every call (${n})</h3>
+          <div style="overflow-x:auto"><table style="width:100%">
+            <tr><th style="text-align:left">Coin</th><th>Called at</th><th>Peak</th><th>Peak MC</th><th>When</th></tr>
+            ${calls.slice(0, 150).map(c => {
+              const p = c.peakMultiplier ?? 1;
+              const colour = p >= 5 ? '#8b5cf6' : p >= 2 ? '#10b981' : p >= 1 ? '#f59e0b' : '#ef4444';
+              const mins = Math.round((Date.now() - c.entryTime) / 60_000);
+              return `<tr>
+                <td><a href="/coin?mint=${c.mint}" style="color:var(--text);font-weight:700;text-decoration:none;border-bottom:1px dotted var(--border2)">$${c.symbol}</a></td>
+                <td class="mono" style="color:var(--text2)">${fmtUsd(c.entryMC)}</td>
+                <td class="mono" style="color:${colour};font-weight:700">${p.toFixed(2)}×</td>
+                <td class="mono" style="color:var(--text2)">${fmtUsd(c.peakMC ?? c.entryMC)}</td>
+                <td class="mono" style="color:var(--text3);font-size:11px">${mins < 60 ? mins + 'm' : mins < 1440 ? Math.floor(mins / 60) + 'h' : Math.floor(mins / 1440) + 'd'} ago</td>
+              </tr>`;
+            }).join('')}
+          </table></div>
+          ${calls.length > 150 ? `<div style="margin-top:8px;font-size:11px;color:var(--text3)">Showing the 150 most recent of ${calls.length}.</div>` : ''}
+        </div>`}`, '/calls');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html.replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · Call quality</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(`<pre>Calls error: ${err.message}</pre>`);
+      }
     } else if (pathname === '/sweep') {
       // The controlled experiment, made visible.
       //
