@@ -2694,6 +2694,14 @@ export function startDashboard(port?: number): void {
           entryMC: p.entryMC, entryTime: p.entryTime, remainingPct: p.remainingPct,
           totalSolReturned: p.totalSolReturned, trailingStopPrice: p.trailingStopPrice,
           peakMultiplier: p.peakMultiplier, exits: p.exits.length,
+          // The stop that can actually fire is the HIGHER of the two. Exposing only
+          // the trailing price made every consumer report a looser stop than the one
+          // the trader enforces: $BABYGROK was shown as stopping at 0.50x and
+          // correctly stopped at 0.60x, which looks like a fault and is not one.
+          stopLossPrice: p.stopLossPrice,
+          beStopArmed: p.beStopArmed,
+          effectiveStopPrice: Math.max(p.stopLossPrice, p.trailingActive ? p.trailingStopPrice : 0),
+          trailingActive: p.trailingActive,
         }));
         let balance: number | null = null;
         try {
