@@ -1623,7 +1623,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -3288,6 +3288,104 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Live page error: ' + err.message);
       });
+    } else if (pathname === '/filters') {
+      // Is each filter earning its keep, or quietly costing money?
+      //
+      // A filter that blocks rugs and a filter that blocks winners look identical
+      // from the inside — both just produce silence. This grades every rejection
+      // against what the coin actually did afterwards, which is the only way to
+      // tell them apart.
+      try {
+        const dm = url.match(/[?&]days=(\d+|all)/);
+        const days = dm ? dm[1] : '7';
+        const cut = days === 'all' ? 0 : Date.now() - parseInt(days) * 86400_000;
+        type Skip = { mint: string; name: string; reason: string; details: string;
+                      marketCap: number; timestamp: number; peakMultiplier?: number };
+        const all: Skip[] = loadJSON(join(CONFIG.DATA_DIR, 'skips.json'));
+        const skips = all.filter(s => s.timestamp >= cut);
+        const graded = skips.filter(s => typeof s.peakMultiplier === 'number');
+
+        const byReason = new Map<string, Skip[]>();
+        for (const s of graded) {
+          if (!byReason.has(s.reason)) byReason.set(s.reason, []);
+          byReason.get(s.reason)!.push(s);
+        }
+        const rows = [...byReason.entries()].map(([reason, g]) => {
+          const peaks = g.map(x => x.peakMultiplier ?? 0).sort((a, b) => a - b);
+          const missed = g.filter(x => (x.peakMultiplier ?? 0) >= 2).length;
+          const died = g.filter(x => (x.peakMultiplier ?? 0) < 0.5).length;
+          return {
+            reason, n: g.length, missed, died,
+            missedPct: Math.round(missed / g.length * 100),
+            diedPct: Math.round(died / g.length * 100),
+            median: peaks[Math.floor(peaks.length / 2)] ?? 0,
+            best: peaks[peaks.length - 1] ?? 0,
+            worst: g.filter(x => (x.peakMultiplier ?? 0) >= 2)
+              .sort((a, b) => (b.peakMultiplier ?? 0) - (a.peakMultiplier ?? 0)).slice(0, 3),
+          };
+        }).sort((a, b) => b.missedPct - a.missedPct);
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>🛡 Are the filters earning their keep?</h3>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6">
+            Every rejection is graded against what the coin did in the hours after. A filter that
+            blocks rugs and one that blocks winners are indistinguishable while they are working —
+            both just produce silence — so the only honest test is the outcome.
+            <b>“Would have hit 2×”</b> is the cost of the filter. <b>“Died”</b> is what it saved you from.
+            A filter whose blocks mostly went on to double is costing you money.
+          </p>
+          <div style="display:flex;gap:6px;margin:10px 0">
+            ${['1', '3', '7', '30', 'all'].map(dd => `<a href="/filters?days=${dd}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${dd === days ? 'var(--border2)' : 'var(--border)'};background:${dd === days ? 'var(--bg3)' : 'transparent'};color:${dd === days ? 'var(--text)' : 'var(--text2)'}">${dd === 'all' ? 'All time' : dd + 'd'}</a>`).join('')}
+          </div>
+          <div style="font-size:12px;color:var(--text3)">
+            ${skips.length} rejections recorded · ${graded.length} graded
+            ${skips.length > graded.length ? ` · ${skips.length - graded.length} too recent to judge` : ''}
+          </div>
+        </div>
+
+        ${rows.length === 0 ? `<div class="card" style="max-width:none"><p style="font-size:13px;color:var(--text2)">
+          Nothing graded yet. Rejections are saved from now on and scored an hour after the fact,
+          so this fills in as the bot runs. Before this, skips lived only in memory and vanished on
+          every deploy — which is why the question could not be answered until now.
+        </p></div>` : `
+        <div class="card" style="max-width:none">
+          <h3>By filter</h3>
+          <div style="overflow-x:auto"><table style="width:100%">
+            <tr><th style="text-align:left">Filter</th><th>Blocked</th><th>Would have hit 2×</th><th>Died (&lt;0.5×)</th><th>Median</th><th>Best missed</th><th>Verdict</th></tr>
+            ${rows.map(r => {
+              const bad = r.missedPct >= 50;
+              const good = r.diedPct >= 50 && r.missedPct < 30;
+              return `<tr>
+                <td style="font-weight:700;white-space:nowrap">${r.reason}</td>
+                <td class="mono">${r.n}</td>
+                <td class="mono" style="color:${bad ? '#ef4444' : r.missedPct >= 30 ? '#f59e0b' : 'var(--text2)'};font-weight:700">${r.missedPct}% <span style="font-size:11px;color:var(--text3)">(${r.missed})</span></td>
+                <td class="mono" style="color:${r.diedPct >= 50 ? '#10b981' : 'var(--text2)'}">${r.diedPct}% <span style="font-size:11px;color:var(--text3)">(${r.died})</span></td>
+                <td class="mono">${r.median.toFixed(2)}×</td>
+                <td class="mono" style="color:${r.best >= 3 ? '#ef4444' : 'var(--text2)'}">${r.best.toFixed(2)}×</td>
+                <td style="font-size:11px;color:${bad ? '#ef4444' : good ? '#10b981' : 'var(--text3)'}">${bad ? 'costing money' : good ? 'earning its keep' : 'mixed'}</td>
+              </tr>`;
+            }).join('')}
+          </table></div>
+        </div>
+
+        ${rows.filter(r => r.worst.length).map(r => `<div class="card" style="max-width:none">
+          <h3>${r.reason} — the ones that got away</h3>
+          <table style="width:100%">
+            ${r.worst.map(w => `<tr>
+              <td><a href="/coin?mint=${w.mint}" style="color:var(--text);font-weight:700;text-decoration:none">${w.name.slice(0, 26)}</a></td>
+              <td class="mono" style="color:var(--text2)">${fmtUsd(w.marketCap)}</td>
+              <td class="mono" style="color:#ef4444;font-weight:700">${(w.peakMultiplier ?? 0).toFixed(2)}×</td>
+              <td style="font-size:11px;color:var(--text3)">${w.details.slice(0, 60)}</td>
+            </tr>`).join('')}
+          </table>
+        </div>`).join('')}`}`, '/filters');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html.replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · Filter audit</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(`<pre>Filters error: ${err.message}</pre>`);
+      }
     } else if (pathname === '/features') {
       // Which measurable thing about a call predicts a bad outcome?
       //

@@ -84,9 +84,79 @@ export function recordSourceEvent(source: string, mint: string, action: string, 
   sourceEvents.push({ ts: Date.now(), source, mint, action, detail });
   if (sourceEvents.length > 100) sourceEvents.shift();
 }
-function recordSkip(post: { mint: string; name: string }, reason: string, details: string, mc: number) {
-  skippedRing.push({ mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now() });
+/**
+ * Record a rejected coin — to memory for the dashboard, and to disk so the
+ * decision can be judged later.
+ *
+ * The in-memory ring resets on every deploy, which made the only question that
+ * matters about a filter unanswerable: did blocking this cost us anything? A
+ * filter that blocks rugs and a filter that blocks winners look identical from
+ * the inside. Persisting the skip lets its outcome be checked afterwards.
+ */
+const SKIPS_FILE = `${CONFIG.DATA_DIR}/skips.json`;
+interface SkipRecord {
+  mint: string; name: string; reason: string; details: string;
+  marketCap: number; timestamp: number;
+  entryPrice?: number;      // price when we passed, so a peak means something
+  peakMultiplier?: number;  // filled in later — what we avoided, or missed
+  checkedAt?: number;
+}
+let skipHistory: SkipRecord[] = [];
+try { skipHistory = JSON.parse(readFileSync(SKIPS_FILE, 'utf-8')); } catch { skipHistory = []; }
+
+function saveSkips(): void {
+  try {
+    // A month is enough to judge a filter and keeps the file small.
+    const cut = Date.now() - 30 * 86400_000;
+    skipHistory = skipHistory.filter(s => s.timestamp >= cut).slice(-4000);
+    writeFileSync(SKIPS_FILE, JSON.stringify(skipHistory));
+  } catch { /* non-critical */ }
+}
+
+function recordSkip(post: { mint: string; name: string }, reason: string, details: string, mc: number, price?: number) {
+  const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now() };
+  skippedRing.push(rec);
   if (skippedRing.length > 200) skippedRing.shift();
+  // Only the judgement calls are worth grading. LOW_VOL and RATE_CAP reject coins
+  // that were never candidates, and would bury the signal in noise.
+  if (!['LOW_VOL', 'RATE_CAP', 'COOLING_OFF'].includes(reason)) {
+    skipHistory.push({ ...rec, entryPrice: price });
+    saveSkips();
+  }
+}
+
+/**
+ * Grade past rejections against what the coin actually did.
+ *
+ * Runs hourly and only looks at skips between 1 and 24 hours old — younger than
+ * that and the coin has not had time to show its hand, older and it is settled.
+ */
+async function skipOutcomeLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 3600_000));
+    try {
+      const now = Date.now();
+      const due = skipHistory.filter(s =>
+        s.peakMultiplier === undefined && s.entryPrice && s.entryPrice > 0 &&
+        now - s.timestamp > 3600_000 && now - s.timestamp < 24 * 3600_000);
+      if (!due.length) continue;
+      for (let i = 0; i < due.length; i += 25) {
+        const batch = due.slice(i, i + 25);
+        const md = await fetchBatchMarketData(batch.map(s => s.mint));
+        for (const s of batch) {
+          const m = md.get(s.mint);
+          // No liquid pool left is itself an outcome: the coin died.
+          s.peakMultiplier = m && m.priceUsd > 0 ? m.priceUsd / s.entryPrice! : 0;
+          s.checkedAt = now;
+        }
+        await new Promise(r => setTimeout(r, 400));
+      }
+      saveSkips();
+      log(`📋 Graded ${due.length} past rejection(s)`);
+    } catch (err: any) {
+      console.error(`[SkipOutcome] ${err.message}`);
+    }
+  }
 }
 
 // Last live-edit timestamp per mint (throttle Discord PATCHes to avoid rate limits)
@@ -186,7 +256,7 @@ async function fastScanCycle() {
     // sample nothing called above $100K reached 2x, median peak 1.06x.
     if (CONFIG.MAX_ENTRY_MC > 0 && market.marketCap > CONFIG.MAX_ENTRY_MC) {
       log(`⚠ HIGH_MC — skipping ${post.name}: ${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)} ceiling`);
-      recordSkip(post, 'HIGH_MC', `${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)}`, market.marketCap);
+      recordSkip(post, 'HIGH_MC', `${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)}`, market.marketCap, market.priceUsd);
       continue;
     }
 
@@ -202,7 +272,7 @@ async function fastScanCycle() {
 
     if (market.priceChange5m < -25) {
       log(`⚠ DUMP — skipping ${post.name}: 5m change ${market.priceChange5m.toFixed(1)}% (actively dumping)`);
-      recordSkip(post, 'DUMP', `5m ${market.priceChange5m.toFixed(1)}%`, market.marketCap);
+      recordSkip(post, 'DUMP', `5m ${market.priceChange5m.toFixed(1)}%`, market.marketCap, market.priceUsd);
       continue;
     }
 
@@ -211,7 +281,7 @@ async function fastScanCycle() {
       const sellRatio = market.sells5m / market.buys5m;
       if (sellRatio > 1.3) {
         log(`⚠ HEAVY SELLING — skipping ${post.name}: ${market.buys5m}B/${market.sells5m}S (${sellRatio.toFixed(2)}x sells)`);
-        recordSkip(post, 'HEAVY_SELLING', `${market.buys5m}B / ${market.sells5m}S (${sellRatio.toFixed(2)}x)`, market.marketCap);
+        recordSkip(post, 'HEAVY_SELLING', `${market.buys5m}B / ${market.sells5m}S (${sellRatio.toFixed(2)}x)`, market.marketCap, market.priceUsd);
         continue;
       }
     }
@@ -220,7 +290,7 @@ async function fastScanCycle() {
     // (≥20 buys in last 5min = a buy every 15s on average)
     if (market.buys5m > 0 && market.buys5m < 20) {
       log(`⚠ LOW ACTIVITY — skipping ${post.name}: only ${market.buys5m} buys in 5m`);
-      recordSkip(post, 'LOW_ACTIVITY', `${market.buys5m} buys in 5m`, market.marketCap);
+      recordSkip(post, 'LOW_ACTIVITY', `${market.buys5m} buys in 5m`, market.marketCap, market.priceUsd);
       continue;
     }
 
@@ -238,7 +308,7 @@ async function fastScanCycle() {
     // Liquidity floor — coins with shallow liq are easy rug targets
     if (market.liquidity > 0 && market.liquidity < CONFIG.MIN_LIQUIDITY) {
       log(`⚠ LOW LIQ — skipping ${post.name}: ${fmtUsd(market.liquidity)} liquidity (need ≥${fmtUsd(CONFIG.MIN_LIQUIDITY)})`);
-      recordSkip(post, 'LOW_LIQ', `${fmtUsd(market.liquidity)} liquidity`, market.marketCap);
+      recordSkip(post, 'LOW_LIQ', `${fmtUsd(market.liquidity)} liquidity`, market.marketCap, market.priceUsd);
       continue;
     }
 
@@ -264,7 +334,7 @@ async function fastScanCycle() {
       const aged = /\[AGED COHORT\]/.test(bundle.details);
       const reason = devHeavy ? 'DEV_HOLDS' : aged ? 'AGED_FARM' : blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
       log(`⚠ ${reason} — skipping ${post.name}: ${bundle.details}`);
-      recordSkip(post, reason, bundle.details, market.marketCap);
+      recordSkip(post, reason, bundle.details, market.marketCap, market.priceUsd);
       if (blind && !devHeavy && !aged) noteBlindBlock(post.name); else blindBlocks = 0;
       continue;
     }
@@ -295,7 +365,7 @@ async function fastScanCycle() {
         : CONFIG.MIN_FEES_BONDED_SOL;
       if (estFees < needed) {
         log(`⚠ LOW FEES — skipping ${post.name}: ${estFees.toFixed(2)} SOL fees, needs ≥${needed} at ${fmtUsd(market.marketCap)} MC (vol ${volumeSol.toFixed(0)} SOL)`);
-        recordSkip(post, 'LOW_FEES', `${estFees.toFixed(2)}/${needed} SOL fees at ${fmtUsd(market.marketCap)} MC`, market.marketCap);
+        recordSkip(post, 'LOW_FEES', `${estFees.toFixed(2)}/${needed} SOL fees at ${fmtUsd(market.marketCap)} MC`, market.marketCap, market.priceUsd);
         continue;
       }
       log(`✅ Fees ok: ${estFees.toFixed(2)} SOL (needed ${needed}) at ${fmtUsd(market.marketCap)} MC`);
@@ -320,7 +390,7 @@ async function fastScanCycle() {
       const fade = 1 - freshMarket.priceUsd / market.priceUsd;
       if (fade > 0.08) {
         log(`⚠ FADED — skipping ${post.name}: price dropped ${(fade * 100).toFixed(1)}% while checks ran`);
-        recordSkip(post, 'FADED', `-${(fade * 100).toFixed(1)}% during checks`, freshMarket.marketCap);
+        recordSkip(post, 'FADED', `-${(fade * 100).toFixed(1)}% during checks`, freshMarket.marketCap, freshMarket.priceUsd);
         continue;
       }
     }
@@ -1370,6 +1440,9 @@ async function main() {
     });
     loopWatchdog().catch(err => {
       console.error(`[LoopWatchdog] Fatal: ${err.message}`);
+    });
+    skipOutcomeLoop().catch(err => {
+      console.error(`[SkipOutcome] Fatal: ${err.message}`);
     });
   }
 

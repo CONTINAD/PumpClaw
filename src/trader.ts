@@ -621,6 +621,40 @@ export class Trader {
 
     const ladderMode = strat.trailingFrom === 'afterLastTp';
 
+    // ── Executable price near the stop ──
+    //
+    // DexScreener publishes a smoothed aggregate. A dip that happens and recovers
+    // inside its update window never appears, so the bot can poll every second and
+    // still miss a stop that genuinely traded — which is exactly what happened to
+    // $Doodle: the market printed 0.567x and the feed never showed below 0.855x.
+    //
+    // Jupiter quotes the price the position would actually SELL into. It is the
+    // truth for an exit, but too slow to poll constantly — so it is consulted only
+    // when the position is near its stop, which is the only time accuracy matters.
+    //
+    // The direction here is deliberate and was got wrong before: this takes the
+    // LOWER of the two prices, so a second opinion can only ever make the stop fire
+    // sooner. An earlier version let a higher quote veto the stop entirely, and that
+    // blocked a real exit while the coin bled. A second opinion may add a reason to
+    // sell; it must never remove one.
+    if (!this.paper && pos.remainingPct >= 0.001) {
+      const stopLevel = Math.max(pos.stopLossPrice, pos.trailingActive ? pos.trailingStopPrice : 0);
+      if (stopLevel > 0 && currentPrice <= stopLevel * 1.4) {
+        try {
+          const solUsd = await getSolPrice();
+          const jup = await jupiterGetPrice(mint, solUsd);
+          // Ignore an absurd quote; a broken reading must not trigger a sale either.
+          if (jup && jup.priceUsd > 0 && jup.priceUsd > currentPrice / 5 && jup.priceUsd < currentPrice * 5) {
+            if (jup.priceUsd < currentPrice) {
+              console.log(`[Trader] $${pos.symbol} near stop — feed ${currentPrice.toExponential(3)}, ` +
+                `executable ${jup.priceUsd.toExponential(3)}; acting on the executable price`);
+              currentPrice = jup.priceUsd;
+            }
+          }
+        } catch { /* feed price stands — never block the stop on a failed lookup */ }
+      }
+    }
+
     // ── Stop checks ──
     if (pos.remainingPct >= 0.001) {
       if (pos.trailingActive && currentPrice <= pos.trailingStopPrice) {
