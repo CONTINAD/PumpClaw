@@ -2558,6 +2558,89 @@ export function startDashboard(port?: number): void {
       return;
     }
 
+    // POST /api/forget — remove calls (and their paper trades) from the stats.
+    //
+    // Destructive, so: auth-gated, backs every file up first, and reports exactly
+    // what it touched. Real positions are deliberately left alone unless asked for
+    // explicitly — that money actually moved, and deleting it would make the
+    // dashboard's P&L disagree with the wallet, which is the opposite of the point.
+    if (req.method === 'POST' && pathname === '/api/forget') {
+      let body = '';
+      req.on('data', (c: Buffer) => { body += c; if (body.length > 32_000) req.destroy(); });
+      req.on('end', () => {
+        if (!authOk(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'auth required' }));
+          return;
+        }
+        try {
+          const parsed = JSON.parse(body || '{}');
+          const mints: string[] = Array.isArray(parsed.mints) ? parsed.mints.filter((m: any) => typeof m === 'string' && m.length > 30) : [];
+          const alsoReal = parsed.includeRealTrades === true;
+          if (!mints.length) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'pass { mints: ["<mint>", ...] }' }));
+            return;
+          }
+          const target = new Set(mints);
+          const stamp = Date.now();
+          const report: Record<string, any> = { requested: mints.length, removed: {}, backups: [] };
+
+          const prune = (file: string, key = 'mint') => {
+            const full = join(CONFIG.DATA_DIR, file);
+            if (!existsSync(full)) return;
+            let rows: any[];
+            try { rows = JSON.parse(readFileSync(full, 'utf-8')); } catch { return; }
+            if (!Array.isArray(rows)) return;
+            const kept = rows.filter(r => !target.has(r?.[key]));
+            const dropped = rows.length - kept.length;
+            if (dropped === 0) { report.removed[file] = 0; return; }
+            const bak = `${full}.bak-${stamp}`;
+            writeFileSync(bak, JSON.stringify(rows));       // full snapshot before touching it
+            writeFileSync(full, JSON.stringify(kept, null, 2));
+            report.removed[file] = dropped;
+            report.backups.push(bak);
+          };
+
+          prune('calls.json');
+          prune('trades.json');
+          if (alsoReal) prune('positions.json');
+
+          // Task position files live one per task and hold the paper fleet's history.
+          let taskFilesTouched = 0, taskRowsDropped = 0;
+          const posDir = join(CONFIG.DATA_DIR, 'positions');
+          if (existsSync(posDir)) {
+            for (const f of readdirSync(posDir).filter(x => x.endsWith('.json'))) {
+              const full = join(posDir, f);
+              let rows: any[];
+              try { rows = JSON.parse(readFileSync(full, 'utf-8')); } catch { continue; }
+              if (!Array.isArray(rows)) continue;
+              const isReal = !f.includes('shadow') && !f.includes('paper');
+              if (isReal && !alsoReal) continue;
+              const kept = rows.filter(r => !target.has(r?.mint));
+              if (kept.length === rows.length) continue;
+              writeFileSync(`${full}.bak-${stamp}`, JSON.stringify(rows));
+              writeFileSync(full, JSON.stringify(kept, null, 2));
+              taskFilesTouched++; taskRowsDropped += rows.length - kept.length;
+            }
+          }
+          report.removed['positions/*.json'] = taskRowsDropped;
+          report.taskFilesTouched = taskFilesTouched;
+          report.realTradesKept = !alsoReal;
+          report.note = alsoReal
+            ? 'Real trades removed too — dashboard P&L will no longer match the wallet.'
+            : 'Real position history kept so P&L still matches the wallet. Pass includeRealTrades:true to drop it as well.';
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(report, null, 2));
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     if (pathname === '/api/poolprice') {
       (async () => {
         const { watchStats, poolPriceUsd } = await import('./pool-price.js');
