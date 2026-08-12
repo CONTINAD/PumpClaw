@@ -261,15 +261,30 @@ export async function registerSlashCommands(): Promise<void> {
       ],
     }],
   }];
-  try {
-    const res = await fetch(`https://discord.com/api/v10/applications/${CONFIG.DISCORD_APP_ID}/commands`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bot ${CONFIG.DISCORD_BOT_TOKEN}` },
-      body: JSON.stringify(cmd),
+  const targets: { label: string; url: string }[] = [
+    { label: 'global', url: `https://discord.com/api/v10/applications/${CONFIG.DISCORD_APP_ID}/commands` },
+  ];
+  // Register to the guild as well. Global commands can take an hour to reach
+  // clients; the guild copy is live immediately, so a new command works the
+  // moment it deploys instead of looking broken until Discord catches up.
+  if (CONFIG.DISCORD_GUILD_ID) {
+    targets.push({
+      label: `guild ${CONFIG.DISCORD_GUILD_ID}`,
+      url: `https://discord.com/api/v10/applications/${CONFIG.DISCORD_APP_ID}/guilds/${CONFIG.DISCORD_GUILD_ID}/commands`,
     });
-    if (res.ok) console.log('[Interactions] /mog + /mogboard slash commands registered');
-    else console.error(`[Interactions] Command registration failed ${res.status}: ${await res.text()}`);
-  } catch (err: any) {
-    console.error(`[Interactions] Command registration error: ${err.message}`);
+  }
+
+  for (const t of targets) {
+    try {
+      const res = await fetch(t.url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bot ${CONFIG.DISCORD_BOT_TOKEN}` },
+        body: JSON.stringify(cmd),
+      });
+      if (res.ok) console.log(`[Interactions] ${cmd.map(c => '/' + c.name).join(' + ')} registered (${t.label})`);
+      else console.error(`[Interactions] Registration failed for ${t.label} ${res.status}: ${await res.text()}`);
+    } catch (err: any) {
+      console.error(`[Interactions] Registration error for ${t.label}: ${err.message}`);
+    }
   }
 }

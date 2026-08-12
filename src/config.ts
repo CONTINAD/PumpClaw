@@ -25,6 +25,10 @@ export const CONFIG = {
   TRADES_WEBHOOK: process.env.TRADES_WEBHOOK || 'https://discord.com/api/webhooks/1536130988722098186/qDIDNixc4jzM1175SN9_9aj3XvwWo4qk4MQJ2bhbJFyappAnnCMtucME6T943eLPhvaE',
   // Discord application (slash commands — /mog PnL card)
   DISCORD_APP_ID: process.env.DISCORD_APP_ID || '1528962115778642090',
+  // Guild-scoped commands appear instantly; global ones take up to an hour to
+  // reach clients, which reads as "the command is broken" for that whole hour
+  // after every new command or option change.
+  DISCORD_GUILD_ID: process.env.DISCORD_GUILD_ID || '1468809288632893552',
   DISCORD_APP_PUBLIC_KEY: process.env.DISCORD_APP_PUBLIC_KEY || '',
   DISCORD_BIG_MILESTONE_THRESHOLD: 10,  // ping caller role only on milestones >= this
   PUMPFUN_API: 'https://frontend-api-v3.pump.fun',
