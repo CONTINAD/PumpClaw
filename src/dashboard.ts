@@ -1623,7 +1623,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/shadow">Shadow</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -3288,6 +3288,127 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Live page error: ' + err.message);
       });
+    } else if (pathname === '/sweep') {
+      // The controlled experiment, made visible.
+      //
+      // A leaderboard cannot answer "should we wait 5 minutes or 30" — the top row
+      // is whichever strategy got lucky. GRID6 holds the exit identical and varies
+      // only depth and window, so averaging every strategy that shares a window
+      // cancels the exit shape out and leaves the window's own effect.
+      try {
+        const hm = url.match(/[?&]hours=(\d+|all)/);
+        const hours = hm ? hm[1] : 'all';
+        const cut = hours === 'all' ? 0 : Date.now() - parseInt(hours) * 3600_000;
+
+        const sweep = taskManager.all().filter(t => t.paper && t.strategy.preset.startsWith('sw')).map(t => {
+          const ps = taskManager.traderFor(t).getAllPositions();
+          const closed = ps.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cut);
+          const pnl = closed.reduce((a, p) => a + (p.finalPnlSol ?? 0), 0);
+          return {
+            dip: Math.round((t.strategy.dipPct ?? 0) * 100),
+            win: t.strategy.dipWindowMin ?? 30,
+            shape: t.strategy.tps.length ? 'ladder' : 'trail',
+            trades: closed.length,
+            wins: closed.filter(p => (p.finalPnlSol ?? 0) > 0).length,
+            pnl,
+            skipped: ps.length === 0,
+          };
+        });
+
+        const WINDOWS = [3, 5, 10, 15, 20, 30, 45];
+        const DEPTHS = [10, 15, 20, 25];
+        const cell = (d: number, w: number) => {
+          const rs = sweep.filter(r => r.dip === d && r.win === w);
+          const trades = rs.reduce((a, r) => a + r.trades, 0);
+          const pnl = rs.reduce((a, r) => a + r.pnl, 0);
+          const wins = rs.reduce((a, r) => a + r.wins, 0);
+          return { trades, pnl, avg: trades ? pnl / trades : 0, winPct: trades ? Math.round(wins / trades * 100) : 0 };
+        };
+        const byWindow = WINDOWS.map(w => {
+          const rs = sweep.filter(r => r.win === w);
+          const trades = rs.reduce((a, r) => a + r.trades, 0);
+          const pnl = rs.reduce((a, r) => a + r.pnl, 0);
+          const wins = rs.reduce((a, r) => a + r.wins, 0);
+          return { w, trades, pnl, avg: trades ? pnl / trades : 0, winPct: trades ? Math.round(wins / trades * 100) : 0 };
+        });
+        const totalTrades = byWindow.reduce((a, r) => a + r.trades, 0);
+        const ranked = [...byWindow].filter(r => r.trades > 0).sort((a, b) => b.avg - a.avg);
+        const short = byWindow.filter(r => r.w <= 10).reduce((a, r) => ({ t: a.t + r.trades, p: a.p + r.pnl }), { t: 0, p: 0 });
+        const long = byWindow.filter(r => r.w >= 20).reduce((a, r) => ({ t: a.t + r.trades, p: a.p + r.pnl }), { t: 0, p: 0 });
+
+        const col = (v: number) => v > 0.02 ? '#10b981' : v < -0.02 ? '#ef4444' : 'var(--text2)';
+        const heat = (v: number, max: number) => {
+          if (!max) return 'transparent';
+          const t = Math.max(-1, Math.min(1, v / max));
+          return t >= 0 ? `rgba(16,185,129,${(t * 0.28).toFixed(3)})` : `rgba(239,68,68,${(-t * 0.28).toFixed(3)})`;
+        };
+        const maxAbs = Math.max(0.0001, ...DEPTHS.flatMap(d => WINDOWS.map(w => Math.abs(cell(d, w).avg))));
+
+        const verdict = totalTrades < 20
+          ? `<b style="color:var(--text2)">Not enough data yet</b> — ${totalTrades} trades across the sweep. It needs a few hours of calls before any of this means anything.`
+          : short.t && long.t
+            ? `Short windows (≤10m) average <b style="color:${col(short.p / short.t)}">${(short.p / short.t >= 0 ? '+' : '')}${(short.p / short.t).toFixed(3)}</b> per trade over ${short.t} trades. Long windows (≥20m) average <b style="color:${col(long.p / long.t)}">${(long.p / long.t >= 0 ? '+' : '')}${(long.p / long.t).toFixed(3)}</b> over ${long.t}. ${short.p / short.t > long.p / long.t ? 'Short is ahead — consistent with a slow dip being a downtrend rather than an entry.' : 'Long is ahead so far, which contradicts the short-window thesis. Worth more data before acting.'}`
+            : 'Waiting on fills in both groups before the comparison means anything.';
+
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>🔬 Dip-window sweep</h3>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:4px">
+            Every strategy here runs an <b>identical exit</b> — only the dip depth and how long it waits differ.
+            That is what makes this readable: averaging across a whole row or column cancels the exit shape out,
+            so what is left is the effect of the window itself. A leaderboard cannot tell you this, because its
+            top row is whichever single strategy got lucky.
+          </p>
+          <div style="display:flex;gap:6px;margin:10px 0">
+            ${['6', '12', '24', '48', 'all'].map(h => `<a href="/sweep?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hours ? 'var(--border2)' : 'var(--border)'};background:${h === hours ? 'var(--bg3)' : 'transparent'};color:${h === hours ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h + 'h'}</a>`).join('')}
+          </div>
+          <div style="background:var(--bg1);border:1px solid var(--border);border-left:3px solid #3b82f6;border-radius:8px;padding:12px;font-size:13px;line-height:1.7">${verdict}</div>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Average PnL per trade — depth × window</h3>
+          <div style="overflow-x:auto"><table style="width:100%">
+            <tr><th style="text-align:left">Dip depth</th>${WINDOWS.map(w => `<th style="text-align:center">${w}m</th>`).join('')}</tr>
+            ${DEPTHS.map(d => `<tr>
+              <td style="font-weight:700;color:#f59e0b;white-space:nowrap">−${d}%</td>
+              ${WINDOWS.map(w => {
+                const c = cell(d, w);
+                return `<td style="text-align:center;background:${heat(c.avg, maxAbs)};border-radius:4px">
+                  ${c.trades ? `<div class="mono" style="color:${col(c.avg)};font-weight:700">${c.avg >= 0 ? '+' : ''}${c.avg.toFixed(3)}</div>
+                  <div style="font-size:10px;color:var(--text3)">${c.trades} tr · ${c.winPct}%</div>` : '<span style="color:var(--text3);font-size:11px">—</span>'}
+                </td>`;
+              }).join('')}
+            </tr>`).join('')}
+          </table></div>
+          <p style="font-size:11px;color:var(--text3);margin-top:10px">
+            Green is profitable, red is not, intensity scales with size. A cell showing “—” has had no fills —
+            a deep dip in a short window often never triggers, which is itself a result: the strategy simply does not trade.
+          </p>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Window ranking — every depth pooled</h3>
+          <div style="overflow-x:auto"><table style="width:100%">
+            <tr><th>Window</th><th>Trades</th><th>Win rate</th><th>Avg/trade</th><th>Total PnL</th></tr>
+            ${ranked.length ? ranked.map(r => `<tr>
+              <td style="font-weight:700">${r.w} min</td>
+              <td class="mono">${r.trades}</td>
+              <td class="mono">${r.winPct}%</td>
+              <td class="mono" style="color:${col(r.avg)};font-weight:700">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(4)}</td>
+              <td class="mono" style="color:${col(r.pnl)}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)} ◎</td>
+            </tr>`).join('') : '<tr><td colspan="5" style="color:var(--text3);font-size:12px">No closed trades in this window yet.</td></tr>'}
+          </table></div>
+          <p style="font-size:11px;color:var(--text3);margin-top:10px">
+            Pooling every depth is the point — one strategy topping a leaderboard is luck, but a whole window
+            beating the others across four depths and two exit shapes is a pattern.
+          </p>
+        </div>`, '/sweep');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html.replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · Dip-window sweep</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(`<pre>Sweep error: ${err.message}</pre>`);
+      }
     } else if (pathname === '/shadow') {
       try {
         // Rolling window — default 24h. Old trades ran under different filter settings,
@@ -3309,6 +3430,7 @@ export function startDashboard(port?: number): void {
             key: s.preset,
             name: t.name.replace('📄 ', ''),
             dipPct: s.entryMode === 'dip' ? Math.round((s.dipPct ?? 0) * 100) : 0,
+            winMin: s.entryMode === 'dip' ? (s.dipWindowMin ?? 30) : 0,
             targets: s.tps.map(x => x.mult),
             stopPct: stopPct >= 95 ? null : stopPct,
             trailPct,
@@ -3323,6 +3445,7 @@ export function startDashboard(port?: number): void {
           };
         }).sort((a, b) => b.avg - a.avg);
 
+        const showAll = /[?&]all=1/.test(url);
         const enough = rows.filter(r => r.trades >= 8);
         const thin = rows.filter(r => r.trades < 8);
         const fmt = (r: any, rank: number) => `<tr>
@@ -3372,15 +3495,22 @@ export function startDashboard(port?: number): void {
           </div>
           <p style="font-size:12px;color:var(--text2);line-height:1.6">
             Ranked by average PnL per closed trade. <b>Strategies with fewer than 8 trades are listed separately</b> — a
-            small sample tells you nothing. Even above that bar, treat a one-day leader with suspicion: with 61 strategies
-            running, the best one is expected to look good by luck alone. What matters is a strategy that stays near the
-            top across several days <i>and</i> has enough trades to mean something.
+            small sample tells you nothing. Even above that bar, treat a one-day leader with suspicion: with
+            <b>${rows.length}</b> strategies running, the luckiest one is expected to reach a t-statistic of about
+            <b>${Math.sqrt(2 * Math.log(Math.max(2, rows.length))).toFixed(2)}</b> with no real edge at all. Below that bar
+            you are reading noise. What matters is a strategy that stays near the top across several days <i>and</i> has
+            enough trades to mean something — or better, a whole <a href="/sweep" style="color:#3b82f6">family</a> that wins together.
           </p>
-          <div style="overflow-x:auto"><table>${head}${enough.map((r, i) => fmt(r, i + 1)).join('')}</table></div>
+          <div style="overflow-x:auto"><table>${head}${enough.slice(0, showAll ? enough.length : 120).map((r, i) => fmt(r, i + 1)).join('')}</table></div>
+          ${!showAll && enough.length > 120 ? `<div style="margin-top:10px;font-size:12px;color:var(--text2)">
+            Showing the top 120 of ${enough.length}. <a href="/shadow?hours=${hours}&all=1" style="color:#3b82f6">Show all →</a>
+            <span style="color:var(--text3)"> · the tail is rarely worth the page weight, and everything below rank 120 is noise anyway.</span>
+          </div>` : ''}
         </div>
         ${thin.length ? `<div class="card" style="max-width:none">
           <h3>Too few trades to judge (${thin.length})</h3>
-          <div style="overflow-x:auto"><table>${head}${thin.map((r, i) => fmt(r, i + 1)).join('')}</table></div>
+          <div style="overflow-x:auto"><table>${head}${thin.slice(0, showAll ? thin.length : 60).map((r, i) => fmt(r, i + 1)).join('')}</table></div>
+          ${!showAll && thin.length > 60 ? `<div style="margin-top:10px;font-size:12px;color:var(--text3)">Showing 60 of ${thin.length}. <a href="/shadow?hours=${hours}&all=1" style="color:#3b82f6">Show all →</a></div>` : ''}
         </div>` : ''}
         <div class="note" style="font-size:11px;color:var(--text3);margin-top:14px;line-height:1.6">
           Paper fills at observed prices with a 2% haircut; real fills also pay ~2.5% protocol fee round-trip, so a
