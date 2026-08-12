@@ -60,6 +60,9 @@ export interface PendingEntry {
 
 const PENDING_FILE = `${CONFIG.DATA_DIR}/pending-entries.json`;
 
+/** A check may hold a mint's lock this long before another is allowed through. */
+const CHECK_LOCK_MS = 45_000;
+
 class TaskManager {
   private tasks = new Map<string, TradeTask>();
   private traders = new Map<string, Trader>();
@@ -416,13 +419,22 @@ class TaskManager {
 
   // Mints currently mid-check — the Jupiter loop and the DexScreener sweep overlap,
   // and a concurrent double-check could double-fire an exit (paper fills especially).
-  private checking = new Set<string>();
+  private checking = new Map<string, number>();
 
   /** Check price triggers for one mint across all tasks. Returns exits tagged by task
    *  and posts each executed sell to Discord. */
   async checkAll(mint: string, price: number, mc: number): Promise<TaskExitEvent[]> {
-    if (this.checking.has(mint)) return [];
-    this.checking.add(mint);
+    // The mutex used to be a bare Set with a try/finally. finally releases on an
+    // error but never on a HANG, so one un-answered RPC call left a mint marked
+    // "checking" forever and every later call for it returned instantly as a no-op —
+    // including the stop watchdog's forced exit. Entries now expire, so a stuck
+    // check degrades to a slow check instead of silently disabling that coin.
+    const held = this.checking.get(mint);
+    if (held !== undefined && Date.now() - held < CHECK_LOCK_MS) return [];
+    if (held !== undefined) {
+      console.error(`[Tasks] check lock on ${mint.slice(0, 8)} expired after ${CHECK_LOCK_MS}ms — forcing a fresh check`);
+    }
+    this.checking.set(mint, Date.now());
     try {
       return await this._checkAllInner(mint, price, mc);
     } finally {

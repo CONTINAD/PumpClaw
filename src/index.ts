@@ -9,7 +9,7 @@ import { PerformanceTracker, type PerformanceSnapshot } from './tracker.js';
 import { registerRuntime } from './runtime.js';
 import { PaperTrader } from './paper-trader.js';
 import { taskManager } from './tasks.js';
-import { getWallet, getSolBalance } from './wallet.js';
+import { getWallet, getSolBalance, withTimeout } from './wallet.js';
 import { describeStrategy } from './strategy.js';
 import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
@@ -981,9 +981,13 @@ function noteBlindBlock(name: string): void {
   ).catch(() => {});
 }
 
+/** Set every pass of the real-position loop. A stale value means exits are dead. */
+export let realLoopHeartbeat = Date.now();
+
 async function realPositionLoop() {
   while (true) {
     await new Promise(r => setTimeout(r, CONFIG.REAL_CHECK_INTERVAL_MS));
+    realLoopHeartbeat = Date.now();
     try {
       const real = taskManager.openPositions().filter(({ task }) => !task.paper);
       if (real.length === 0) continue;
@@ -995,7 +999,16 @@ async function realPositionLoop() {
         for (const task of taskManager.all().filter(t => !t.paper)) {
           const trader = taskManager.traderFor(task);
           if (trader.getPosition(mint)?.status !== 'open') continue;
-          const exits = await trader.checkPosition(mint, m.priceUsd, m.marketCap);
+          // Time-boxed: a single position must never be able to stall the loop that
+          // manages every other position. A rejection here is logged and the loop
+          // carries on; a hang used to take all exits down with it.
+          const exits = await withTimeout(
+            trader.checkPosition(mint, m.priceUsd, m.marketCap),
+            60_000, `checkPosition ${task.name}/${mint.slice(0, 8)}`,
+          ).catch((e: any) => {
+            console.error(`[RealLoop] ${e.message}`);
+            return [] as Awaited<ReturnType<typeof trader.checkPosition>>;
+          });
           for (const exit of exits) {
             log(`💰 REAL EXIT [${task.name}]: $${trader.getPosition(mint)?.symbol ?? mint.slice(0, 8)} — ${exit.label} → ${exit.solReceived.toFixed(4)} SOL`);
             sendTradeActivity(task.name, 'sell', trader.getPosition(mint)?.symbol ?? mint.slice(0, 8), mint,
@@ -1035,6 +1048,39 @@ async function poolPriceLoop() {
       if (++ticks % 10 === 0 && mints.size) await revalidate();
     } catch (err: any) {
       console.error(`[PoolPrice] loop: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Notice when the position loop itself stops.
+ *
+ * Every other safety layer assumes the loop is running. When it hung on 08-12
+ * nothing reported it: the scanner kept calling, the dashboard kept serving, and a
+ * live position sat 95% below its stop for 8 hours. A loop that has not ticked in
+ * a minute is broken, and that is worth waking someone for.
+ */
+async function loopWatchdog() {
+  let alerted = false;
+  while (true) {
+    await new Promise(r => setTimeout(r, 30_000));
+    const stale = Date.now() - realLoopHeartbeat;
+    if (stale > 60_000) {
+      if (!alerted) {
+        alerted = true;
+        const open = taskManager.openPositions().filter(({ task }) => !task.paper).length;
+        log(`🚨 POSITION LOOP STALLED — no tick for ${Math.round(stale / 1000)}s, ${open} live position(s) unmanaged`);
+        sendOpsAlert(
+          `🚨 **Position loop stalled** — no tick for ${Math.round(stale / 1000)}s. ` +
+          `${open} live position(s) are currently **unmanaged: stops will not fire**. ` +
+          `Redeploy to restart it, and sell manually if you are holding.`,
+          CONFIG.TRADES_WEBHOOK,
+        ).catch(() => {});
+      }
+    } else if (alerted) {
+      alerted = false;
+      log('✅ Position loop recovered');
+      sendOpsAlert('✅ **Position loop recovered** — stops are being evaluated again.', CONFIG.TRADES_WEBHOOK).catch(() => {});
     }
   }
 }
@@ -1320,6 +1366,9 @@ async function main() {
     });
     poolPriceLoop().catch(err => {
       console.error(`[PoolPrice] Fatal: ${err.message}`);
+    });
+    loopWatchdog().catch(err => {
+      console.error(`[LoopWatchdog] Fatal: ${err.message}`);
     });
   }
 

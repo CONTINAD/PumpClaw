@@ -16,7 +16,7 @@
  * an exit — the failure mode is "no opinion", never "wrong opinion" or "hang".
  */
 import { PublicKey } from '@solana/web3.js';
-import { getConnection } from './wallet.js';
+import { getConnection, withTimeout } from './wallet.js';
 import { getSolPrice } from './dexscreener.js';
 import { CONFIG } from './config.js';
 
@@ -104,9 +104,9 @@ async function resolveVaults(mint: string): Promise<{ pool: string; base: Public
   // so both programs have to be checked or the base vault is simply missing.
   let base: PublicKey | null = null, quote: PublicKey | null = null;
   for (const programId of [TOKEN_PROGRAM, TOKEN_2022]) {
-    const accts = await conn.getTokenAccountsByOwner(pool, { programId }, 'confirmed').catch(() => null);
+    const accts = await withTimeout(conn.getTokenAccountsByOwner(pool, { programId }, 'confirmed'), 10_000, 'poolVaults').catch(() => null);
     for (const a of accts?.value ?? []) {
-      const parsed: any = await conn.getParsedAccountInfo(a.pubkey, 'confirmed').catch(() => null);
+      const parsed: any = await withTimeout(conn.getParsedAccountInfo(a.pubkey, 'confirmed'), 10_000, 'vaultInfo').catch(() => null);
       const info = (parsed?.value?.data as any)?.parsed?.info;
       if (!info) continue;
       if (info.mint === mint) base = a.pubkey;
@@ -141,8 +141,8 @@ export async function watchMint(mint: string): Promise<void> {
     const conn = getConnection();
     // Decimals are fixed for the life of the mint — read once, never again.
     const [qBal, bBal] = await Promise.all([
-      conn.getTokenAccountBalance(v.quote, 'confirmed'),
-      conn.getTokenAccountBalance(v.base, 'confirmed'),
+      withTimeout(conn.getTokenAccountBalance(v.quote, 'confirmed'), 10_000, 'quoteVault'),
+      withTimeout(conn.getTokenAccountBalance(v.base, 'confirmed'), 10_000, 'baseVault'),
     ]);
     const w: Watch = {
       mint, pool: v.pool, baseVault: v.base, quoteVault: v.quote, subs: [],

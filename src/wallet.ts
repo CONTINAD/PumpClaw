@@ -5,6 +5,37 @@ import { dirname, join } from 'path';
 import bs58 from 'bs58';
 import { CONFIG } from './config.js';
 
+
+/**
+ * Bound an RPC call in time.
+ *
+ * @solana/web3.js Connection methods have NO timeout. If the endpoint accepts the
+ * socket and never answers, the await never settles and never throws — the caller
+ * is stuck forever. On 2026-08-12 that stranded a live position for 8 hours: a
+ * balance lookup hung inside the 1-second position loop, the loop is sequential so
+ * it stopped entirely, and every exit for every position stopped with it while the
+ * scanner carried on looking healthy.
+ *
+ * A rejection is always recoverable — callers already catch and retry. A hang is
+ * not recoverable by anything.
+ */
+export async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`RPC timeout after ${ms}ms: ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Default ceiling for a single RPC round trip in the trading path. */
+const RPC_TIMEOUT_MS = 12_000;
+
 const WALLET_FILE = join(CONFIG.DATA_DIR, 'wallet.json');
 
 let _wallet: Keypair | null = null;
@@ -75,7 +106,7 @@ export function getConnection(): Connection {
 export async function getSolBalance(keypair?: Keypair): Promise<number> {
   const conn = getConnection();
   const wallet = keypair ?? getWallet();
-  const lamports = await conn.getBalance(wallet.publicKey);
+  const lamports = await withTimeout(conn.getBalance(wallet.publicKey), RPC_TIMEOUT_MS, 'getBalance');
   return lamports / LAMPORTS_PER_SOL;
 }
 
@@ -89,7 +120,7 @@ export async function getTokenBalance(mint: string, keypair?: Keypair): Promise<
   for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
     try {
       const ata = await getAssociatedTokenAddress(mintPk, wallet.publicKey, false, programId);
-      const info = await conn.getTokenAccountBalance(ata);
+      const info = await withTimeout(conn.getTokenAccountBalance(ata), RPC_TIMEOUT_MS, 'getTokenAccountBalance');
       const amount = parseInt(info.value.amount);
       if (amount > 0) return amount;
     } catch {
@@ -108,7 +139,7 @@ export async function getTokenBalanceUi(mint: string): Promise<number> {
   for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
     try {
       const ata = await getAssociatedTokenAddress(mintPk, wallet.publicKey, false, programId);
-      const info = await conn.getTokenAccountBalance(ata);
+      const info = await withTimeout(conn.getTokenAccountBalance(ata), RPC_TIMEOUT_MS, 'getTokenAccountBalance');
       const amount = info.value.uiAmount ?? 0;
       if (amount > 0) return amount;
     } catch {
@@ -133,7 +164,7 @@ export async function getTokenHoldings(keypair?: Keypair): Promise<TokenHolding[
   const out: TokenHolding[] = [];
   for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
     try {
-      const res = await conn.getParsedTokenAccountsByOwner(owner, { programId });
+      const res = await withTimeout(conn.getParsedTokenAccountsByOwner(owner, { programId }), RPC_TIMEOUT_MS, 'getParsedTokenAccountsByOwner');
       for (const { account } of res.value) {
         const info: any = (account.data as any).parsed?.info;
         const amt = info?.tokenAmount;
@@ -156,7 +187,7 @@ export async function closeTokenAccount(mint: string, keypair?: Keypair): Promis
     try {
       const ata = await getAssociatedTokenAddress(mintPk, wallet.publicKey, false, programId);
       // Check account exists and has 0 balance
-      const info = await conn.getTokenAccountBalance(ata);
+      const info = await withTimeout(conn.getTokenAccountBalance(ata), RPC_TIMEOUT_MS, 'getTokenAccountBalance');
       const amount = parseInt(info.value.amount);
       if (amount > 0) continue; // still has tokens, skip
 
@@ -184,7 +215,7 @@ export async function mintDecimals(mint: string): Promise<number> {
   const hit = decimalsCache.get(mint);
   if (hit !== undefined) return hit;
   try {
-    const info: any = await getConnection().getParsedAccountInfo(new PublicKey(mint));
+    const info: any = await withTimeout(getConnection().getParsedAccountInfo(new PublicKey(mint)), RPC_TIMEOUT_MS, 'getParsedAccountInfo(mint)');
     const d = info?.value?.data?.parsed?.info?.decimals;
     const v = typeof d === 'number' ? d : 6;
     decimalsCache.set(mint, v);
