@@ -215,3 +215,166 @@ export async function renderPnlCard(data: CardData): Promise<Buffer> {
 
   return canvas.toBuffer('image/png');
 }
+
+// ── Leaderboard card ────────────────────────────────────────
+
+export interface BoardEntry {
+  rec: CallRecord;
+  peakMult: number;
+  peakMC: number;
+  /** Coin art. Stored calls carry imageUri, but older records predate it, so the
+   *  caller may pass a freshly-resolved URL rather than silently show the mark. */
+  imageUrl?: string;
+}
+
+export interface BoardData {
+  entries: BoardEntry[];
+  windowLabel: string;   // "last 24 hours"
+  totalCalls: number;
+  doubles: number;
+  median: number;
+}
+
+const ROW_H = 170;
+const BOARD_W = 1200;
+
+/** Circular coin art with a coloured glow, falling back to the PumpClaw mark. */
+async function drawCoin(ctx: SKRSContext2D, url: string | undefined, cx: number, cy: number, cr: number, up: boolean): Promise<void> {
+  if (url) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
+      const img = await loadImage(Buffer.from(await res.arrayBuffer()));
+      ctx.save();
+      ctx.shadowColor = up ? GREEN : RED;
+      ctx.shadowBlur = 28;
+      ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+      ctx.fillStyle = '#0a0e17'; ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2); ctx.clip();
+      ctx.drawImage(img, cx - cr, cy - cr, cr * 2, cr * 2);
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2); ctx.stroke();
+      return;
+    } catch { /* fall through to the mark */ }
+  }
+  const logo = await getLogo();
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+  ctx.fillStyle = logo ? '#ffffff' : 'rgba(20,26,44,0.9)';
+  ctx.fill();
+  if (logo) { ctx.clip(); ctx.drawImage(logo, cx - cr, cy - cr, cr * 2, cr * 2); }
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2); ctx.stroke();
+}
+
+export async function renderLeaderboardCard(data: BoardData): Promise<Buffer> {
+  const rows = data.entries.slice(0, 5);
+  const H2 = 210 + rows.length * ROW_H + 96;
+  const canvas = createCanvas(BOARD_W, H2);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#04050b';
+  ctx.fillRect(0, 0, BOARD_W, H2);
+  const grad = ctx.createRadialGradient(BOARD_W * 0.5, 140, 60, BOARD_W * 0.5, 140, 900);
+  grad.addColorStop(0, 'rgba(40,52,100,0.38)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, BOARD_W, H2);
+
+  // Reuse the starfield, stretched to this canvas.
+  for (let i = 0; i < 260; i++) {
+    const x = Math.random() * BOARD_W, y = Math.random() * H2;
+    ctx.globalAlpha = Math.random() * 0.7 + 0.15;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(x, y, Math.random() * 1.6 + 0.3, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.strokeStyle = 'rgba(150,170,220,0.25)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(6, 6, BOARD_W - 12, H2 - 12, 28); ctx.stroke();
+
+  // ── Header ──
+  const logo = await getLogo();
+  if (logo) {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(64, 62, 30, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.clip();
+    ctx.drawImage(logo, 34, 32, 60, 60);
+    ctx.restore();
+  } else drawClaw(ctx, 36, 32, 2.2, GOLD);
+
+  ctx.textAlign = 'left';
+  ctx.font = '22px PixelFont';
+  ctx.fillStyle = GOLD;
+  ctx.fillText('PumpClaw', 110, 70);
+
+  ctx.font = '46px PixelFont';
+  ctx.fillStyle = WHITE;
+  ctx.fillText('MOG LEADERBOARD', 36, 150);
+
+  ctx.font = '22px PixelFont';
+  ctx.fillStyle = DIM;
+  ctx.fillText(data.windowLabel.toUpperCase(), 36, 190);
+
+  // ── Rows ──
+  for (let i = 0; i < rows.length; i++) {
+    const e = rows[i];
+    const top = 210 + i * ROW_H;
+    const mid = top + ROW_H / 2;
+    const up = e.peakMult >= 1;
+    const accent = i === 0 ? GOLD : up ? GREEN : RED;
+
+    // Row plate — the leader gets a brighter one so the podium reads at a glance.
+    ctx.fillStyle = i === 0 ? 'rgba(255,215,94,0.07)' : 'rgba(255,255,255,0.028)';
+    ctx.beginPath(); ctx.roundRect(28, top + 10, BOARD_W - 56, ROW_H - 20, 18); ctx.fill();
+    ctx.strokeStyle = i === 0 ? 'rgba(255,215,94,0.32)' : 'rgba(150,170,220,0.14)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(28, top + 10, BOARD_W - 56, ROW_H - 20, 18); ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.font = i === 0 ? '46px PixelFont' : '36px PixelFont';
+    ctx.fillStyle = accent;
+    ctx.fillText(String(i + 1), 82, mid + (i === 0 ? 16 : 12));
+
+    await drawCoin(ctx, e.imageUrl ?? e.rec.imageUri, 190, mid, 54, up);
+
+    ctx.textAlign = 'left';
+    ctx.font = '34px PixelFont';
+    ctx.fillStyle = WHITE;
+    ctx.fillText(`$${e.rec.symbol}`.slice(0, 14).toUpperCase(), 268, mid - 8);
+
+    ctx.font = '20px PixelFont';
+    ctx.fillStyle = DIM;
+    ctx.fillText(`${fmtMc(e.rec.entryMC)}  >  ${fmtMc(e.peakMC)}`, 268, mid + 30);
+
+    // Multiplier, right-aligned — the number people are here for.
+    const big = e.peakMult >= 10
+      ? `${e.peakMult.toFixed(e.peakMult >= 100 ? 0 : 1)}X`
+      : `${e.peakMult.toFixed(2)}X`;
+    ctx.textAlign = 'right';
+    ctx.font = i === 0 ? '62px PixelFont' : '50px PixelFont';
+    ctx.fillStyle = up ? GREEN : RED;
+    ctx.shadowColor = up ? GREEN : RED;
+    ctx.shadowBlur = i === 0 ? 30 : 18;
+    ctx.fillText(big, BOARD_W - 56, mid + 20);
+    ctx.shadowBlur = 0;
+  }
+
+  // ── Footer ──
+  const hitPct = data.totalCalls ? Math.round(data.doubles / data.totalCalls * 100) : 0;
+  ctx.textAlign = 'center';
+  ctx.font = '22px PixelFont';
+  ctx.fillStyle = DIM;
+  ctx.fillText(
+    `${data.totalCalls} CALLS   ${data.doubles} HIT 2X+ (${hitPct}%)   MEDIAN ${data.median.toFixed(2)}X`,
+    BOARD_W / 2, H2 - 44,
+  );
+
+  return canvas.toBuffer('image/png');
+}

@@ -7,7 +7,7 @@ import { createPublicKey, verify as cryptoVerify } from 'crypto';
 import { readFileSync } from 'fs';
 import { CONFIG } from './config.js';
 import { fmtUsd } from './discord.js';
-import { renderPnlCard } from './pnl-card.js';
+import { renderPnlCard, renderLeaderboardCard, type BoardEntry } from './pnl-card.js';
 import type { CallRecord } from './tracker.js';
 
 // ── Signature verification (Ed25519, no external deps) ──────
@@ -124,24 +124,29 @@ function pad(str: string, width: number): string {
   return str.length >= width ? str.slice(0, width) : str + ' '.repeat(width - str.length);
 }
 
-function buildLeaderboard(window: string): any {
+function selectBoard(window: string) {
   const win = WINDOWS[window] ?? WINDOWS['24h'];
   const cutoff = win.ms === Number.MAX_SAFE_INTEGER ? 0 : Date.now() - win.ms;
   const inWindow = loadCalls().filter(c => c.entryTime >= cutoff);
-
-  if (inWindow.length === 0) {
-    return { content: `No PumpClaw calls in the ${win.label}.`, flags: 64 };
-  }
+  if (inWindow.length === 0) return null;
 
   const ranked = [...inWindow].sort((a, b) => (b.peakMultiplier ?? 1) - (a.peakMultiplier ?? 1));
-  const top = ranked.slice(0, 5);
-
   // Aggregates over the whole window, not just the podium — the top 5 alone
   // would flatter any window, however bad the rest of it was.
   const doubles = inWindow.filter(c => (c.peakMultiplier ?? 1) >= 2).length;
-  const best = ranked[0]?.peakMultiplier ?? 1;
   const median = [...inWindow].sort((a, b) => (a.peakMultiplier ?? 1) - (b.peakMultiplier ?? 1))
     [Math.floor(inWindow.length / 2)]?.peakMultiplier ?? 1;
+  return { win, inWindow, ranked, top: ranked.slice(0, 5), doubles, median };
+}
+
+function buildLeaderboard(window: string): any {
+  const sel = selectBoard(window);
+  if (!sel) {
+    const win = WINDOWS[window] ?? WINDOWS['24h'];
+    return { content: `No PumpClaw calls in the ${win.label}.`, flags: 64 };
+  }
+  const { win, inWindow, ranked, top, doubles, median } = sel;
+  const best = ranked[0]?.peakMultiplier ?? 1;
 
   const rows: string[] = ['```ansi'];
   top.forEach((c, i) => {
@@ -215,6 +220,74 @@ async function followUpWithCard(token: string, mint: string): Promise<void> {
   }
 }
 
+/**
+ * Render the leaderboard PNG and attach it to the deferred response.
+ *
+ * Deferred rather than inline: five coin images are fetched to draw the card, and
+ * that will not reliably finish inside Discord's 3-second window.
+ */
+async function followUpWithBoard(token: string, window: string): Promise<void> {
+  const url = `https://discord.com/api/v10/webhooks/${CONFIG.DISCORD_APP_ID}/${token}/messages/@original`;
+  try {
+    const sel = selectBoard(window);
+    if (!sel) {
+      const win = WINDOWS[window] ?? WINDOWS['24h'];
+      await fetch(url, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: `No PumpClaw calls in the ${win.label}.` }),
+      });
+      return;
+    }
+
+    // Refresh peaks against the live market so a coin still running is not
+    // ranked on a stale high-water mark.
+    const entries: BoardEntry[] = await Promise.all(sel.top.map(async rec => {
+      let peakMult = rec.peakMultiplier ?? 1;
+      let peakMC = rec.peakMC ?? rec.entryMC;
+      let imageUrl = rec.imageUri;
+      try {
+        const res = await fetch(`${CONFIG.DEXSCREENER_API}/latest/dex/tokens/${rec.mint}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(2500),
+        });
+        const d: any = await res.json();
+        const pair = (d.pairs ?? [])
+          .filter((p: any) => p.baseToken?.address === rec.mint && (p.liquidity?.usd ?? 0) >= 500)
+          .sort((a: any, b: any) => (+b.volume?.h24 || 0) - (+a.volume?.h24 || 0))[0];
+        if (pair) {
+          const price = +pair.priceUsd || 0;
+          const mc = +pair.marketCap || +pair.fdv || 0;
+          if (price > 0 && rec.entryPrice > 0) peakMult = Math.max(peakMult, price / rec.entryPrice);
+          if (mc > 0) peakMC = Math.max(peakMC, mc);
+          if (!imageUrl && pair.info?.imageUrl) imageUrl = pair.info.imageUrl;
+        }
+      } catch { /* stored values are good enough */ }
+      return { rec, peakMult, peakMC, imageUrl };
+    }));
+    entries.sort((a, b) => b.peakMult - a.peakMult);
+
+    const png = await renderLeaderboardCard({
+      entries,
+      windowLabel: sel.win.label,
+      totalCalls: sel.inWindow.length,
+      doubles: sel.doubles,
+      median: sel.median,
+    });
+
+    const fd = new FormData();
+    fd.append('payload_json', JSON.stringify({ attachments: [{ id: 0, filename: 'pumpclaw-leaderboard.png' }] }));
+    fd.append('files[0]', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'pumpclaw-leaderboard.png');
+    const res = await fetch(url, { method: 'PATCH', body: fd });
+    if (!res.ok) console.error(`[Interactions] Board follow-up failed ${res.status}: ${await res.text()}`);
+  } catch (err: any) {
+    console.error(`[Interactions] Board render error: ${err.message}`);
+    // Fall back to the text board rather than leaving a dead "thinking..." message.
+    await fetch(url, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildLeaderboard(window)),
+    }).catch(() => {});
+  }
+}
+
 /** Handle a verified interaction payload. Returns the JSON response body. */
 export async function handleInteraction(payload: any): Promise<any> {
   if (payload.type === 1) return { type: 1 }; // PING → PONG
@@ -233,7 +306,8 @@ export async function handleInteraction(payload: any): Promise<any> {
 
   if (payload.type === 2 && payload.data?.name === 'mogboard') {
     const win = String(payload.data.options?.find((o: any) => o.name === 'timeframe')?.value ?? '24h');
-    return { type: 4, data: buildLeaderboard(win) };
+    followUpWithBoard(payload.token, win).catch(() => {});
+    return { type: 5 }; // DEFERRED — the card needs longer than 3s to draw
   }
 
   return { type: 4, data: { content: 'Unknown command', flags: 64 } };
