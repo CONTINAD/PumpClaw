@@ -273,6 +273,41 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: tokenAccts.length, details: 'too few holders — blocked (fail closed)' };
     }
 
+    // 1b. Single-wallet supply concentration.
+    //
+    // The largest holder is the AMM pool (or the bonding curve pre-migration) and
+    // is skipped — it holds most of the supply by construction. The wallet after
+    // it is, on a fresh launch, usually the dev. If that one wallet can dump a
+    // fifth of the supply, no exit strategy survives the decision; the stop fires
+    // into a book that is already gone.
+    //
+    // Costs one extra RPC call per candidate, not one per holder: the balances
+    // come back with getTokenLargestAccounts above, and only the supply is new.
+    if (CONFIG.MAX_SINGLE_HOLDER_PCT > 0) {
+      try {
+        const supplyRes = await rpc('getTokenSupply', [mint]);
+        const supply = parseFloat(supplyRes?.value?.uiAmountString ?? supplyRes?.value?.uiAmount ?? '0');
+        const amounts = (largest.value ?? [])
+          .map((a: any) => parseFloat(a?.uiAmountString ?? a?.uiAmount ?? '0'))
+          .filter((n: number) => Number.isFinite(n) && n > 0)
+          .sort((a: number, b: number) => b - a);
+        if (supply > 0 && amounts.length >= 2) {
+          const topNonPool = amounts[1];              // [0] is the pool
+          const pctHeld = (topNonPool / supply) * 100;
+          if (pctHeld >= CONFIG.MAX_SINGLE_HOLDER_PCT) {
+            return {
+              safe: false, clusterPct: 0, maxCluster: 0, totalChecked: tokenAccts.length,
+              details: `single wallet holds ${pctHeld.toFixed(1)}% of supply (max ${CONFIG.MAX_SINGLE_HOLDER_PCT}%) [DEV HOLDS]`,
+            };
+          }
+        }
+      } catch {
+        // Supply lookup failed. Deliberately does NOT block — the checks below are
+        // the real defence, and failing closed on a single optional call would turn
+        // an RPC hiccup into a call drought.
+      }
+    }
+
     // 2. Resolve token accounts → owner wallets
     const ownerWallets = await resolveOwnerWallets(tokenAccts.map(a => a.address));
 

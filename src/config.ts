@@ -86,6 +86,13 @@ export const CONFIG = {
   // Every other failure here already fails closed. This one now does too.
   BUNDLE_BLOCK_UNVERIFIABLE: true,
   BUNDLE_MIN_VERIFIABLE: 3,         // need this many fresh wallets to trust a PASS
+
+  // Single-wallet supply concentration. The largest holder is the pool (or the
+  // bonding curve) and is skipped; this is about the biggest wallet AFTER that,
+  // which on a fresh launch is normally the dev. A wallet holding a fifth of the
+  // supply can end the coin whenever it decides to, and no exit strategy survives
+  // that. 0 disables the check.
+  MAX_SINGLE_HOLDER_PCT: 20,
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.
   GRAPH_CHECK_ENABLED: true,

@@ -248,10 +248,11 @@ async function fastScanCycle() {
       // RPC quietly turning into a call drought, which is exactly how five days of
       // silence happened before. Lumping them under one label hid that.
       const blind = /\[UNVERIFIABLE\]|fail closed/.test(bundle.details);
-      const reason = blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
+      const devHeavy = /\[DEV HOLDS\]/.test(bundle.details);
+      const reason = devHeavy ? 'DEV_HOLDS' : blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
       log(`⚠ ${reason} — skipping ${post.name}: ${bundle.details}`);
       recordSkip(post, reason, bundle.details, market.marketCap);
-      if (blind) noteBlindBlock(post.name); else blindBlocks = 0;
+      if (blind && !devHeavy) noteBlindBlock(post.name); else blindBlocks = 0;
       continue;
     }
     blindBlocks = 0;
