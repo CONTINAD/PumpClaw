@@ -99,6 +99,18 @@ export const CONFIG = {
   // supply can end the coin whenever it decides to, and no exit strategy survives
   // that. 0 disables the check.
   MAX_SINGLE_HOLDER_PCT: 20,
+
+  // Aged-farm detection. A farm does not have to be built from fresh wallets —
+  // $TOADER was called with all 11 top holders being high-activity wallets whose
+  // transaction history spanned the same 23 days, and not one organic new buyer.
+  // Funding-time clustering could not see it (veterans are excluded by design) and
+  // the wallet graph could not either (it reads original funding, which on a
+  // months-old wallet is unrelated to whoever coordinated it last week).
+  //
+  // Measured on real calls: TOADER spanned 23 days with 0 fresh holders, while
+  // Doug/MAUS/1two3code spanned 124-196 days and each had organic buyers.
+  COHORT_SPAN_DAYS: 60,             // veteran activity spans this tight = one cohort
+  COHORT_MIN_VETERANS: 5,           // need this many to call it a pattern
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.
   GRAPH_CHECK_ENABLED: true,

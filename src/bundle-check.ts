@@ -99,6 +99,10 @@ interface WalletInfo {
   funder: string | null;      // who sent the first SOL tx to this wallet
   funderIsExchange: boolean;  // true if funder has 300+ txs (exchange hot wallet)
   veteran: boolean;           // 600+ txs — real funding time unknowable, excluded from clustering
+  /** For veterans: days covered by the transactions we could fetch. Not the wallet's
+   *  age — it is how fast the wallet burns through activity, which is a fingerprint.
+   *  Cloned farm wallets share it; organic holders do not. */
+  activitySpanDays?: number;
 }
 
 // Cache stores both funding time and funder source
@@ -134,7 +138,14 @@ async function getWalletInfo(wallet: string): Promise<WalletInfo> {
   // tx (just its ~600th most recent), so a fake-recent funding time would poison the
   // cluster analysis. Bundle/farm wallets are always fresh — veterans are just bots.
   if (sigBatches.length >= MAX_SIG_LIMIT * 2) {
-    const info: WalletInfo = { fundingTime: null, funder: null, funderIsExchange: false, veteran: true };
+    // Keep how far back those transactions reach. The comment above is right that
+    // this is not a funding time — but it was wrong that farms are always fresh.
+    // $TOADER was called with all 11 top holders sharing a 23-day activity span and
+    // zero organic buyers, which no threshold here could see once this was discarded.
+    const oldestSig = sigBatches[sigBatches.length - 1];
+    const spanDays = oldestSig?.blockTime
+      ? (Date.now() / 1000 - oldestSig.blockTime) / 86400 : undefined;
+    const info: WalletInfo = { fundingTime: null, funder: null, funderIsExchange: false, veteran: true, activitySpanDays: spanDays };
     walletInfoCache.set(wallet, info);
     return info;
   }
@@ -176,6 +187,7 @@ interface BatchedWalletData {
   exchangeFundedCount: number; // how many holders were funded by exchange-like wallets
   totalWithFunder: number;     // how many holders we could identify a funder for
   veteranCount: number;        // holders with 600+ txs (excluded from clustering)
+  veteranSpans: number[];      // their activity spans, for cohort detection
 }
 
 async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletData> {
@@ -184,6 +196,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
   let exchangeFundedCount = 0;
   let totalWithFunder = 0;
   let veteranCount = 0;
+  const veteranSpans: number[] = [];
   // 10-wallet batches with short gaps — sized for a paid Helius plan. The old
   // 5/300ms pacing added ~20s of latency per call under the free tier's limits.
   const BATCH_SIZE = 10;
@@ -194,7 +207,10 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
 
     for (const r of results) {
       if (r.status === 'fulfilled') {
-        if (r.value.veteran) veteranCount++;
+        if (r.value.veteran) {
+          veteranCount++;
+          if (typeof r.value.activitySpanDays === 'number') veteranSpans.push(r.value.activitySpanDays);
+        }
         if (r.value.fundingTime !== null) fundingTimes.push(r.value.fundingTime);
         if (r.value.funder) {
           funders.push(r.value.funder);
@@ -209,7 +225,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
     }
   }
 
-  return { fundingTimes, funders, exchangeFundedCount, totalWithFunder, veteranCount };
+  return { fundingTimes, funders, exchangeFundedCount, totalWithFunder, veteranCount, veteranSpans };
 }
 
 /**
@@ -360,7 +376,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
 
     // 3. Fetch wallet funding times + funder sources — throttled batches of 5 with caching
     const walletData = await getWalletDataBatched(ownerWallets);
-    const { fundingTimes, funders, veteranCount } = walletData;
+    const { fundingTimes, funders, veteranCount, veteranSpans } = walletData;
 
     if (fundingTimes.length + veteranCount < 3) {
       return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length, details: 'insufficient wallet data — blocked (fail closed)' };
@@ -382,6 +398,22 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
     // All-veteran top holders = every funding-time window is 0/0 and reads as clean.
     // A clean wallet graph rescues these (real sniper-heavy launches); only block when
     // we have neither funding-time data NOR graph data to judge on.
+    // Aged cohort: no organic buyers, and every veteran holder burns through its
+    // history at the same rate. Checked before the unverifiable guard because the
+    // graph having data does not rescue this — the graph reads funding that predates
+    // the coordination by months.
+    if (CONFIG.COHORT_SPAN_DAYS > 0 && fundingTimes.length === 0 && veteranSpans.length >= CONFIG.COHORT_MIN_VETERANS) {
+      const lo = Math.min(...veteranSpans), hi = Math.max(...veteranSpans);
+      const spread = hi - lo;
+      if (spread <= CONFIG.COHORT_SPAN_DAYS) {
+        return {
+          safe: false, clusterPct: 0, maxCluster: 0, totalChecked: ownerWallets.length,
+          details: `aged farm — ${veteranSpans.length} holders, no organic buyers, activity spans ` +
+            `${lo.toFixed(0)}-${hi.toFixed(0)}d (${spread.toFixed(0)}d apart, max ${CONFIG.COHORT_SPAN_DAYS}) [AGED COHORT]`,
+        };
+      }
+    }
+
     if (CONFIG.BUNDLE_BLOCK_UNVERIFIABLE && fundingTimes.length < CONFIG.BUNDLE_MIN_VERIFIABLE && graph.checked < 3) {
       return {
         safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length,
