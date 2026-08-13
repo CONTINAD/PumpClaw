@@ -205,7 +205,11 @@ const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
 export const SETTINGS_KEYS = [
   'TRADE_ENABLED', 'TRADE_EXIT_STRATEGY', 'TRADE_ENTRY_PCT',
   'TRADE_MIN_ENTRY_SOL', 'TRADE_TRAILING_DROP', 'TRADE_SLIPPAGE_BPS',
+  'RPC_FALLBACKS',
 ] as const;
+
+/** True when RPC_FALLBACKS came from the env rather than the settings page. */
+export const RPC_FALLBACKS_FROM_ENV = CONFIG.RPC_FALLBACKS.length > 0;
 
 export function loadSettingsOverrides(): void {
   try {

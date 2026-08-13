@@ -275,6 +275,7 @@ export async function mintSupply(mint: string): Promise<number> {
 
 // ── Multi-endpoint broadcast ────────────────────────────────
 
+const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
 let _pool: Connection[] | null = null;
 
 /** Every configured endpoint, primary first. */
@@ -284,6 +285,49 @@ export function connectionPool(): Connection[] {
   _pool = urls.map(u => new Connection(u, 'confirmed'));
   console.log(`[Wallet] RPC pool: ${_pool.length} endpoint(s)`);
   return _pool;
+}
+
+/**
+ * Drop the cached pool so the next call rebuilds from current CONFIG.
+ *
+ * Endpoints are editable from the settings page, and a change that needs a
+ * redeploy to take effect is a change that gets made during an outage and helps
+ * nobody until the outage is over.
+ */
+export function resetConnectionPool(): void { _pool = null; }
+
+/**
+ * Check that an endpoint is real, reachable and actually on mainnet.
+ *
+ * A backup that does not work is worse than no backup, because it reads as
+ * protection on the settings page while failing at the only moment it matters.
+ * A typo, an expired key and a devnet URL all look identical until a trade needs
+ * them, so each one is proven here instead.
+ */
+export async function probeRpcEndpoint(url: string): Promise<{ ok: boolean; slot?: number; ms?: number; error?: string }> {
+  const t0 = Date.now();
+  try {
+    const conn = new Connection(url, 'confirmed');
+    const [slot, genesis] = await Promise.all([
+      withTimeout(conn.getSlot(), 8_000, 'getSlot'),
+      withTimeout(conn.getGenesisHash(), 8_000, 'getGenesisHash').catch(() => MAINNET_GENESIS),
+    ]);
+    if (genesis !== MAINNET_GENESIS) return { ok: false, error: 'not mainnet — wrong cluster' };
+    return { ok: true, slot, ms: Date.now() - t0 };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e).slice(0, 110) };
+  }
+}
+
+/** Mask an endpoint for display — host stays legible, the API key does not. */
+export function maskRpc(url: string): string {
+  try {
+    const u = new URL(url);
+    const key = u.searchParams.get('api-key') ?? u.searchParams.get('apikey');
+    const tail = key ? `?api-key=…${key.slice(-4)}`
+      : u.pathname.length > 8 ? `/…${u.pathname.slice(-4)}` : '';
+    return u.host + tail;
+  } catch { return url.slice(0, 24) + '…'; }
 }
 
 /**

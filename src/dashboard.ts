@@ -3,8 +3,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
-import { CONFIG, saveSettingsOverrides } from './config.js';
-import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldings } from './wallet.js';
+import { CONFIG, saveSettingsOverrides, RPC_FALLBACKS_FROM_ENV } from './config.js';
+import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldings,
+         resetConnectionPool, probeRpcEndpoint, maskRpc } from './wallet.js';
 import { taskManager, type TradeTask } from './tasks.js';
 import { sendTradeActivity } from './discord.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
@@ -1647,6 +1648,15 @@ async function buildSettingsHTML(msg?: { ok: boolean; text: string }): Promise<s
   }
   const msgHtml = msg ? `<div class="msg ${msg.ok ? 'ok' : 'err'}">${msg.text}</div>` : '';
 
+  const fallbacks = CONFIG.RPC_FALLBACKS;
+  const poolCount = (CONFIG.HELIUS_RPC ? 1 : 0) + fallbacks.length;
+  const poolColor = poolCount >= 3 ? '#22c55e' : poolCount === 2 ? '#eab308' : '#ef4444';
+  const poolList = [
+    ...(CONFIG.HELIUS_RPC ? [[maskRpc(CONFIG.HELIUS_RPC), 'primary']] : []),
+    ...fallbacks.map(u => [maskRpc(u), 'backup'] as [string, string]),
+  ].map(([host, kind]) => `<div class="kv" style="font-size:11px;padding:3px 0"><span class="mono" style="color:var(--text2)">${host}</span> <span style="color:var(--text3)">${kind}</span></div>`).join('');
+  const fallbackVal = fallbacks.join('\n').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
   return settingsShell(`
   ${msgHtml}
   <div class="card">
@@ -1675,6 +1685,24 @@ async function buildSettingsHTML(msg?: { ok: boolean; text: string }): Promise<s
       <input type="number" name="min_entry" min="0.01" step="0.01" value="${CONFIG.TRADE_MIN_ENTRY_SOL}">
       <label>Max slippage — % (1–99)</label>
       <input type="number" name="slippage" min="1" max="99" step="1" value="${Math.round(CONFIG.TRADE_SLIPPAGE_BPS / 100)}">
+    </div>
+    <div class="card">
+      <h3>Backup RPC endpoints</h3>
+      <div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:10px">
+        Every buy and sell is broadcast to <b style="color:var(--text2)">all</b> of these at once, not one after
+        another. The transaction is already signed, so its signature is identical everywhere and the network
+        deduplicates it — more endpoints cannot double-spend, they only make it harder for one bad node to
+        lose a trade.
+      </div>
+      <div class="kv" style="margin-bottom:10px">Pool right now: <b style="color:${poolColor}">${poolCount} endpoint${poolCount === 1 ? '' : 's'}</b>${poolCount === 1 ? ' <span style="color:var(--text3)">— primary only, no cover</span>' : ''}</div>
+      ${poolList}
+      <label>Backups — one per line (paste the full URL including its key)</label>
+      <textarea name="rpc_fallbacks" rows="3" spellcheck="false" autocomplete="off"
+        style="width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 11px;resize:vertical"
+        placeholder="https://mainnet.helius-rpc.com/?api-key=…&#10;https://solana-mainnet.g.alchemy.com/v2/…">${fallbackVal}</textarea>
+      <div class="warn">Each URL is tested on save — reachable, responding, and on mainnet. Anything that fails is
+        rejected with its reason rather than saved, because a dead backup looks like protection while providing none.
+        Leave blank to clear. ${RPC_FALLBACKS_FROM_ENV ? 'An <b>RPC_FALLBACKS</b> env var is also set in Railway; saving here overrides it.' : ''}</div>
     </div>
     <div class="card">
       <h3>Replace wallet (optional)</h3>
@@ -1750,6 +1778,27 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
       TRADE_SLIPPAGE_BPS: Math.round(clamp(parseFloat(form.slippage) || 30, 1, 99) * 100),
     });
     let text = 'Settings saved — live immediately.';
+
+    // Backup endpoints are proven before they are trusted. A URL that does not
+    // answer would sit in the pool looking like cover and contribute nothing at
+    // the one moment it is needed, so a failing probe rejects rather than saves.
+    if (form.rpc_fallbacks !== undefined) {
+      const urls = form.rpc_fallbacks.split(/[\n,]/).map(u => u.trim())
+        .filter(Boolean).filter(u => /^https?:\/\//.test(u));
+      const seen = new Set<string>();
+      const unique = urls.filter(u => !seen.has(u) && (seen.add(u), true))
+        .filter(u => u !== CONFIG.HELIUS_RPC);
+      const probes = await Promise.all(unique.map(async u => ({ url: u, ...(await probeRpcEndpoint(u)) })));
+      const good = probes.filter(p => p.ok);
+      const bad = probes.filter(p => !p.ok);
+      saveSettingsOverrides({ RPC_FALLBACKS: good.map(p => p.url) });
+      resetConnectionPool();
+      const total = (CONFIG.HELIUS_RPC ? 1 : 0) + good.length;
+      text = `Saved — broadcasting to ${total} endpoint${total === 1 ? '' : 's'}.`;
+      if (good.length) text += ` Verified: ${good.map(p => `${maskRpc(p.url)} (slot ${p.slot}, ${p.ms}ms)`).join(', ')}.`;
+      if (bad.length) text += ` Rejected: ${bad.map(p => `${maskRpc(p.url)} — ${p.error}`).join('; ')}.`;
+    }
+
     if (form.wallet_key && form.wallet_key.trim()) {
       const addr = setWalletFromKey(form.wallet_key);
       text += ` Wallet replaced: ${addr.slice(0, 8)}…${addr.slice(-6)}`;
