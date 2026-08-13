@@ -109,10 +109,63 @@ export function setWalletFromKey(bs58Key: string): string {
  * state, so no caller depends on being handed the same node twice.
  */
 let _rr = 0;
-export function getConnection(): Connection {
+/** Endpoint index → time its cooldown expires. */
+const _sick = new Map<number, number>();
+const SICK_MS = 20_000;
+
+/**
+ * Endpoints in rotation, healthy ones first.
+ *
+ * Plain round-robin assumes the endpoints are interchangeable. Measured, they are
+ * not: the primary key refuses roughly 40% of reads with 429 while the second key
+ * answers everything, and splitting the load did not change that — whatever is
+ * consuming that key's budget is not this bot's read volume. Rotating blindly
+ * would keep handing half of all reads to the endpoint least able to serve them.
+ *
+ * A failure benches an endpoint for 20 seconds rather than removing it, so a key
+ * that recovers comes back on its own and a key that degrades later is demoted
+ * without anyone having to notice which one it was. If every endpoint is benched
+ * they are all used anyway — a degraded read beats no read.
+ */
+function rotation(): Connection[] {
   const pool = connectionPool();
-  if (pool.length === 0) throw new Error('no RPC endpoints configured');
-  return pool[_rr++ % pool.length];
+  const now = Date.now();
+  const idx = pool.map((_, i) => i);
+  const healthy = idx.filter(i => (_sick.get(i) ?? 0) <= now);
+  const benched = idx.filter(i => (_sick.get(i) ?? 0) > now);
+  const order = healthy.length ? healthy : idx;
+  // When nothing is healthy, `order` is already every endpoint — appending the
+  // benched list again would return each one twice and make a total outage take
+  // two full rounds of timeouts to report, which is the worst moment to be slow.
+  const tail = healthy.length ? benched : [];
+  const off = _rr++ % order.length;
+  return [...order.slice(off), ...order.slice(0, off), ...tail].map(i => pool[i]);
+}
+
+function markSick(conn: Connection): void {
+  const i = connectionPool().indexOf(conn);
+  if (i >= 0) _sick.set(i, Date.now() + SICK_MS);
+}
+function markWell(conn: Connection): void {
+  const i = connectionPool().indexOf(conn);
+  if (i >= 0) _sick.delete(i);
+}
+
+/** Health snapshot for /api/health — a pool quietly down to one live node is worth seeing. */
+export function poolHealth(): { endpoints: number; healthy: number; hosts: string[] } {
+  const pool = connectionPool();
+  const now = Date.now();
+  return {
+    endpoints: pool.length,
+    healthy: pool.filter((_, i) => (_sick.get(i) ?? 0) <= now).length,
+    hosts: [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean).map(maskRpc),
+  };
+}
+
+export function getConnection(): Connection {
+  const order = rotation();
+  if (order.length === 0) throw new Error('no RPC endpoints configured');
+  return order[0];
 }
 
 /**
@@ -123,15 +176,14 @@ export function getConnection(): Connection {
  * between a call and a buy.
  */
 export async function rpcRead<T>(fn: (c: Connection) => Promise<T>, label: string, timeoutMs = RPC_TIMEOUT_MS): Promise<T> {
-  const pool = connectionPool();
-  if (pool.length === 0) throw new Error('no RPC endpoints configured');
-  const start = _rr++;
+  const order = rotation();
+  if (order.length === 0) throw new Error('no RPC endpoints configured');
   let last: any;
-  for (let i = 0; i < pool.length; i++) {
-    try { return await withTimeout(fn(pool[(start + i) % pool.length]), timeoutMs, label); }
-    catch (e: any) { last = e; }
+  for (const conn of order) {
+    try { const r = await withTimeout(fn(conn), timeoutMs, label); markWell(conn); return r; }
+    catch (e: any) { last = e; markSick(conn); }
   }
-  throw new Error(`${label}: all ${pool.length} endpoint(s) failed — ${String(last?.message ?? last).slice(0, 100)}`);
+  throw new Error(`${label}: all ${order.length} endpoint(s) failed — ${String(last?.message ?? last).slice(0, 100)}`);
 }
 
 /** Get the bot wallet's SOL balance. */

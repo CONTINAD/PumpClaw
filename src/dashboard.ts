@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { CONFIG, saveSettingsOverrides, RPC_FALLBACKS_FROM_ENV } from './config.js';
 import { getWallet, getSolBalance, setWalletFromKey, walletSource, getTokenHoldings,
-         resetConnectionPool, probeRpcEndpoint, maskRpc } from './wallet.js';
+         resetConnectionPool, probeRpcEndpoint, maskRpc, poolHealth } from './wallet.js';
 import { taskManager, type TradeTask } from './tasks.js';
 import { sendTradeActivity } from './discord.js';
 import { verifyInteractionSignature, handleInteraction } from './interactions.js';
@@ -4084,10 +4084,7 @@ export function startDashboard(port?: number): void {
           uptimeMin: Math.round(process.uptime() / 60),
           // Pool size is the difference between "one bad node lost the trade" and
           // "one bad node was outvoted", so it belongs where it can be watched.
-          rpc: {
-            endpoints: (CONFIG.HELIUS_RPC ? 1 : 0) + CONFIG.RPC_FALLBACKS.length,
-            hosts: [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean).map(maskRpc),
-          },
+          rpc: poolHealth(),
           tasks: { total: taskManager.all().length, real: real.length, paper: taskManager.all().length - real.length },
           liveTasks: real.map(t => ({
             name: t.name, enabled: t.enabled,
