@@ -4031,6 +4031,19 @@ export function startDashboard(port?: number): void {
             // Surfaced because a task subscribed to nothing looks identical to a
             // healthy one from every other field, and stays silent forever.
             sources: taskManager.sourcesFor(t),
+            // Sizing decides whether a buy is even attempted, and none of it was
+            // visible anywhere — leaving "it is enabled but does not trade" with no
+            // way to tell a config problem from an execution one.
+            sizing: {
+              entryPct: t.strategy.entryPct,
+              minEntrySol: t.strategy.minEntrySol,
+              maxEntrySol: t.strategy.maxEntrySol,
+              slippageBps: t.strategy.slippageBps,
+              entryMode: t.strategy.entryMode,
+              tps: t.strategy.tps,
+              trailingDrop: t.strategy.trailingDrop,
+              stopLossPct: t.strategy.stopLossPct,
+            },
             pendingOrders: taskManager.pendingEntries().filter(p => p.taskId === t.id)
               .map(p => ({ symbol: p.symbol, target: p.target, callPrice: p.callPrice,
                 expiresInMin: Math.max(0, Math.round((p.expiresAt - Date.now()) / 60000)) })),
