@@ -4082,6 +4082,12 @@ export function startDashboard(port?: number): void {
           dataDir: CONFIG.DATA_DIR,
           persistentVolume: !CONFIG.DATA_DIR.includes('/app/dist') && CONFIG.DATA_DIR !== './data',
           uptimeMin: Math.round(process.uptime() / 60),
+          // Pool size is the difference between "one bad node lost the trade" and
+          // "one bad node was outvoted", so it belongs where it can be watched.
+          rpc: {
+            endpoints: (CONFIG.HELIUS_RPC ? 1 : 0) + CONFIG.RPC_FALLBACKS.length,
+            hosts: [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean).map(maskRpc),
+          },
           tasks: { total: taskManager.all().length, real: real.length, paper: taskManager.all().length - real.length },
           liveTasks: real.map(t => ({
             name: t.name, enabled: t.enabled,
