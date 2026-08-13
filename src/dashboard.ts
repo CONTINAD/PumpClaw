@@ -2633,6 +2633,20 @@ export function startDashboard(port?: number): void {
       return;
     }
 
+    if (pathname === '/api/buylog') {
+      // What every live task did with every recent call, and why when it passed.
+      const log = taskManager.buyLog.slice(0, 60);
+      const missed = log.filter(x => !x.bought && x.reason !== 'already holding this coin');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        entries: log,
+        bought: log.filter(x => x.bought).length,
+        passed: log.length - log.filter(x => x.bought).length,
+        reasons: [...new Set(missed.map(x => x.reason))],
+      }, null, 2));
+      return;
+    }
+
     if (pathname === '/api/poolprice') {
       (async () => {
         const { watchStats, poolPriceUsd } = await import('./pool-price.js');

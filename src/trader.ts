@@ -88,6 +88,17 @@ export class Trader {
   private positionsFile: string;
   private sellFailCounts = new Map<string, number>();
   private tpFailCounts = new Map<string, number>();
+
+  /**
+   * Why the last buy attempt did not open a position.
+   *
+   * Every skip in the buy path used to be a bare `return null`, so a live task
+   * declining a call was indistinguishable from one that was never asked. Three
+   * separate faults hid behind that on 2026-08-13 — an unsubscribed task, a
+   * sizing config nobody could see, and a balance read 48 minutes stale — and each
+   * took a fresh investigation because the bot never said what it did.
+   */
+  lastSkip: string | null = null;
   private lastSellFailAlert = new Map<string, number>();
 
   /**
@@ -125,11 +136,13 @@ export class Trader {
     currentPrice: number,
     currentMC: number,
   ): Promise<RealPosition | null> {
-    if (!CONFIG.TRADE_ENABLED) return null;
+    this.lastSkip = null;
+    if (!CONFIG.TRADE_ENABLED) { this.lastSkip = 'trading disabled'; return null; }
 
     // Skip if we already have an open position for this mint
     const existing = this.positions.get(mint);
     if (existing && existing.status === 'open') {
+      this.lastSkip = 'already holding this coin';
       console.log(`[Trader] Already have open position for $${symbol}, skipping`);
       return null;
     }
@@ -184,6 +197,7 @@ export class Trader {
         if (balAttempt < 3) {
           await new Promise(r => setTimeout(r, 2000));
         } else {
+          this.lastSkip = `balance lookup failed: ${err.message}`;
           return null;
         }
       }
@@ -212,6 +226,7 @@ export class Trader {
       }
     }
     if (balance! < entrySol + 0.005) {
+      this.lastSkip = `balance ${balance!.toFixed(4)} SOL < entry ${entrySol} + fees`;
       console.log(`[Trader] Balance too low for entry: ${balance!.toFixed(4)} SOL (need ${entrySol} + fees)`);
       return null;
     }
@@ -249,6 +264,7 @@ export class Trader {
     }
 
     if (!result) {
+      this.lastSkip = 'swap failed after 3 attempts';
       console.error(`[Trader] ❌ Buy FAILED after 3 attempts for $${symbol}`);
       return null;
     }

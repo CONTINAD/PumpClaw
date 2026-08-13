@@ -413,6 +413,41 @@ class TaskManager {
 
   private lastNoFillAlert = 0;
 
+  /** Rolling record of what each live task did with each call. */
+  readonly buyLog: { ts: number; task: string; symbol: string; mint: string; bought: boolean; reason: string | null }[] = [];
+  private consecutiveMisses = new Map<string, number>();
+  private lastMissAlert = new Map<string, number>();
+
+  /**
+   * Note whether a live task acted on a call, and shout if one stops acting.
+   *
+   * A task that is enabled and funded but never buys produces no error of any kind —
+   * it simply does nothing, forever. Three separate faults hid in exactly that gap,
+   * each found only because paper fills were compared against real ones by hand.
+   */
+  private noteBuyOutcome(task: TradeTask, symbol: string, mint: string, bought: boolean, reason: string | null): void {
+    this.buyLog.unshift({ ts: Date.now(), task: task.name, symbol, mint, bought, reason });
+    if (this.buyLog.length > 200) this.buyLog.pop();
+
+    if (bought) { this.consecutiveMisses.set(task.id, 0); return; }
+    const n = (this.consecutiveMisses.get(task.id) ?? 0) + 1;
+    this.consecutiveMisses.set(task.id, n);
+    console.log(`[Tasks] "${task.name}" did not buy $${symbol}: ${reason} (${n} in a row)`);
+
+    // "Already holding" is a normal reason to pass, not a fault.
+    if (reason === 'already holding this coin') return;
+    if (n < 3) return;
+    const last = this.lastMissAlert.get(task.id) ?? 0;
+    if (Date.now() - last < 20 * 60_000) return;
+    this.lastMissAlert.set(task.id, Date.now());
+    sendOpsAlert(
+      `⚠️ **${task.name}** has passed on **${n} calls in a row** — most recent: $${symbol}.\n` +
+      `Reason given: \`${reason}\`\n` +
+      `It is enabled but not trading. Check the balance and the task's sources.`,
+      CONFIG.TRADES_WEBHOOK,
+    ).catch(() => {});
+  }
+
   /** Buy on all enabled tasks in parallel. Posts each fill to Discord. */
   async buyAll(mint: string, symbol: string, name: string, price: number, mc: number, sourceId: string = PUMPCLAW_SOURCE_ID): Promise<number> {
     const all = this.enabledTasks(sourceId);
@@ -441,6 +476,19 @@ class TaskManager {
     const results = await Promise.allSettled(
       tasks.map(t => this.traderFor(t).buy(mint, symbol, name, price, mc)),
     );
+
+    // Record what each REAL task did with this call. A live task quietly declining
+    // is the failure mode that hid three separate bugs; it is now always stated.
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i];
+      if (t.paper) continue;
+      const r = results[i];
+      const bought = r.status === 'fulfilled' && r.value !== null;
+      const why = r.status === 'rejected'
+        ? `error: ${String((r as PromiseRejectedResult).reason).slice(0, 80)}`
+        : (this.traderFor(t).lastSkip ?? 'unknown');
+      this.noteBuyOutcome(t, symbol, mint, bought, bought ? null : why);
+    }
     let bought = 0, realBought = 0;
     results.forEach((r, i) => {
       if (r.status === 'fulfilled' && r.value) {
