@@ -786,6 +786,238 @@ for (const tp of [1.2, 1.3, 1.4, 1.5, 1.75]) {
 
 GRID.push(...GRID7);
 
+// ── GRID8 (1055) ────────────────────────────────────────────
+//
+// The fleet was 852 strategies but not 852 *shapes*. Counted by structure rather
+// than by key, most of the space was untouched:
+//
+//   3+ rung ladders        38 of 852   — the shape of a scale-out was never tested
+//   trailing from entry   108 of 852   — 712 sat at 0.9, which is trailing switched off
+//   any time exit         134 of 852   — a clock is the only exit that cannot be gamed
+//   moonbag tails          52 of 852   — $Plumber ran 124x and nothing was left in it
+//   break-even             156 of 852
+//   dip window <= 10min   119 of 506   — 371 still waited the 30 minutes we know is bad
+//
+// So this is not more grid points on the axes already covered. Each family below
+// fills a region the fleet could not previously answer questions about.
+const GRID8: Spec[] = [];
+const n = (x: number) => String(x).replace('.', '').replace('-', '');
+
+// ── A. Ladder shape (216) ───────────────────────────────────
+// Same rungs, different weightings. Front-loaded banks early and gives up the tail;
+// back-loaded is the opposite bet; barbell takes profit twice and skips the middle.
+// Nothing in the fleet distinguished these, so "ladders work" was never a testable
+// claim — only "this one ladder worked".
+const SHAPES3: [string, number[]][] = [
+  ['front', [0.5, 0.3, 0.2]], ['even', [0.34, 0.33, 0.33]],
+  ['back', [0.2, 0.3, 0.5]], ['barbell', [0.45, 0.1, 0.45]],
+];
+const SPANS3: [string, number[]][] = [
+  ['tight', [1.2, 1.5, 2]], ['mid', [1.3, 1.8, 2.5]], ['wide', [1.5, 2.5, 4]],
+  ['far', [2, 3, 5]], ['even', [1.4, 2, 3]],
+];
+for (const [sn, sh] of SHAPES3) {
+  for (const [pn, sp] of SPANS3) {
+    for (const [en, dip] of [['i', 0], ['d15', 0.15], ['d25', 0.25]] as [string, number][]) {
+      for (const st of [15, 25, 40]) {
+        GRID8.push({
+          key: `g8L3${sn}${pn}${en}s${st}`,
+          name: `${dip ? `Dip −${dip * 100}%` : 'Instant'} → ${sn} ladder ${sp.join('/')}X, stop −${st}%`,
+          desc: `Three rungs at ${sp.join('/')}X weighted ${sh.map(x => Math.round(x * 100)).join('/')}%. Isolates ladder shape from ladder targets.`,
+          dip: dip || undefined, win: dip ? 10 : undefined,
+          tps: sp.map((m, i) => [m, sh[i]] as [number, number]),
+          stop: (100 - st) / 100, be: true,
+        });
+      }
+    }
+  }
+}
+const SHAPES4: [string, number[]][] = [
+  ['front', [0.4, 0.3, 0.2, 0.1]], ['even', [0.25, 0.25, 0.25, 0.25]], ['back', [0.1, 0.2, 0.3, 0.4]],
+];
+const SPANS4: [string, number[]][] = [
+  ['tight', [1.2, 1.5, 2, 3]], ['mid', [1.3, 1.8, 2.5, 4]], ['wide', [1.5, 2, 3, 5]],
+];
+for (const [sn, sh] of SHAPES4) {
+  for (const [pn, sp] of SPANS4) {
+    for (const [en, dip] of [['i', 0], ['d20', 0.20]] as [string, number][]) {
+      for (const st of [15, 30]) {
+        GRID8.push({
+          key: `g8L4${sn}${pn}${en}s${st}`,
+          name: `${dip ? `Dip −${dip * 100}%` : 'Instant'} → ${sn} 4-rung ${sp.join('/')}X, stop −${st}%`,
+          desc: `Four rungs weighted ${sh.map(x => Math.round(x * 100)).join('/')}%. Tests whether more rungs beat fewer at the same span.`,
+          dip: dip || undefined, win: dip ? 10 : undefined,
+          tps: sp.map((m, i) => [m, sh[i]] as [number, number]),
+          stop: (100 - st) / 100, be: true,
+        });
+      }
+    }
+  }
+}
+
+// ── B. Trailing from entry (144) ────────────────────────────
+// Only 108 of 852 ever trailed from entry, and the live task runs −50%, which both
+// datasets call the worst band. This sweeps the width properly, with and without a
+// take-profit ahead of it, so "how wide should the trail be" gets a real answer.
+for (const tr of [8, 12, 15, 20, 25, 30, 35, 40, 50]) {
+  for (const [en, dip] of [['i', 0], ['d10', 0.10], ['d20', 0.20], ['d30', 0.30]] as [string, number][]) {
+    for (const [tn, tp] of [['0', null], ['15', [1.5, 0.5]], ['2', [2, 0.5]], ['3', [3, 0.3]]] as [string, number[] | null][]) {
+      GRID8.push({
+        key: `g8T${tr}${en}t${tn}`,
+        name: `${dip ? `Dip −${dip * 100}%` : 'Instant'} → ${tp ? `${Math.round(tp[1] * 100)}%@${tp[0]}X + ` : ''}trail ${tr}%`,
+        desc: `Trailing ${tr}% from entry${tp ? `, after banking ${Math.round(tp[1] * 100)}% at ${tp[0]}X` : ' with no take-profit'}. Width sweep — the fleet barely covered this.`,
+        dip: dip || undefined, win: dip ? 10 : undefined,
+        tps: tp ? [[tp[0], tp[1]]] : undefined,
+        trail: tr / 100, trailFrom: 'entry', stop: (100 - tr) / 100,
+      });
+    }
+  }
+}
+
+// ── C. Short dip windows (125) ──────────────────────────────
+// 371 of 506 dip strategies waited 30 minutes. A dip that takes 25 minutes is a
+// downtrend, and four winners on 08-12 went straight up and filled none of them.
+// These give the order 1-8 minutes to fill and then stand down.
+for (const dp of [10, 15, 20, 25, 30]) {
+  for (const w of [1, 2, 3, 5, 8]) {
+    for (const [xn, x] of [
+      ['tp15', { tps: [[1.5, 1]] as [number, number][], stop: 0.8 }],
+      ['tp2', { tps: [[2, 1]] as [number, number][], stop: 0.75 }],
+      ['tp3', { tps: [[3, 1]] as [number, number][], stop: 0.7 }],
+      ['tr20', { trail: 0.20, trailFrom: 'entry' as const, stop: 0.8 }],
+      ['h5', { hold: 5, stop: 0.8 }],
+    ] as [string, Partial<Spec>][]) {
+      GRID8.push({
+        key: `g8W${dp}_${w}${xn}`,
+        name: `Dip −${dp}% in ${w}m → ${xn === 'tr20' ? 'trail 20%' : xn === 'h5' ? 'hold 5m' : xn.replace('tp', '') + 'X'}`,
+        desc: `Fills only if the pullback arrives within ${w} minute${w === 1 ? '' : 's'}, then stands down. A dip that takes longer is a downtrend, not an entry.`,
+        dip: dp / 100, win: w, ...x,
+      });
+    }
+  }
+}
+
+// ── D. Time-boxed exits (128) ───────────────────────────────
+// 718 of 852 had no clock at all. A time exit is the one rule a coin cannot game:
+// it does not care about the shape of the candle, only that the edge has decayed.
+for (const h of [1, 2, 3, 5, 8, 12, 20, 30]) {
+  for (const [tn, tp] of [['0', 0], ['13', 1.3], ['16', 1.6], ['2', 2.0]] as [string, number][]) {
+    for (const st of [12, 25]) {
+      for (const [en, dip] of [['i', 0], ['d15', 0.15]] as [string, number][]) {
+        GRID8.push({
+          key: `g8C${h}_${tn}s${st}${en}`,
+          name: `${dip ? `Dip −15%` : 'Instant'} → ${tp ? `${tp}X or ` : ''}${h}m, stop −${st}%`,
+          desc: `Hard ${h}-minute clock${tp ? ` with a ${tp}X target ahead of it` : ''}. The exit a coin cannot game.`,
+          dip: dip || undefined, win: dip ? 8 : undefined,
+          hold: h, tps: tp ? [[tp, 1]] : undefined, stop: (100 - st) / 100,
+        });
+      }
+    }
+  }
+}
+
+// ── E. Moonbag tails (90) ───────────────────────────────────
+// Only 52 strategies left anything running. $Plumber peaked at 124x and $FABUTOLLAH
+// at 125x; a 5% tail costs almost nothing per trade and is the only way those pay.
+for (const bank of [0.70, 0.80, 0.85, 0.90, 0.95]) {
+  for (const at of [1.3, 1.5, 2.0]) {
+    for (const tail of [5, 10, 25]) {
+      for (const [en, dip] of [['i', 0], ['d20', 0.20]] as [string, number][]) {
+        GRID8.push({
+          key: `g8M${Math.round(bank * 100)}_${n(at)}_${tail}${en}`,
+          name: `${dip ? 'Dip −20%' : 'Instant'} → ${Math.round(bank * 100)}%@${at}X + ${Math.round((1 - bank) * 100)}% to ${tail}X`,
+          desc: `Banks ${Math.round(bank * 100)}% at ${at}X and leaves ${Math.round((1 - bank) * 100)}% running to ${tail}X. The cheap way to still be in a 100x.`,
+          dip: dip || undefined, win: dip ? 10 : undefined,
+          tps: [[at, bank], [tail, 1 - bank]], stop: 0.8, be: true,
+        });
+      }
+    }
+  }
+}
+
+// ── F. Break-even mechanics (120) ───────────────────────────
+// The cheapest way to stop a winner round-tripping into a loss. $Lego hit 1.7x and
+// gave all of it back. Sweeps how much to bank first and how tight to run before it.
+for (const tp1 of [1.15, 1.25, 1.35, 1.5, 1.7]) {
+  for (const sell of [0.4, 0.6, 0.75, 0.9]) {
+    for (const st of [10, 15, 25]) {
+      for (const [en, dip] of [['i', 0], ['d15', 0.15]] as [string, number][]) {
+        GRID8.push({
+          key: `g8B${n(tp1)}_${Math.round(sell * 100)}s${st}${en}`,
+          name: `${dip ? 'Dip −15%' : 'Instant'} → ${Math.round(sell * 100)}%@${tp1}X then break-even (stop −${st}%)`,
+          desc: `Takes ${Math.round(sell * 100)}% at ${tp1}X and moves the stop to entry, so the rest cannot become a loss.`,
+          dip: dip || undefined, win: dip ? 8 : undefined,
+          tps: [[tp1, sell], [tp1 * 5, 1 - sell]], stop: (100 - st) / 100, be: true,
+        });
+      }
+    }
+  }
+}
+
+// ── G. Asymmetric lottery (100) ─────────────────────────────
+// Tight stop, far target. Wrong most of the time by design — the question is whether
+// the hit rate clears the cost, which no strategy in the fleet was shaped to answer.
+for (const st of [8, 10, 12, 15, 20]) {
+  for (const tgt of [3, 5, 8, 12, 20]) {
+    for (const [pn, parts] of [
+      ['f', [[tgt, 1]] as [number, number][]],
+      ['r', [[tgt * 0.4, 0.7], [tgt, 0.3]] as [number, number][]],
+    ] as [string, [number, number][]][]) {
+      for (const [en, dip] of [['i', 0], ['d20', 0.20]] as [string, number][]) {
+        GRID8.push({
+          key: `g8A${st}_${tgt}${pn}${en}`,
+          name: `${dip ? 'Dip −20%' : 'Instant'} → ${tgt}X${pn === 'r' ? ' (70% early)' : ''}, stop −${st}%`,
+          desc: `Cuts at −${st}% and holds for ${tgt}X. Loses often by design; only worth it if the tail pays for all of them.`,
+          dip: dip || undefined, win: dip ? 10 : undefined,
+          tps: parts, stop: (100 - st) / 100,
+        });
+      }
+    }
+  }
+}
+
+// ── H. Micro scalps (60) ────────────────────────────────────
+// Round-trip cost is roughly 3%, so these are deliberately close to the noise floor.
+// Included to find where the edge stops covering the fee rather than to be traded blind.
+for (const tp of [1.08, 1.12, 1.15, 1.20, 1.25]) {
+  for (const st of [5, 8, 10, 15]) {
+    for (const [en, dip] of [['i', 0], ['d10', 0.10], ['d20', 0.20]] as [string, number][]) {
+      GRID8.push({
+        key: `g8S${n(tp)}s${st}${en}`,
+        name: `${dip ? `Dip −${dip * 100}%` : 'Instant'} → ${tp}X, stop −${st}%`,
+        desc: `A ${Math.round((tp - 1) * 100)}% scalp against a −${st}% stop. Costs are ~3%, so this measures where the edge stops covering the fee.`,
+        dip: dip || undefined, win: dip ? 5 : undefined,
+        tps: [[tp, 1]], stop: (100 - st) / 100,
+      });
+    }
+  }
+}
+
+// ── I. Trail armed after the first take (72) ────────────────
+// Distinct from B: run a hard stop until the first target, then switch to trailing.
+// Tight early where most losses happen, loose later where the tails live.
+for (const tp1 of [1.3, 1.5, 2.0]) {
+  for (const sell of [0.3, 0.5]) {
+    for (const tr of [15, 25, 40]) {
+      for (const st of [15, 30]) {
+        for (const [en, dip] of [['i', 0], ['d20', 0.20]] as [string, number][]) {
+          GRID8.push({
+            key: `g8R${n(tp1)}_${Math.round(sell * 100)}t${tr}s${st}${en}`,
+            name: `${dip ? 'Dip −20%' : 'Instant'} → ${Math.round(sell * 100)}%@${tp1}X then trail ${tr}%`,
+            desc: `Hard −${st}% stop until ${tp1}X, then ${tr}% trailing on the rest. Tight where losses happen, loose where tails live.`,
+            dip: dip || undefined, win: dip ? 10 : undefined,
+            tps: [[tp1, sell]], trail: tr / 100, trailFrom: 'afterLastTp',
+            stop: (100 - st) / 100, be: true,
+          });
+        }
+      }
+    }
+  }
+}
+
+GRID.push(...GRID8);
+
+
 
 
 

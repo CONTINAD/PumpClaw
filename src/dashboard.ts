@@ -1051,6 +1051,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
     <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
     <a href="/shadow" style="border-color:var(--border2)">📄 Shadow Fleet</a>
+    <a href="/builder" style="border-color:var(--border2)">🛠️ Build your own</a>
     <a href="/settings" style="border-color:var(--border2)">⚙️ Settings</a>
   </div>
 </div>
@@ -1817,8 +1818,30 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
 function buildBuilderHTML(url: string, canAct: boolean): string {
   const fromKey = (url.match(/[?&]from=([\w-]+)/) || [])[1] ?? 'dip20tp2';
   const base = STRATEGY_PRESETS[fromKey]?.make() ?? STRATEGY_PRESETS.dip20tp2.make();
-  const opts = Object.entries(STRATEGY_PRESETS)
-    .map(([k, v]) => `<option value="${k}" ${k === fromKey ? 'selected' : ''}>${v.name}</option>`).join('');
+  // 1907 presets in one flat dropdown is not a picker, it is a wall. Grouped by
+  // what the strategy actually does, with a search box that filters in place.
+  const famOf = (k: string, st: ReturnType<typeof STRATEGY_PRESETS[string]['make']>) => {
+    if (st.tps.length >= 3) return 'Ladders (3+ rungs)';
+    if (st.maxHoldMin) return 'Time-boxed exits';
+    if (st.trailingFrom === 'entry' && !st.tps.length) return 'Pure trailing';
+    if (st.tps.length >= 2 && st.tps[st.tps.length - 1].mult >= 5) return 'Moonbag tails';
+    if (st.tps.length === 1 && st.tps[0].mult <= 1.25) return 'Scalps';
+    if (st.breakEvenAfterTp1) return 'Break-even';
+    if (st.tps.length) return 'Single target';
+    return 'Other';
+  };
+  const groups = new Map<string, string[]>();
+  for (const [k, v] of Object.entries(STRATEGY_PRESETS)) {
+    let st; try { st = v.make(); } catch { continue; }
+    const g = famOf(k, st);
+    const tag = st.entryMode === 'dip' ? `dip −${Math.round((st.dipPct ?? 0) * 100)}%` : 'instant';
+    const arr = groups.get(g) ?? [];
+    arr.push(`<option value="${k}" ${k === fromKey ? 'selected' : ''}>${v.name} · ${tag}</option>`);
+    groups.set(g, arr);
+  }
+  const opts = [...groups.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([g, arr]) => `<optgroup label="${g} (${arr.length})">${arr.join('')}</optgroup>`).join('');
   const tpRow = (i: number) => {
     const tp = base.tps[i];
     return `<div style="display:flex;gap:8px;margin:5px 0;align-items:center">
@@ -1836,8 +1859,35 @@ function buildBuilderHTML(url: string, canAct: boolean): string {
       calls — minute-by-minute, the actual path each coin took. Then add it to the paper fleet to run forward, or
       go straight to live trading.
     </p>
-    <label>Start from an existing strategy</label>
-    <select onchange="location.href='/builder?from='+this.value">${opts}</select>
+    <label>Start from an existing strategy — or edit any field below to make it your own</label>
+    <input id="psearch" placeholder="search ${Object.keys(STRATEGY_PRESETS).length} presets… (e.g. &quot;ladder&quot;, &quot;trail 20&quot;, &quot;dip&quot;)" autocomplete="off"
+      style="width:100%;box-sizing:border-box;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 11px;font-size:13px;margin-bottom:6px">
+    <select id="psel" size="10" onchange="location.href='/builder?from='+this.value"
+      style="width:100%;box-sizing:border-box;font-size:13px">${opts}</select>
+    <div style="font-size:11px;color:var(--text3);margin-top:5px">
+      Pick one to load its numbers, then change anything — every field below is editable and nothing is saved until you
+      backtest and add it. Loading a preset does not modify the preset.
+    </div>
+    <script>
+    (function(){
+      var box=document.getElementById('psearch'), selEl=document.getElementById('psel');
+      var groups=[].slice.call(selEl.getElementsByTagName('optgroup'));
+      var all=groups.map(function(g){return {g:g,opts:[].slice.call(g.getElementsByTagName('option')).map(function(o){return {o:o,t:o.textContent.toLowerCase()};})};});
+      box.addEventListener('input',function(){
+        var q=box.value.toLowerCase().trim(), n=0;
+        all.forEach(function(grp){
+          var shown=0;
+          grp.opts.forEach(function(x){
+            var hit=!q||x.t.indexOf(q)>=0;
+            x.o.style.display=hit?'':'none';
+            if(hit){shown++;n++;}
+          });
+          grp.g.style.display=shown?'':'none';
+        });
+        box.style.borderColor=(q&&!n)?'#ef4444':'var(--border)';
+      });
+    })();
+    </script>
   </div>
 
   <form method="POST" action="/builder" id="f">
@@ -3949,8 +3999,61 @@ export function startDashboard(port?: number): void {
         }).sort((a, b) => b.avg - a.avg);
 
         const showAll = /[?&]all=1/.test(url);
-        const enough = rows.filter(r => r.trades >= 8);
-        const thin = rows.filter(r => r.trades < 8);
+
+        // Filters run server-side, over all rows, before the display cap. Filtering
+        // only what already fits on the page would search 120 of 1907 and quietly
+        // call that "no matches".
+        const qp = (name: string) => {
+          const m = url.match(new RegExp(`[?&]${name}=([^&]*)`));
+          return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+        };
+        const fQ = qp('q').toLowerCase();
+        const fEntry = qp('entry');
+        const fShape = qp('shape');
+        const fStop = qp('stop');
+        const fMin = parseInt(qp('min')) || 0;
+        const familyOf = (r: any): string[] => {
+          const out: string[] = [];
+          if (r.targets.length >= 3) out.push('ladder');
+          if (r.trailPct) out.push('trail');
+          if (r.holdMin) out.push('clock');
+          if (r.targets.length >= 2 && r.targets[r.targets.length - 1] >= 5) out.push('moonbag');
+          if (r.targets.length === 1 && r.targets[0] <= 1.25) out.push('scalp');
+          if (r.stopPct !== null && r.stopPct <= 15 && r.targets.length && r.targets[r.targets.length - 1] >= 3) out.push('lottery');
+          return out;
+        };
+        const matches = (r: any) => {
+          if (fQ && !(`${r.name} ${r.key}`.toLowerCase().includes(fQ))) return false;
+          if (fEntry === 'instant' && r.dipPct) return false;
+          if (fEntry === 'dip' && !r.dipPct) return false;
+          if (fShape && !familyOf(r).includes(fShape)) return false;
+          if (fStop === 'tight' && !(r.stopPct !== null && r.stopPct <= 20)) return false;
+          if (fStop === 'mid' && !(r.stopPct !== null && r.stopPct > 20 && r.stopPct <= 40)) return false;
+          if (fStop === 'wide' && !(r.stopPct !== null && r.stopPct > 40)) return false;
+          if (fMin && r.trades < fMin) return false;
+          return true;
+        };
+        const anyFilter = !!(fQ || fEntry || fShape || fStop || fMin);
+        const filtered = anyFilter ? rows.filter(matches) : rows;
+        const enough = filtered.filter(r => r.trades >= 8);
+        const thin = filtered.filter(r => r.trades < 8);
+
+        const keepHours = `hours=${hours}`;
+        const sel = (name: string, cur: string, opts: [string, string][]) =>
+          `<select name="${name}" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12px">` +
+          opts.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('') + '</select>';
+        const filterBar = `
+          <form method="GET" action="/shadow" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px">
+            <input type="hidden" name="hours" value="${hours}">
+            <input name="q" value="${fQ.replace(/"/g, '&quot;')}" placeholder="search name…" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:12px;min-width:150px">
+            ${sel('entry', fEntry, [['', 'any entry'], ['instant', 'instant only'], ['dip', 'dip only']])}
+            ${sel('shape', fShape, [['', 'any shape'], ['ladder', 'ladder (3+ rungs)'], ['trail', 'trailing'], ['clock', 'time exit'], ['moonbag', 'moonbag tail'], ['scalp', 'scalp (≤1.25X)'], ['lottery', 'tight stop, far target']])}
+            ${sel('stop', fStop, [['', 'any stop'], ['tight', 'tight (≤20%)'], ['mid', 'mid (21-40%)'], ['wide', 'wide (>40%)']])}
+            ${sel('min', String(fMin || ''), [['', 'any trades'], ['8', '8+ trades'], ['20', '20+ trades'], ['50', '50+ trades']])}
+            <button type="submit" style="background:#3b82f6;color:#fff;border:0;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer">Filter</button>
+            ${anyFilter ? `<a href="/shadow?${keepHours}" style="color:var(--text2);font-size:12px;text-decoration:none">clear</a>` : ''}
+            ${anyFilter ? `<span style="font-size:12px;color:var(--text2)">${filtered.length} of ${rows.length} match</span>` : `<span style="font-size:12px;color:var(--text3)">${rows.length} strategies</span>`}
+          </form>`;
         const fmt = (r: any, rank: number) => `<tr>
           <td class="mono" style="color:var(--text3)">${rank}</td>
           <td><a href="/strategy?key=${r.key}" style="color:var(--text);font-weight:700;text-decoration:none;border-bottom:1px dotted var(--border2)">${r.name}</a></td>
@@ -3963,8 +4066,9 @@ export function startDashboard(port?: number): void {
           <td class="mono" style="color:${r.avg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
           <td class="mono" style="color:${r.pnl >= 0 ? '#10b981' : '#ef4444'}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}</td>
           <td class="mono" style="color:var(--text2)">${r.best.toFixed(1)}x</td>
+          <td><a href="/builder?from=${r.key}" title="Open this strategy in the builder to edit or clone it" style="color:#3b82f6;text-decoration:none;font-size:11px;white-space:nowrap">copy →</a></td>
         </tr>`;
-        const head = `<tr><th>#</th><th>Strategy</th><th>Entry</th><th>Target</th><th>Stop</th><th>Extra</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Total</th><th>Best</th></tr>`;
+        const head = `<tr><th>#</th><th>Strategy</th><th>Entry</th><th>Target</th><th>Stop</th><th>Extra</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Total</th><th>Best</th><th></th></tr>`;
 
         const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
         const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
@@ -4004,6 +4108,7 @@ export function startDashboard(port?: number): void {
             you are reading noise. What matters is a strategy that stays near the top across several days <i>and</i> has
             enough trades to mean something — or better, a whole <a href="/sweep" style="color:#3b82f6">family</a> that wins together.
           </p>
+          ${filterBar}
           <div style="overflow-x:auto"><table>${head}${enough.slice(0, showAll ? enough.length : 120).map((r, i) => fmt(r, i + 1)).join('')}</table></div>
           ${!showAll && enough.length > 120 ? `<div style="margin-top:10px;font-size:12px;color:var(--text2)">
             Showing the top 120 of ${enough.length}. <a href="/shadow?hours=${hours}&all=1" style="color:#3b82f6">Show all →</a>
