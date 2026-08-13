@@ -104,6 +104,11 @@ export const CONFIG = {
   // supply can end the coin whenever it decides to, and no exit strategy survives
   // that. 0 disables the check.
   MAX_SINGLE_HOLDER_PCT: 20,
+  // Shadow slot-cluster detection (records only — never blocks a call).
+  // A funder that creates this many wallets inside this many slots is running a
+  // script. 10 slots is about 4 seconds; JOEY's three were 1 slot apart.
+  SLOT_CLUSTER_MIN_WALLETS: 3,
+  SLOT_CLUSTER_WINDOW: 10,
 
   // Aged-farm detection. A farm does not have to be built from fresh wallets —
   // $TOADER was called with all 11 top holders being high-activity wallets whose

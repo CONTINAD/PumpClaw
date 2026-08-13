@@ -29,6 +29,11 @@ export interface BundleResult {
     sameFunderPct?: number;
     lowBalPct?: number;
     exchangeFundedPct?: number;
+    /** Shadow only — recorded, never blocks. Wallets one funder created inside
+     *  SLOT_CLUSTER_WINDOW slots of each other. */
+    slotClusterSize?: number;
+    slotClusterSpan?: number;
+    slotClusterFunder?: string;
   };
 }
 
@@ -117,6 +122,9 @@ const MAX_SIG_LIMIT = 300; // bundle wallets are almost always brand-new
 interface WalletInfo {
   fundingTime: number | null;
   funder: string | null;      // who sent the first SOL tx to this wallet
+  /** Slot of that first transaction. Seconds are too coarse to separate wallets
+   *  funded in one script from wallets funded in the same minute by chance. */
+  fundingSlot: number | null;
   funderIsExchange: boolean;  // true if funder has 300+ txs (exchange hot wallet)
   veteran: boolean;           // 600+ txs — real funding time unknowable, excluded from clustering
   /** For veterans: days covered by the transactions we could fetch. Not the wallet's
@@ -149,7 +157,7 @@ async function getWalletInfo(wallet: string): Promise<WalletInfo> {
   }
 
   if (sigBatches.length === 0) {
-    const info: WalletInfo = { fundingTime: null, funder: null, funderIsExchange: false, veteran: false };
+    const info: WalletInfo = { fundingTime: null, funder: null, fundingSlot: null, funderIsExchange: false, veteran: false };
     walletInfoCache.set(wallet, info);
     return info;
   }
@@ -165,7 +173,7 @@ async function getWalletInfo(wallet: string): Promise<WalletInfo> {
     const oldestSig = sigBatches[sigBatches.length - 1];
     const spanDays = oldestSig?.blockTime
       ? (Date.now() / 1000 - oldestSig.blockTime) / 86400 : undefined;
-    const info: WalletInfo = { fundingTime: null, funder: null, funderIsExchange: false, veteran: true, activitySpanDays: spanDays };
+    const info: WalletInfo = { fundingTime: null, funder: null, fundingSlot: null, funderIsExchange: false, veteran: true, activitySpanDays: spanDays };
     walletInfoCache.set(wallet, info);
     return info;
   }
@@ -175,14 +183,16 @@ async function getWalletInfo(wallet: string): Promise<WalletInfo> {
 
   // Try to get the funder from the oldest transaction
   let funder: string | null = null;
+  let fundingSlot: number | null = null;
   try {
     const txData = await rpc('getTransaction', [oldest.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
+    fundingSlot = typeof txData?.slot === 'number' ? txData.slot : null;
     const accounts: string[] = txData?.transaction?.message?.accountKeys?.map((a: any) => typeof a === 'string' ? a : a.pubkey) ?? [];
     // Funder = first account that isn't the wallet itself (usually the fee payer / sender)
     funder = accounts.find((a: string) => a !== wallet) ?? null;
   } catch { }
 
-  const info: WalletInfo = { fundingTime: time, funder, funderIsExchange: false, veteran: false };
+  const info: WalletInfo = { fundingTime: time, funder, fundingSlot, funderIsExchange: false, veteran: false };
   walletInfoCache.set(wallet, info);
 
   // Also update the old cache for backwards compat
@@ -204,6 +214,7 @@ async function getWalletFundingTime(wallet: string): Promise<number | null> {
 interface BatchedWalletData {
   fundingTimes: number[];
   funders: string[];           // funder address for each wallet
+  funderSlots: { funder: string; slot: number }[];  // funder + the slot it funded in
   exchangeFundedCount: number; // how many holders were funded by exchange-like wallets
   totalWithFunder: number;     // how many holders we could identify a funder for
   veteranCount: number;        // holders with 600+ txs (excluded from clustering)
@@ -213,6 +224,7 @@ interface BatchedWalletData {
 async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletData> {
   const fundingTimes: number[] = [];
   const funders: string[] = [];
+  const funderSlots: { funder: string; slot: number }[] = [];
   let exchangeFundedCount = 0;
   let totalWithFunder = 0;
   let veteranCount = 0;
@@ -234,6 +246,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
         if (r.value.fundingTime !== null) fundingTimes.push(r.value.fundingTime);
         if (r.value.funder) {
           funders.push(r.value.funder);
+          if (r.value.fundingSlot !== null) funderSlots.push({ funder: r.value.funder, slot: r.value.fundingSlot });
           totalWithFunder++;
           if (r.value.funderIsExchange) exchangeFundedCount++;
         }
@@ -245,7 +258,7 @@ async function getWalletDataBatched(wallets: string[]): Promise<BatchedWalletDat
     }
   }
 
-  return { fundingTimes, funders, exchangeFundedCount, totalWithFunder, veteranCount, veteranSpans };
+  return { fundingTimes, funders, funderSlots, exchangeFundedCount, totalWithFunder, veteranCount, veteranSpans };
 }
 
 /**
@@ -401,7 +414,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
 
     // 3. Fetch wallet funding times + funder sources — throttled batches of 5 with caching
     const walletData = await getWalletDataBatched(ownerWallets);
-    const { fundingTimes, funders, veteranCount, veteranSpans } = walletData;
+    const { fundingTimes, funders, funderSlots, veteranCount, veteranSpans } = walletData;
 
     if (fundingTimes.length + veteranCount < 3) {
       return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length, details: 'insufficient wallet data — blocked (fail closed)' };
@@ -466,6 +479,57 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       }
       sameFunderPct = Math.round((sameFunderMax / funders.length) * 100);
       sameFunderFail = sameFunderPct >= 25; // 25%+ from same funder = skip
+    }
+
+    // 4b. SHADOW ONLY — measured and recorded, never blocks a call.
+    //
+    // JOEY was called and rugged 12 minutes later. Three holders had been funded by
+    // one wallet in slots 437094456, 437094457 and 437094456 — nine days before the
+    // launch, so every age test cleared them. They took ~1% each, sold together, and
+    // the price went -98%. The same-funder test above scored that 22% against its 25%
+    // threshold and passed it.
+    //
+    // The weakness is that the test is a *percentage of sampled holders*, so a real
+    // cluster is diluted by however many organic holders land in the sample. Slot
+    // adjacency does not dilute. Three wallets whose first transactions sit within a
+    // few slots of each other, from one funder, is a script — not a coincidence at
+    // any percentage.
+    //
+    // This cannot be validated against past calls: it has to read holders as they
+    // were at call time, and for any coin more than a few hours old the launch
+    // holders are long gone. Checked against JOEY after the dump it finds nothing,
+    // because the wallets it is looking for already sold. So it runs alongside the
+    // real filters and records what it would have done, and only becomes a blocking
+    // rule once the log shows it firing on rugs and not on winners.
+    let slotClusterSize = 0;
+    let slotClusterFunder = '';
+    let slotClusterSpan = 0;
+    {
+      const bySlotFunder = new Map<string, number[]>();
+      for (const { funder, slot } of funderSlots) {
+        const arr = bySlotFunder.get(funder) ?? [];
+        arr.push(slot);
+        bySlotFunder.set(funder, arr);
+      }
+      for (const [addr, slotsRaw] of bySlotFunder) {
+        if (slotsRaw.length < CONFIG.SLOT_CLUSTER_MIN_WALLETS) continue;
+        const slots = [...slotsRaw].sort((a, b) => a - b);
+        // Widest run of wallets this funder created inside the slot window.
+        for (let i = 0; i < slots.length; i++) {
+          let j = i;
+          while (j + 1 < slots.length && slots[j + 1] - slots[i] <= CONFIG.SLOT_CLUSTER_WINDOW) j++;
+          const size = j - i + 1;
+          if (size >= CONFIG.SLOT_CLUSTER_MIN_WALLETS && size > slotClusterSize) {
+            slotClusterSize = size;
+            slotClusterFunder = addr;
+            slotClusterSpan = slots[j] - slots[i];
+          }
+        }
+      }
+      if (slotClusterSize > 0) {
+        console.log(`[Bundle:SHADOW] ${mint.slice(0, 8)}… slot cluster — ${slotClusterSize} wallets ` +
+          `from ${slotClusterFunder.slice(0, 8)}… within ${slotClusterSpan} slots (not blocking)`);
+      }
     }
 
     // 4b. Cluster analysis: largest group of wallets funded within the time window
@@ -545,10 +609,14 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
         cohortSpanDays: cohortSpan,
         sameFunderPct,
         lowBalPct,
+        slotClusterSize,
+        slotClusterSpan: slotClusterSize > 0 ? slotClusterSpan : undefined,
+        slotClusterFunder: slotClusterSize > 0 ? slotClusterFunder : undefined,
         exchangeFundedPct: walletData.totalWithFunder > 0
           ? Math.round(walletData.exchangeFundedCount / walletData.totalWithFunder * 100) : undefined,
       },
-      details: reasons.join(' | ') + (narrowFail ? ' [NARROW FAIL]' : '') + (hourFail ? ' [TIME-LINKED 1H FAIL]' : '') + (dayFail ? ' [TIME-LINKED 24H FAIL]' : '') + (wideFail ? ' [WIDE FAIL]' : '') + (sameFunderFail ? ` [SAME FUNDER: ${topFunder.slice(0,8)}...]` : '') + (balanceFail ? ' [BALANCE CLUSTER]' : '') + (lowBalFail ? ' [LOW BAL HOLDERS]' : ''),
+      details: reasons.join(' | ') + (narrowFail ? ' [NARROW FAIL]' : '') + (hourFail ? ' [TIME-LINKED 1H FAIL]' : '') + (dayFail ? ' [TIME-LINKED 24H FAIL]' : '') + (wideFail ? ' [WIDE FAIL]' : '') + (sameFunderFail ? ` [SAME FUNDER: ${topFunder.slice(0,8)}...]` : '') + (balanceFail ? ' [BALANCE CLUSTER]' : '') + (lowBalFail ? ' [LOW BAL HOLDERS]' : '')
+        + (slotClusterSize > 0 ? ` [SHADOW SLOT-CLUSTER: ${slotClusterSize} wallets from ${slotClusterFunder.slice(0, 8)}… in ${slotClusterSpan} slots]` : ''),
     };
   } catch (err: any) {
     console.error(`[Bundle] Check failed for ${mint.slice(0, 8)}...: ${err.message}`);
