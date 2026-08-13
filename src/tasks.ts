@@ -72,6 +72,7 @@ class TaskManager {
     this.load();
     this.loadPending();
     this.migrateLegacy();
+    this.repairOrphanedTasks();
     this.seedShadowFleet();
   }
 
@@ -148,6 +149,23 @@ class TaskManager {
 
   /** One shadow (paper) task per strategy preset — path-aware ground truth for the
    *  Strategy Lab's peak-model estimates. Runs every call on live prices, no funds. */
+  /**
+   * A task subscribed to nothing can never trade. That state was reachable by
+   * editing a task without re-ticking the PumpClaw checkbox, and it is silent —
+   * the task stays enabled and funded and simply never receives a call.
+   */
+  private repairOrphanedTasks(): void {
+    let fixed = 0;
+    for (const t of this.tasks.values()) {
+      if (this.sourcesFor(t).length === 0) {
+        t.noPumpclaw = false;
+        fixed++;
+        console.log(`[Tasks] "${t.name}" was subscribed to no sources — restored to PumpClaw`);
+      }
+    }
+    if (fixed) this.save();
+  }
+
   private seedShadowFleet(): void {
     const existing = new Set(this.all().filter(t => t.paper).map(t => t.strategy.preset));
     const missing = Object.keys(STRATEGY_PRESETS).filter(k => !existing.has(k));
@@ -262,7 +280,7 @@ class TaskManager {
       strategy: sanitizeStrategy(strategy),
       createdAt: Date.now(),
       sources: (sources ?? []).filter(s => s !== PUMPCLAW_SOURCE_ID),
-      noPumpclaw: sources ? !sources.includes(PUMPCLAW_SOURCE_ID) : false,
+      noPumpclaw: sources && sources.length > 0 ? !sources.includes(PUMPCLAW_SOURCE_ID) : false,
     };
     this.tasks.set(id, task);
     this.save();
@@ -321,8 +339,20 @@ class TaskManager {
     if (patch.name !== undefined) task.name = patch.name.slice(0, 40) || task.name;
     if (patch.enabled !== undefined) task.enabled = patch.enabled;
     if (patch.sources !== undefined) {
-      task.sources = patch.sources.filter(s => s !== PUMPCLAW_SOURCE_ID);
-      task.noPumpclaw = !patch.sources.includes(PUMPCLAW_SOURCE_ID);
+      // An empty list means the form submitted no source checkboxes — and unchecked
+      // checkboxes are simply absent from an HTML form, so this happens on any edit
+      // where the box was not re-ticked. Treating that as "unsubscribe from
+      // everything" left a task enabled, funded, and permanently ineligible for any
+      // call: it silently stopped trading after a rename. A task with no sources can
+      // never do anything, so it is never what was meant. Default to PumpClaw.
+      if (patch.sources.length === 0) {
+        task.sources = [];
+        task.noPumpclaw = false;
+        console.log(`[Tasks] "${task.name}" edit submitted no sources — keeping it on PumpClaw`);
+      } else {
+        task.sources = patch.sources.filter(s => s !== PUMPCLAW_SOURCE_ID);
+        task.noPumpclaw = !patch.sources.includes(PUMPCLAW_SOURCE_ID);
+      }
       task.source = undefined; // superseded by the list + opt-out flag
     } else if (patch.source !== undefined) {
       task.sources = patch.source === PUMPCLAW_SOURCE_ID ? [] : [patch.source];

@@ -4028,6 +4028,9 @@ export function startDashboard(port?: number): void {
               ? `waits for a ${Math.round((t.strategy.dipPct ?? 0) * 100)}% dip (${t.strategy.dipWindowMin}min window)`
               : 'buys immediately at the call',
             strategy: describeStrategy(t.strategy),
+            // Surfaced because a task subscribed to nothing looks identical to a
+            // healthy one from every other field, and stays silent forever.
+            sources: taskManager.sourcesFor(t),
             pendingOrders: taskManager.pendingEntries().filter(p => p.taskId === t.id)
               .map(p => ({ symbol: p.symbol, target: p.target, callPrice: p.callPrice,
                 expiresInMin: Math.max(0, Math.round((p.expiresAt - Date.now()) / 60000)) })),
