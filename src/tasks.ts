@@ -436,6 +436,21 @@ class TaskManager {
 
     // "Already holding" is a normal reason to pass, not a fault.
     if (reason === 'already holding this coin') return;
+
+    // A failed swap is different from a declined one: the bot tried to spend real
+    // money and could not. That is worth saying the first time, not the third.
+    if (reason && reason.startsWith('swap failed')) {
+      const last = this.lastMissAlert.get(task.id) ?? 0;
+      if (Date.now() - last > 10 * 60_000) {
+        this.lastMissAlert.set(task.id, Date.now());
+        sendOpsAlert(
+          `⚠️ **${task.name}** tried to buy **$${symbol}** and the swap failed.\n\`${reason}\``,
+          CONFIG.TRADES_WEBHOOK,
+        ).catch(() => {});
+      }
+      return;
+    }
+
     if (n < 3) return;
     const last = this.lastMissAlert.get(task.id) ?? 0;
     if (Date.now() - last < 20 * 60_000) return;

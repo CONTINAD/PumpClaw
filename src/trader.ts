@@ -231,6 +231,7 @@ export class Trader {
       return null;
     }
 
+    let lastBuyError: string | null = null;
     // Execute buy with retry + confirmation check
     let result: SwapResult | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -239,6 +240,11 @@ export class Trader {
         result = await jupiterBuy(mint, entrySol, { ...this.swapOpts(), urgency: 'normal', maxTipLamports: Math.floor(entrySol * 1e9 * 0.01) });
         break;
       } catch (err: any) {
+        // Keep the real reason. "swap failed after 3 attempts" is not a diagnosis —
+        // it discards the one string that says whether this was a blockhash expiry,
+        // an RPC rejection, a timeout or a bad route, and without it the next
+        // investigation starts from nothing again.
+        lastBuyError = err.message;
         console.error(`[Trader] Buy failed for $${symbol} (attempt ${attempt}): ${err.message}`);
 
         // Check if tokens arrived despite the error (tx may have gone through)
@@ -264,7 +270,7 @@ export class Trader {
     }
 
     if (!result) {
-      this.lastSkip = 'swap failed after 3 attempts';
+      this.lastSkip = `swap failed after 3 attempts: ${lastBuyError ?? 'no error captured'}`;
       console.error(`[Trader] ❌ Buy FAILED after 3 attempts for $${symbol}`);
       return null;
     }
