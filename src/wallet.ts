@@ -272,3 +272,59 @@ export async function mintSupply(mint: string): Promise<number> {
   } catch { /* fall through */ }
   return 0;   // not cached — a transient failure must not pin zero forever
 }
+
+// ── Multi-endpoint broadcast ────────────────────────────────
+
+let _pool: Connection[] | null = null;
+
+/** Every configured endpoint, primary first. */
+export function connectionPool(): Connection[] {
+  if (_pool) return _pool;
+  const urls = [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean);
+  _pool = urls.map(u => new Connection(u, 'confirmed'));
+  console.log(`[Wallet] RPC pool: ${_pool.length} endpoint(s)`);
+  return _pool;
+}
+
+/**
+ * Submit a signed transaction to every endpoint at once and take the first
+ * signature returned.
+ *
+ * A single endpoint is a single point of failure at the worst possible moment.
+ * $vorq's buy failed three times without a transaction ever reaching the chain,
+ * and with one endpoint there is no way to tell a network-wide problem from that
+ * one node having a bad minute — the trade is simply lost either way.
+ *
+ * Broadcasting is safe: the same signed transaction has the same signature
+ * everywhere, so the network deduplicates it. Sending to five nodes cannot execute
+ * it five times.
+ *
+ * Throws only if every endpoint rejected it, and carries the reasons.
+ */
+export async function broadcastTransaction(rawTx: Uint8Array): Promise<string> {
+  const pool = connectionPool();
+  if (pool.length === 0) throw new Error('no RPC endpoints configured');
+  const errors: string[] = [];
+  const attempts = pool.map(conn =>
+    withTimeout(conn.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 3 }), 12_000, 'sendRawTransaction')
+      .catch((e: any) => { errors.push(String(e.message).slice(0, 80)); return null; }));
+  const results = await Promise.all(attempts);
+  const sig = results.find((r): r is string => typeof r === 'string' && r.length > 0);
+  if (sig) return sig;
+  throw new Error(`all ${pool.length} endpoint(s) rejected: ${errors.join(' | ')}`);
+}
+
+/** Poll for a signature across the pool — one lagging node cannot hide a landed tx. */
+export async function anySignatureStatus(sig: string): Promise<'ok' | 'pending' | string> {
+  const pool = connectionPool();
+  const checks = pool.map(conn =>
+    withTimeout(conn.getSignatureStatuses([sig]), 8000, 'getSignatureStatuses')
+      .then(r => r.value[0]).catch(() => null));
+  const results = await Promise.all(checks);
+  for (const st of results) {
+    if (!st) continue;
+    if (st.err) return `on-chain failure: ${JSON.stringify(st.err)}`;
+    if (st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized') return 'ok';
+  }
+  return 'pending';
+}

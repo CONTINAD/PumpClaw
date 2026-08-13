@@ -1,5 +1,5 @@
 import { VersionedTransaction, type Keypair } from '@solana/web3.js';
-import { getWallet, getConnection, mintDecimals } from './wallet.js';
+import { getWallet, getConnection, mintDecimals, broadcastTransaction, anySignatureStatus } from './wallet.js';
 import { CONFIG } from './config.js';
 import { tipLamports, sendViaJito, type Urgency } from './jito.js';
 
@@ -170,22 +170,17 @@ async function signAndSend(swapTxBase64: string, keypair?: Keypair, viaJito = fa
   const rawTx = tx.serialize();
   const txBlockhash = tx.message.recentBlockhash;
 
-  // Broadcast both ways. The tip is already inside the transaction, so whichever
-  // path lands it, it lands once — and a block-engine outage cannot strand a stop.
+  // Broadcast to every configured endpoint and to Jito at once. The transaction is
+  // already signed, so its signature is identical everywhere and the network
+  // deduplicates it — five nodes cannot execute it five times. One endpoint having
+  // a bad minute previously lost the trade outright with no way to tell that apart
+  // from a network-wide problem.
   const b64 = Buffer.from(rawTx).toString('base64');
   if (viaJito) sendViaJito(b64).catch(() => {});
-  const txSig = await connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 5 });
+  const txSig = await broadcastTransaction(rawTx);
 
-  const settled = async (): Promise<'ok' | 'pending' | string> => {
-    try {
-      const st = await connection.getSignatureStatuses([txSig]);
-      const s = st.value[0];
-      if (!s) return 'pending';
-      if (s.err) return `on-chain failure: ${JSON.stringify(s.err)}`;
-      if (s.confirmationStatus === 'confirmed' || s.confirmationStatus === 'finalized') return 'ok';
-      return 'pending';
-    } catch { return 'pending'; }
-  };
+  // Ask every endpoint — one lagging node must not hide a transaction that landed.
+  const settled = () => anySignatureStatus(txSig).catch(() => 'pending' as const);
 
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
@@ -206,7 +201,7 @@ async function signAndSend(swapTxBase64: string, keypair?: Keypair, viaJito = fa
     }
 
     // Keep it in front of the leader; validators drop transactions under load.
-    connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 0 }).catch(() => {});
+    broadcastTransaction(rawTx).catch(() => {});
     if (viaJito) sendViaJito(b64).catch(() => {});
     await new Promise(r => setTimeout(r, 2000));
   }
