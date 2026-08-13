@@ -51,6 +51,7 @@ export interface CallRecord {
   entryAgeMin?: number;          // token age at call time (minutes since pair creation)
   entrySmartHolders?: number;    // # smart wallets holding at call time
   entryBundleSafe?: boolean;     // bundle check verdict
+  entrySocials?: number;         // how many of twitter/website/telegram were attached
 
   /** Everything the holder analysis measured at call time. Stored so that after a
    *  few days it is possible to ask which of these actually predicts a loss,
@@ -106,7 +107,7 @@ export class PerformanceTracker {
     coin: PumpFunCoin,
     market: MarketData,
     alertMessageId: string,
-    extra?: { smartHolders?: number; bundleSafe?: boolean; holders?: CallRecord['entryHolders'] },
+    extra?: { smartHolders?: number; bundleSafe?: boolean; holders?: CallRecord['entryHolders']; socials?: number },
   ): CallRecord {
     const ageMin = market.pairCreatedAt > 0
       ? Math.floor((Date.now() - market.pairCreatedAt) / 60_000)
@@ -137,6 +138,7 @@ export class PerformanceTracker {
       entrySmartHolders: extra?.smartHolders,
       entryBundleSafe: extra?.bundleSafe,
       entryHolders: extra?.holders,
+      entrySocials: extra?.socials,
       minMultiplier: 1,
       minAtMin: 0,
       // Tracking state

@@ -13,6 +13,7 @@ import { getWallet, getSolBalance, withTimeout, mintSupply } from './wallet.js';
 import { describeStrategy } from './strategy.js';
 import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
+import { checkSocials } from './socials.js';
 import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard } from './dashboard.js';
 import { registerSlashCommands } from './interactions.js';
@@ -260,6 +261,23 @@ async function fastScanCycle() {
       continue;
     }
 
+    // No Twitter, no site, no Telegram — nobody intends to support this one.
+    // Checked here because it is one cheap HTTP call and saves the bundle check's
+    // ~20 RPC lookups on a coin we were never going to call.
+    if (CONFIG.REQUIRE_SOCIALS) {
+      const social = await checkSocials(post.mint);
+      if (social.known && social.count === 0) {
+        log(`⚠ NO_SOCIALS — skipping ${post.name}: no twitter, website or telegram`);
+        recordSkip(post, 'NO_SOCIALS', 'no twitter / website / telegram', market.marketCap, market.priceUsd);
+        continue;
+      }
+      if (!social.known) {
+        // Not knowing is not the same as knowing there is nothing. Let it through
+        // rather than let a pump.fun outage become a call drought.
+        console.log(`[Socials] lookup failed for ${post.name} — allowing through`);
+      }
+    }
+
     const volThreshold = market.marketCap < CONFIG.MICRO_MC_THRESHOLD
       ? CONFIG.MIN_5M_VOLUME_MICRO_MC
       : market.marketCap < CONFIG.LOW_MC_THRESHOLD
@@ -452,6 +470,7 @@ async function fastScanCycle() {
       smartHolders: smartCheck.holders,
       bundleSafe: bundle.safe,
       holders: bundle.metrics,
+      socials: await checkSocials(coin.mint).then(x => x.known ? x.count : undefined).catch(() => undefined),
     });
     alertCount++;
 

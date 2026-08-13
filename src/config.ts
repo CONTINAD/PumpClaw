@@ -47,6 +47,11 @@ export const CONFIG = {
   // while the $50-100K band hit 2x 60% of the time. A coin that has already run to
   // six figures has done its move — we are buying the exit liquidity.
   // 0 disables the ceiling.
+  // Require at least one link — Twitter, website or Telegram. A launch with none
+  // is one nobody intends to support, and attaching one is free. When the lookup
+  // itself fails the coin is allowed through rather than blocked: not knowing is
+  // not the same as knowing there is nothing.
+  REQUIRE_SOCIALS: true,
   MAX_ENTRY_MC: 100_000,
   MAX_CALLS_PER_HOUR: 6,         // hard cap — a spam hour means the signal is degraded
   MICRO_MC_THRESHOLD: 20_000,    // MC cutoff for micro tier

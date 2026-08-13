@@ -3505,6 +3505,7 @@ export function startDashboard(port?: number): void {
           { label: '5m price change',       get: c => c.entryPriceChange5m,     fmt: v => v.toFixed(0) + '%' },
           { label: '1h price change',       get: c => c.entryPriceChange1h,     fmt: v => v.toFixed(0) + '%' },
           { label: 'Smart holders',         get: c => c.entrySmartHolders,      fmt: v => String(Math.round(v)) },
+          { label: 'Social links',          get: c => c.entrySocials,           fmt: v => `${Math.round(v)} link${v === 1 ? '' : 's'}` },
           { label: 'Dev holding %',         get: c => c.entryHolders?.devHoldPct, fmt: v => v.toFixed(1) + '%' },
           { label: 'Graph hub %',           get: c => c.entryHolders?.graphHubPct, fmt: v => v.toFixed(0) + '%' },
           { label: 'Fresh wallets',         get: c => c.entryHolders?.freshWallets, fmt: v => String(Math.round(v)) },
