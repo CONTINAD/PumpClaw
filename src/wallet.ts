@@ -94,19 +94,50 @@ export function setWalletFromKey(bs58Key: string): string {
   return kp.publicKey.toBase58();
 }
 
-/** Get a shared Solana RPC connection. */
+/**
+ * Hand out endpoints in rotation rather than pinning every read to the primary.
+ *
+ * Helius enforces a per-second cap and answers over it with 429 + Retry-After: 1.
+ * Measured against the live key while the bot was running, roughly a third of
+ * additional reads were refused — the primary sits at its cap under normal load,
+ * so a balance check before a buy or a decimals lookup mid-exit arrives at a bucket
+ * that is already empty. A second key has its own bucket. Sends were already
+ * spread across the pool; reads were not, which left the backup idle while the
+ * primary stayed pinned.
+ *
+ * Every call site is an independent point read, and blockhash validity is global
+ * state, so no caller depends on being handed the same node twice.
+ */
+let _rr = 0;
 export function getConnection(): Connection {
-  if (!_connection) {
-    _connection = new Connection(CONFIG.HELIUS_RPC, 'confirmed');
+  const pool = connectionPool();
+  if (pool.length === 0) throw new Error('no RPC endpoints configured');
+  return pool[_rr++ % pool.length];
+}
+
+/**
+ * Run a read against the pool, moving to the next endpoint on failure.
+ *
+ * Retrying the same endpoint after a 429 means waiting out its second. A different
+ * key answers now, which matters when the read is the balance check standing
+ * between a call and a buy.
+ */
+export async function rpcRead<T>(fn: (c: Connection) => Promise<T>, label: string, timeoutMs = RPC_TIMEOUT_MS): Promise<T> {
+  const pool = connectionPool();
+  if (pool.length === 0) throw new Error('no RPC endpoints configured');
+  const start = _rr++;
+  let last: any;
+  for (let i = 0; i < pool.length; i++) {
+    try { return await withTimeout(fn(pool[(start + i) % pool.length]), timeoutMs, label); }
+    catch (e: any) { last = e; }
   }
-  return _connection;
+  throw new Error(`${label}: all ${pool.length} endpoint(s) failed — ${String(last?.message ?? last).slice(0, 100)}`);
 }
 
 /** Get the bot wallet's SOL balance. */
 export async function getSolBalance(keypair?: Keypair): Promise<number> {
-  const conn = getConnection();
   const wallet = keypair ?? getWallet();
-  const lamports = await withTimeout(conn.getBalance(wallet.publicKey), RPC_TIMEOUT_MS, 'getBalance');
+  const lamports = await rpcRead(c => c.getBalance(wallet.publicKey), 'getBalance');
   return lamports / LAMPORTS_PER_SOL;
 }
 
@@ -135,22 +166,38 @@ export async function getSolBalanceFresh(keypair?: Keypair): Promise<number> {
 
 /** Get token balance (raw smallest units) for the bot wallet. Checks both SPL Token and Token-2022. */
 export async function getTokenBalance(mint: string, keypair?: Keypair): Promise<number> {
-  const conn = getConnection();
   const wallet = keypair ?? getWallet();
   const mintPk = new PublicKey(mint);
+  let rpcFailure: any = null;
 
   // Try standard SPL Token first, then Token-2022
   for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
     try {
       const ata = await getAssociatedTokenAddress(mintPk, wallet.publicKey, false, programId);
-      const info = await withTimeout(conn.getTokenAccountBalance(ata), RPC_TIMEOUT_MS, 'getTokenAccountBalance');
+      const info = await rpcRead(c => c.getTokenAccountBalance(ata), 'getTokenAccountBalance');
       const amount = parseInt(info.value.amount);
       if (amount > 0) return amount;
-    } catch {
-      // Account doesn't exist under this program — try next
+    } catch (e: any) {
+      if (!isMissingAccount(e)) rpcFailure = e;
     }
   }
+  // A rate-limited read and an empty wallet both used to arrive here as 0, and a
+  // caller cannot tell "you hold nothing" from "nobody would tell me". Reported as
+  // 0 to a sell path, that silently cancels the sell on a position we still hold.
+  if (rpcFailure) throw new Error(`token balance unreadable for ${mint.slice(0, 8)}: ${String(rpcFailure.message ?? rpcFailure).slice(0, 90)}`);
   return 0;
+}
+
+/**
+ * True when the error means the token account genuinely does not exist.
+ *
+ * That is a real zero. Anything else — 429, timeout, transport failure — is an
+ * unknown balance and must not be rounded down to nothing.
+ */
+function isMissingAccount(e: any): boolean {
+  const m = String(e?.message ?? e).toLowerCase();
+  return m.includes('could not find account') || m.includes('invalid param')
+      || m.includes('account does not exist') || m.includes('failed to get token account');
 }
 
 /** Get token balance as a human-readable number (accounting for decimals). Checks both SPL Token and Token-2022. */
@@ -162,7 +209,7 @@ export async function getTokenBalanceUi(mint: string): Promise<number> {
   for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
     try {
       const ata = await getAssociatedTokenAddress(mintPk, wallet.publicKey, false, programId);
-      const info = await withTimeout(conn.getTokenAccountBalance(ata), RPC_TIMEOUT_MS, 'getTokenAccountBalance');
+      const info = await rpcRead(c => c.getTokenAccountBalance(ata), 'getTokenAccountBalance');
       const amount = info.value.uiAmount ?? 0;
       if (amount > 0) return amount;
     } catch {
@@ -238,7 +285,7 @@ export async function mintDecimals(mint: string): Promise<number> {
   const hit = decimalsCache.get(mint);
   if (hit !== undefined) return hit;
   try {
-    const info: any = await withTimeout(getConnection().getParsedAccountInfo(new PublicKey(mint)), RPC_TIMEOUT_MS, 'getParsedAccountInfo(mint)');
+    const info: any = await rpcRead(c => c.getParsedAccountInfo(new PublicKey(mint)), 'getParsedAccountInfo(mint)');
     const d = info?.value?.data?.parsed?.info?.decimals;
     const v = typeof d === 'number' ? d : 6;
     decimalsCache.set(mint, v);
@@ -265,8 +312,7 @@ export async function mintSupply(mint: string): Promise<number> {
   const hit = supplyCache.get(mint);
   if (hit !== undefined) return hit;
   try {
-    const info: any = await withTimeout(
-      getConnection().getTokenSupply(new PublicKey(mint)), RPC_TIMEOUT_MS, 'getTokenSupply');
+    const info: any = await rpcRead(c => c.getTokenSupply(new PublicKey(mint)), 'getTokenSupply');
     const v = parseFloat(info?.value?.uiAmountString ?? info?.value?.uiAmount ?? '0');
     if (v > 0) { supplyCache.set(mint, v); return v; }
   } catch { /* fall through */ }
