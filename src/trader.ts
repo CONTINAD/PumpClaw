@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { Keypair } from '@solana/web3.js';
 import { CONFIG } from './config.js';
-import { getSolBalance, getTokenBalance, closeTokenAccount, getConnection, mintDecimals } from './wallet.js';
+import { getSolBalance, getSolBalanceFresh, getTokenBalance, closeTokenAccount, getConnection, mintDecimals } from './wallet.js';
 import { getSolPrice } from './dexscreener.js';
 import { jupiterBuy, jupiterSell, jupiterGetPrice, type SwapResult, type SwapOpts } from './jupiter.js';
 import { STRATEGY_PRESETS, type Strategy } from './strategy.js';
@@ -196,7 +196,21 @@ export class Trader {
     let entrySol = Math.max(rawEntry, strat.minEntrySol);
     if (strat.maxEntrySol > 0) entrySol = Math.min(entrySol, strat.maxEntrySol);
 
-    // Need at least enough for the entry + a tiny bit for tx fees (~0.005 SOL)
+    // Need at least enough for the entry + a tiny bit for tx fees (~0.005 SOL).
+    //
+    // Before giving up, re-read at the freshest commitment available. The shared
+    // connection has served a balance 48 minutes stale, and that skipped a call
+    // without a trace: a stale read and an empty wallet look identical here.
+    if (balance! < entrySol + 0.005) {
+      const fresh = await getSolBalanceFresh(this.kp()).catch(() => balance!);
+      if (fresh > balance!) {
+        console.log(`[Trader] Balance read was stale (${balance!.toFixed(4)} -> ${fresh.toFixed(4)} SOL) — recomputing entry`);
+        balance = fresh;
+        const raw2 = Math.floor(balance * entryPct * 1000) / 1000;
+        entrySol = Math.max(raw2, strat.minEntrySol);
+        if (strat.maxEntrySol > 0) entrySol = Math.min(entrySol, strat.maxEntrySol);
+      }
+    }
     if (balance! < entrySol + 0.005) {
       console.log(`[Trader] Balance too low for entry: ${balance!.toFixed(4)} SOL (need ${entrySol} + fees)`);
       return null;

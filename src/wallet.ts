@@ -110,6 +110,29 @@ export async function getSolBalance(keypair?: Keypair): Promise<number> {
   return lamports / LAMPORTS_PER_SOL;
 }
 
+/**
+ * Balance read at the freshest commitment the node will give.
+ *
+ * The shared connection runs at 'confirmed', and on 2026-08-13 it served a figure
+ * 48 minutes out of date — 0.0265 SOL against a real 0.2395. The buy path decided
+ * it could not afford the entry and skipped a call, silently, because a stale read
+ * and a genuinely empty wallet are indistinguishable at the point of decision.
+ *
+ * Used as a second opinion only when a balance is about to block a trade.
+ */
+export async function getSolBalanceFresh(keypair?: Keypair): Promise<number> {
+  const wallet = keypair ?? getWallet();
+  const endpoints = [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean);
+  for (const url of endpoints) {
+    try {
+      const conn = new Connection(url, 'processed');
+      const lamports = await withTimeout(conn.getBalance(wallet.publicKey, 'processed'), 8000, 'getBalance(fresh)');
+      return lamports / LAMPORTS_PER_SOL;
+    } catch { /* try the next endpoint */ }
+  }
+  return getSolBalance(keypair);
+}
+
 /** Get token balance (raw smallest units) for the bot wallet. Checks both SPL Token and Token-2022. */
 export async function getTokenBalance(mint: string, keypair?: Keypair): Promise<number> {
   const conn = getConnection();
