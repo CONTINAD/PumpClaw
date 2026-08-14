@@ -1017,6 +1017,110 @@ for (const tp1 of [1.3, 1.5, 2.0]) {
 
 GRID.push(...GRID8);
 
+// ── GRID9 (213) ─────────────────────────────────────────────
+//
+// Targeted rather than broad. The fleet's own results point at two traits, and the
+// fleet is nearly empty exactly where they meet.
+//
+// Strategies whose stop is effectively off (-95%) are the only group that makes
+// money: 10 of 13 profitable, +0.1134/trade, against 150 of 1264 and -0.0882 for
+// everything else. An 11% base rate does not produce 10 of 13 by luck. The reading
+// is not "stops are bad" — it is that a stop tight enough to fire on memecoin noise
+// gets hit on the way to the target, and the dip entry has already bought the
+// discount the stop was there to protect.
+//
+// And the deepest dip band is the only positive one: dip 31-45% averages +0.0356
+// with a median total of +2.44 SOL, while every shallower band is negative.
+//
+// Coverage where those meet was:
+//
+//   dip >= 35%                    26 of 1907
+//   dip >= 45%                     0
+//   stop off (>= 90%)             25 of 1907
+//   dip >= 35% AND stop off        1
+//   dip >= 35% + free tail         0
+//   stop between -61% and -89%     0        (a complete hole)
+//
+// One strategy is not a result. This is not another thousand — a thousand more
+// would only raise the noise bar, which is already t≈3.9. It is 213 placed where
+// the fleet cannot currently answer the question it is being asked.
+const GRID9: Spec[] = [];
+const n9 = (x: number) => String(x).replace('.', '');
+
+// ── A. Deep dip sweep, 45-70% (75) ──────────────────────────
+// Nothing beyond -40% exists. A -60% pullback on a coin that recovers is the
+// cheapest entry available; the question is how often it recovers at all, and
+// right now the fleet cannot say.
+for (const dp of [45, 50, 55, 60, 70]) {
+  for (const tgt of [1.5, 2, 2.5, 3, 4]) {
+    for (const [sn, st] of [['off', 0.05], ['s60', 0.40], ['s75', 0.25]] as [string, number][]) {
+      GRID9.push({
+        key: `g9D${dp}_${n9(tgt)}${sn}`,
+        name: `Dip −${dp}% → ${tgt}X${sn === 'off' ? ', no stop' : `, stop −${Math.round((1 - st) * 100)}%`}`,
+        desc: `Waits for a −${dp}% flush before buying. Deeper than anything the fleet has tested; the −31-45% band is the only positive one so far.`,
+        dip: dp / 100, win: 15, tps: [[tgt, 1]], stop: st,
+      });
+    }
+  }
+}
+
+// ── B. The stop-width hole, -60% to -95% (60) ───────────────
+// The fleet jumps straight from -60% to -95% with nothing in between, so "how wide
+// is wide enough" has no answer. Swept across entry depths so the result is not
+// confounded with the entry.
+for (const [sn, st] of [['s60', 0.40], ['s70', 0.30], ['s80', 0.20], ['off', 0.05]] as [string, number][]) {
+  for (const dp of [0, 10, 20, 30, 40]) {
+    for (const tgt of [1.5, 2, 3]) {
+      GRID9.push({
+        key: `g9S${sn}_${dp}_${n9(tgt)}`,
+        name: `${dp ? `Dip −${dp}%` : 'Instant'} → ${tgt}X, ${sn === 'off' ? 'no stop' : `stop −${Math.round((1 - st) * 100)}%`}`,
+        desc: `Fills the −60% to −95% gap in stop width. Strategies with the stop effectively off are the only profitable group so far, and nothing sits between them and −60%.`,
+        dip: dp ? dp / 100 : undefined, win: dp ? 15 : undefined,
+        tps: [[tgt, 1]], stop: st,
+      });
+    }
+  }
+}
+
+// ── C. Deep dip + free tail (48) ────────────────────────────
+// Zero of these exist. "Dip −25% → 75%@1.5X + free tail" runs +0.1440 at an 86% win
+// rate, and a deep entry should make the tail cheaper still — the bank leg covers
+// the trade sooner, so the runner costs less to hold.
+for (const dp of [35, 40, 50, 60]) {
+  for (const at of [1.5, 2, 2.5]) {
+    for (const tail of [5, 10]) {
+      for (const bank of [0.8, 0.9]) {
+        GRID9.push({
+          key: `g9T${dp}_${n9(at)}_${tail}_${Math.round(bank * 100)}`,
+          name: `Dip −${dp}% → ${Math.round(bank * 100)}%@${at}X + ${Math.round((1 - bank) * 100)}% to ${tail}X`,
+          desc: `Deep entry, banks ${Math.round(bank * 100)}% at ${at}X, leaves the rest running to ${tail}X. No deep-dip strategy currently leaves anything running.`,
+          dip: dp / 100, win: 15,
+          tps: [[at, bank], [tail, 1 - bank]], stop: 0.05, be: true,
+        });
+      }
+    }
+  }
+}
+
+// ── D. How long is a deep dip worth waiting for? (30) ───────
+// Short windows won on shallow dips, but a −55% flush plausibly needs longer to
+// arrive. That is an assumption until it is swept, so sweep it.
+for (const dp of [35, 45, 55]) {
+  for (const w of [3, 5, 10, 20, 30]) {
+    for (const tgt of [2, 3]) {
+      GRID9.push({
+        key: `g9W${dp}_${w}_${n9(tgt)}`,
+        name: `Dip −${dp}% in ${w}m → ${tgt}X, no stop`,
+        desc: `A −${dp}% flush inside ${w} minutes. Short windows beat long ones on shallow dips; whether that survives at this depth is untested.`,
+        dip: dp / 100, win: w, tps: [[tgt, 1]], stop: 0.05,
+      });
+    }
+  }
+}
+
+GRID.push(...GRID9);
+
+
 
 
 
