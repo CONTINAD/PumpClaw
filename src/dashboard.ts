@@ -1114,6 +1114,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
     <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
     <a href="/shadow" style="border-color:var(--border2)">📄 Shadow Fleet</a>
+    <a href="/ledger" style="border-color:var(--border2)">💰 Ledger</a>
     <a href="/params" style="border-color:var(--border2)">📐 What works</a>
     <a href="/builder" style="border-color:var(--border2)">🛠️ Build your own</a>
     <a href="/settings" style="border-color:var(--border2)">⚙️ Settings</a>
@@ -1695,7 +1696,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -2040,6 +2041,138 @@ function buildParamsHTML(url: string): string {
       }).join('')}
     </table></div>
   </div>`, '/params');
+}
+
+/**
+ * Real-money ledger — every entry, every exit, and what it actually netted.
+ *
+ * Reconstructing this from the activity feed by hand produced a figure ~5x too
+ * negative, because an entry whose exit had scrolled out of the feed window read
+ * as a total loss. Positions carry their own exits, so this counts each trade once
+ * and says plainly which ones are still open rather than scoring them.
+ */
+function buildLedgerHTML(): string {
+  const tasks = taskManager.all().filter(t => !t.paper);
+  const out: { task: string; pos: any }[] = [];
+  for (const t of tasks) {
+    for (const p of taskManager.traderFor(t).getAllPositions()) out.push({ task: t.name, pos: p });
+  }
+  out.sort((a, b) => (b.pos.entryTime ?? 0) - (a.pos.entryTime ?? 0));
+
+  const closed = out.filter(r => r.pos.status === 'closed');
+  const open = out.filter(r => r.pos.status === 'open');
+  const realized = closed.reduce((s, r) => s + (r.pos.finalPnlSol ?? 0), 0);
+  const deployed = open.reduce((s, r) => s + (r.pos.entrySol ?? 0), 0);
+  const wins = closed.filter(r => (r.pos.finalPnlSol ?? 0) > 0);
+  const grossIn = closed.reduce((s, r) => s + (r.pos.entrySol ?? 0), 0);
+  const grossOut = closed.reduce((s, r) => s + (r.pos.totalSolReturned ?? 0), 0);
+
+  const ago = (ts: number) => {
+    if (!ts) return '—';
+    const m = Math.round((Date.now() - ts) / 60000);
+    return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+  };
+  const money = (v: number, dp = 4) => `<span style="color:${v > 0 ? '#10b981' : v < 0 ? '#ef4444' : 'var(--text2)'}">${v >= 0 ? '+' : ''}${v.toFixed(dp)}</span>`;
+
+  const tradeRow = (r: { task: string; pos: any }) => {
+    const p = r.pos;
+    const isOpen = p.status === 'open';
+    const pnl = isOpen ? null : (p.finalPnlSol ?? 0);
+    const held = p.closedTime && p.entryTime ? Math.round((p.closedTime - p.entryTime) / 60000) : null;
+    const exits = (p.exits ?? []) as any[];
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="white-space:nowrap"><b>$${p.symbol ?? '?'}</b>
+        <div style="font-size:10px;color:var(--text3)">${ago(p.entryTime)}${held !== null ? ` · held ${held}m` : ''}</div></td>
+      <td class="mono" style="font-size:12px">${(p.entrySol ?? 0).toFixed(4)}
+        <div style="font-size:10px;color:var(--text3)">${p.entrySource === 'chain' ? 'basis from chain' : p.entrySource === 'quote' ? '⚠ basis from quote' : ''}${
+          typeof p.fillSlipPct === 'number' ? ` · slip ${p.fillSlipPct >= 0 ? '+' : ''}${p.fillSlipPct.toFixed(1)}%` : ''}</div></td>
+      <td class="mono" style="font-size:12px">${(p.totalSolReturned ?? 0).toFixed(4)}</td>
+      <td class="mono" style="font-weight:700">${isOpen ? '<span style="color:#eab308">open</span>' : money(pnl!)}</td>
+      <td class="mono" style="font-size:12px;color:var(--text2)">${(p.peakMultiplier ?? 0).toFixed(2)}x</td>
+      <td style="font-size:11px;color:var(--text2)">
+        ${exits.length
+          ? exits.map(e => `<div style="white-space:nowrap">${e.label ?? e.reason} · ${(e.multiplierAtExit ?? 0).toFixed(2)}x · ${(e.solReceived ?? 0).toFixed(4)}</div>`).join('')
+          : isOpen ? '<span style="color:var(--text3)">no exits yet</span>'
+          : '<span style="color:#ef4444">closed with no exit recorded</span>'}
+      </td>
+      <td style="font-size:11px;color:var(--text3)">${r.task.slice(0, 24)}</td>
+    </tr>`;
+  };
+
+  const tile = (label: string, value: string, sub: string, color?: string) => `
+    <div style="flex:1;min-width:150px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">${label}</div>
+      <div style="font-size:20px;font-weight:700;margin:4px 0;color:${color ?? 'var(--text)'}">${value}</div>
+      <div style="font-size:11px;color:var(--text3)">${sub}</div>
+    </div>`;
+
+  return settingsShell(`
+  <div class="card" style="max-width:none">
+    <h3>💰 Real-money ledger</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+      ${tile('Realized', `${realized >= 0 ? '+' : ''}${realized.toFixed(4)}`, `${closed.length} closed trades`, realized >= 0 ? '#10b981' : '#ef4444')}
+      ${tile('Win rate', `${closed.length ? Math.round(wins.length / closed.length * 100) : 0}%`, `${wins.length} of ${closed.length}`)}
+      ${tile('Deployed now', deployed.toFixed(4), `${open.length} open position${open.length === 1 ? '' : 's'}`, open.length ? '#eab308' : undefined)}
+      ${tile('Gross flow', `${grossIn.toFixed(3)} → ${grossOut.toFixed(3)}`, 'in → out, closed trades only')}
+    </div>
+    <p style="font-size:12px;color:var(--text2);line-height:1.7">
+      Every real entry and exit the bot recorded, counted once. <b>Open positions are shown as open, not scored</b> —
+      treating an entry whose exit has not happened yet as a total loss is how a hand-tallied figure came out about
+      five times too negative.
+    </p>
+    <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-top:6px">
+      <b>basis from chain</b> means the entry price was read from the wallet after the swap rather than taken from
+      Jupiter's quote — a quote said 852K tokens on $Layoo and 614K arrived, a 28% gap, so a quoted basis misstates
+      every multiple and PnL that follows it. <b>slip</b> is fill against quote.
+      This page counts trades, not transfers: deposits and withdrawals are not trades and are not included, so this
+      will not equal the wallet balance on its own.
+    </p>
+  </div>
+
+  ${open.length ? `<div class="card" style="max-width:none">
+    <h3>Open — ${open.length} · ${deployed.toFixed(4)} SOL at risk</h3>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Coin</th><th>In</th><th>Out</th><th>PnL</th><th>Peak</th><th>Exits</th><th>Task</th></tr>
+      ${open.map(tradeRow).join('')}
+    </table></div>
+  </div>` : ''}
+
+  <div class="card" style="max-width:none">
+    <h3>Closed — ${closed.length}</h3>
+    ${closed.length ? `<div style="overflow-x:auto"><table>
+      <tr><th>Coin</th><th>In</th><th>Out</th><th>PnL</th><th>Peak</th><th>Exits</th><th>Task</th></tr>
+      ${closed.map(tradeRow).join('')}
+    </table></div>` : '<p style="font-size:13px;color:var(--text3)">No closed real trades recorded.</p>'}
+  </div>
+
+  ${(() => {
+    // Exit-reason attribution: which exit rule is actually making and losing money.
+    const byReason = new Map<string, { n: number; sol: number }>();
+    for (const r of closed) {
+      for (const e of (r.pos.exits ?? []) as any[]) {
+        const k = String(e.reason ?? 'unknown');
+        const cur = byReason.get(k) ?? { n: 0, sol: 0 };
+        cur.n++; cur.sol += e.solReceived ?? 0;
+        byReason.set(k, cur);
+      }
+    }
+    if (!byReason.size) return '';
+    return `<div class="card" style="max-width:none">
+      <h3>Which exit rule fired</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:10px">
+        How often each exit triggered and what it returned. A stop that fires constantly for small amounts is
+        cutting winners, not protecting from losers.
+      </p>
+      <div style="overflow-x:auto"><table>
+        <tr><th>Exit reason</th><th>Times fired</th><th>SOL returned</th><th>Avg per fire</th></tr>
+        ${[...byReason.entries()].sort((a, b) => b[1].sol - a[1].sol).map(([k, v]) => `<tr>
+          <td><b>${k}</b></td><td class="mono">${v.n}</td>
+          <td class="mono">${v.sol.toFixed(4)}</td>
+          <td class="mono" style="color:var(--text2)">${(v.sol / Math.max(1, v.n)).toFixed(4)}</td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+  })()}`, '/ledger');
 }
 
 function buildBuilderHTML(url: string, canAct: boolean): string {
@@ -3166,6 +3299,14 @@ export function startDashboard(port?: number): void {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
+      }
+    } else if (pathname === '/ledger') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(buildLedgerHTML());
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building ledger: ' + err.message + '\n' + err.stack);
       }
     } else if (pathname === '/params') {
       try {
