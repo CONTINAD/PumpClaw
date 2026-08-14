@@ -4035,8 +4035,53 @@ export function startDashboard(port?: number): void {
         };
         const anyFilter = !!(fQ || fEntry || fShape || fStop || fMin);
         const filtered = anyFilter ? rows.filter(matches) : rows;
-        const enough = filtered.filter(r => r.trades >= 8);
-        const thin = filtered.filter(r => r.trades < 8);
+
+        // Sorting runs over the filtered set before the display cap, for the same
+        // reason filtering does: re-ordering the visible 120 would show the best of
+        // an arbitrary slice and label it the best overall.
+        const SORTS: Record<string, (r: any) => number | string> = {
+          name: r => r.name.toLowerCase(),
+          entry: r => r.dipPct || 0,
+          target: r => (r.targets.length ? r.targets[r.targets.length - 1] : r.holdMin ? 0 : 999),
+          stop: r => (r.stopPct === null ? 999 : r.stopPct),
+          trades: r => r.trades,
+          win: r => r.winPct,
+          avg: r => r.avg,
+          pnl: r => r.pnl,
+          best: r => r.best,
+        };
+        const fSort = SORTS[qp('sort')] ? qp('sort') : 'avg';
+        const fDir = qp('dir') === 'asc' ? 'asc' : 'desc';
+        const keyFn = SORTS[fSort];
+        const sorted = [...filtered].sort((a, b) => {
+          const x = keyFn(a), y = keyFn(b);
+          const c = typeof x === 'string' ? String(x).localeCompare(String(y)) : (x as number) - (y as number);
+          return fDir === 'asc' ? c : -c;
+        });
+        const enough = sorted.filter(r => r.trades >= 8);
+        const thin = sorted.filter(r => r.trades < 8);
+
+        // Header links keep every active filter, so sorting a filtered view does not
+        // silently drop back to the whole fleet.
+        const carry = [
+          `hours=${hours}`,
+          fQ ? `q=${encodeURIComponent(fQ)}` : '',
+          fEntry ? `entry=${fEntry}` : '',
+          fShape ? `shape=${fShape}` : '',
+          fStop ? `stop=${fStop}` : '',
+          fMin ? `min=${fMin}` : '',
+          showAll ? 'all=1' : '',
+        ].filter(Boolean).join('&');
+        const th = (label: string, col?: string, hint?: string) => {
+          if (!col) return `<th>${label}</th>`;
+          const active = fSort === col;
+          // Numbers open high-to-low, names A-Z — the useful direction on first click.
+          const nextDir = active ? (fDir === 'desc' ? 'asc' : 'desc') : (col === 'name' ? 'asc' : 'desc');
+          const arrow = active ? (fDir === 'desc' ? ' ▼' : ' ▲') : '<span style="opacity:.25"> ⇅</span>';
+          return `<th style="white-space:nowrap"><a href="/shadow?${carry}&sort=${col}&dir=${nextDir}"
+            title="${hint ?? `Sort by ${label.toLowerCase()}`}"
+            style="color:${active ? 'var(--text)' : 'var(--text2)'};text-decoration:none">${label}${arrow}</a></th>`;
+        };
 
         const keepHours = `hours=${hours}`;
         const sel = (name: string, cur: string, opts: [string, string][]) =>
@@ -4045,6 +4090,8 @@ export function startDashboard(port?: number): void {
         const filterBar = `
           <form method="GET" action="/shadow" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px">
             <input type="hidden" name="hours" value="${hours}">
+            <input type="hidden" name="sort" value="${fSort}">
+            <input type="hidden" name="dir" value="${fDir}">
             <input name="q" value="${fQ.replace(/"/g, '&quot;')}" placeholder="search name…" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:12px;min-width:150px">
             ${sel('entry', fEntry, [['', 'any entry'], ['instant', 'instant only'], ['dip', 'dip only']])}
             ${sel('shape', fShape, [['', 'any shape'], ['ladder', 'ladder (3+ rungs)'], ['trail', 'trailing'], ['clock', 'time exit'], ['moonbag', 'moonbag tail'], ['scalp', 'scalp (≤1.25X)'], ['lottery', 'tight stop, far target']])}
@@ -4068,7 +4115,10 @@ export function startDashboard(port?: number): void {
           <td class="mono" style="color:var(--text2)">${r.best.toFixed(1)}x</td>
           <td><a href="/builder?from=${r.key}" title="Open this strategy in the builder to edit or clone it" style="color:#3b82f6;text-decoration:none;font-size:11px;white-space:nowrap">copy →</a></td>
         </tr>`;
-        const head = `<tr><th>#</th><th>Strategy</th><th>Entry</th><th>Target</th><th>Stop</th><th>Extra</th><th>Trades</th><th>Win</th><th>Avg/trade</th><th>Total</th><th>Best</th><th></th></tr>`;
+        const head = `<tr>${th('#')}${th('Strategy', 'name')}${th('Entry', 'entry', 'Sort by dip depth — instant first')}`
+          + `${th('Target', 'target', 'Sort by the highest take-profit')}${th('Stop', 'stop', 'Sort by stop width')}${th('Extra')}`
+          + `${th('Trades', 'trades')}${th('Win', 'win', 'Sort by win rate')}${th('Avg/trade', 'avg', 'Sort by average PnL per trade')}`
+          + `${th('Total', 'pnl', 'Sort by total PnL — highest or lowest')}${th('Best', 'best', 'Sort by best single trade')}<th></th></tr>`;
 
         const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
         const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
@@ -4101,7 +4151,9 @@ export function startDashboard(port?: number): void {
             ${['6', '12', '24', '48', 'all'].map(h => `<a href="/shadow?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hours ? 'var(--border2)' : 'var(--border)'};background:${h === hours ? 'var(--bg3)' : 'transparent'};color:${h === hours ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h + 'h'}</a>`).join('')}
           </div>
           <p style="font-size:12px;color:var(--text2);line-height:1.6">
-            Ranked by average PnL per closed trade. <b>Strategies with fewer than 8 trades are listed separately</b> — a
+            Sorted by <b>${({ name: 'name', entry: 'dip depth', target: 'top target', stop: 'stop width', trades: 'trade count', win: 'win rate', avg: 'average PnL per closed trade', pnl: 'total PnL', best: 'best single trade' } as Record<string, string>)[fSort]}</b>,
+            ${fDir === 'desc' ? 'highest first' : 'lowest first'} — click any column heading to change it.
+            <b>Strategies with fewer than 8 trades are listed separately</b> — a
             small sample tells you nothing. Even above that bar, treat a one-day leader with suspicion: with
             <b>${rows.length}</b> strategies running, the luckiest one is expected to reach a t-statistic of about
             <b>${Math.sqrt(2 * Math.log(Math.max(2, rows.length))).toFixed(2)}</b> with no real edge at all. Below that bar
