@@ -231,6 +231,32 @@ export class Trader {
       return null;
     }
 
+    // Never open a second entry into a coin we already hold.
+    //
+    // On 08-13 three coins were each bought 4-7 times within seconds, in a
+    // descending ladder — 0.047, 0.023, 0.027, 0.005 SOL — which is entryPct
+    // recomputed against a balance the previous buy had already reduced. The buys
+    // were landing; the confirmations were not. openPosition returned null, so no
+    // position was recorded, so the next scan saw an unheld coin and bought it
+    // again. That drained the wallet to zero.
+    //
+    // A wallet that already holds the mint is the ground truth no bookkeeping error
+    // can contradict. If the read itself fails we proceed rather than block, since
+    // refusing to trade on an unreadable balance would stop every call during a
+    // rate-limit spell.
+    const preHeld = await getTokenBalance(mint, this.kp()).catch(() => -1);
+    if (preHeld > 0) {
+      this.lastSkip = `already holding ${preHeld} tokens of ${symbol} with no open position — ` +
+        `a previous buy landed without confirming; not buying again`;
+      // The reconciler reports untracked bags but does not adopt them, so this one
+      // needs a person. Saying so is the point: silently declining to buy would look
+      // identical to the filters rejecting the coin.
+      console.error(`[Trader] ⚠ ${symbol}: wallet already holds ${preHeld} tokens but no position is recorded — ` +
+        `a previous buy landed without confirming. Refusing a second entry. This bag is UNMANAGED ` +
+        `(no stop, no take-profit) until it is adopted or sold by hand.`);
+      return null;
+    }
+
     let lastBuyError: string | null = null;
     // Execute buy with retry + confirmation check
     let result: SwapResult | null = null;
@@ -247,9 +273,28 @@ export class Trader {
         lastBuyError = err.message;
         console.error(`[Trader] Buy failed for $${symbol} (attempt ${attempt}): ${err.message}`);
 
-        // Check if tokens arrived despite the error (tx may have gone through)
+        // Check if tokens arrived despite the error (tx may have gone through).
+        //
+        // This single read is the only thing standing between "retry the buy" and
+        // "buy it twice", and it is the read most likely to be refused at exactly
+        // this moment — the same rate limit that broke the confirmation breaks the
+        // check. One attempt, swallowed by a catch, made a double entry the default
+        // outcome of a bad minute. Re-read with backoff instead.
+        let tokenBal = -1;
+        for (let probe = 0; probe < 4 && tokenBal < 0; probe++) {
+          await new Promise(r => setTimeout(r, 1500 * (probe + 1)));
+          tokenBal = await getTokenBalance(mint, this.kp()).catch(() => -1);
+        }
+        if (tokenBal < 0) {
+          // Never got a readable answer. Spending again on a maybe is how one bad
+          // minute becomes four entries, so stop here and let the reconciler adopt
+          // whatever actually landed.
+          lastBuyError = `${err.message} — and the balance was unreadable afterwards, ` +
+            `so the buy was not retried (it may have landed)`;
+          console.error(`[Trader] ⛔ ${symbol}: buy unconfirmed and balance unreadable — not retrying, to avoid a double entry`);
+          break;
+        }
         try {
-          const tokenBal = await getTokenBalance(mint, this.kp());
           if (tokenBal > 0) {
             console.log(`[Trader] ⚠ Buy error but tokens detected (${tokenBal}) — treating as success`);
             result = {
