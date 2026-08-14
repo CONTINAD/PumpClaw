@@ -2066,6 +2066,11 @@ function buildLedgerHTML(): string {
   const wins = closed.filter(r => (r.pos.finalPnlSol ?? 0) > 0);
   const grossIn = closed.reduce((s, r) => s + (r.pos.entrySol ?? 0), 0);
   const grossOut = closed.reduce((s, r) => s + (r.pos.totalSolReturned ?? 0), 0);
+  // A position the reconciler closed because the wallet was empty books a 100% loss
+  // whether the tokens were sold by hand, rugged to nothing, or never really left.
+  // That is a guess wearing the same font as a measurement, so it is separated out.
+  const unverified = closed.filter(r => !(r.pos.exits ?? []).length);
+  const unverifiedSol = unverified.reduce((s, r) => s + (r.pos.entrySol ?? 0), 0);
 
   const ago = (ts: number) => {
     if (!ts) return '—';
@@ -2111,15 +2116,23 @@ function buildLedgerHTML(): string {
     <h3>💰 Real-money ledger</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
       ${tile('Realized', `${realized >= 0 ? '+' : ''}${realized.toFixed(4)}`, `${closed.length} closed trades`, realized >= 0 ? '#10b981' : '#ef4444')}
+      ${unverified.length ? tile('Unverified', `${unverifiedSol.toFixed(4)}`, `${unverified.length} closed with no sell`, '#f59e0b') : ''}
       ${tile('Win rate', `${closed.length ? Math.round(wins.length / closed.length * 100) : 0}%`, `${wins.length} of ${closed.length}`)}
       ${tile('Deployed now', deployed.toFixed(4), `${open.length} open position${open.length === 1 ? '' : 's'}`, open.length ? '#eab308' : undefined)}
       ${tile('Gross flow', `${grossIn.toFixed(3)} → ${grossOut.toFixed(3)}`, 'in → out, closed trades only')}
     </div>
     <p style="font-size:12px;color:var(--text2);line-height:1.7">
       Every real entry and exit the bot recorded, counted once. <b>Open positions are shown as open, not scored</b> —
-      treating an entry whose exit has not happened yet as a total loss is how a hand-tallied figure came out about
-      five times too negative.
+      treating an entry whose exit has not happened yet as a total loss is how a hand-tallied figure went wrong.
     </p>
+    ${unverified.length ? `<p style="font-size:12px;color:#f59e0b;line-height:1.7;margin-top:8px;padding:9px 11px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px">
+      <b>${unverified.length} of these ${closed.length} closed trades have no recorded sell</b>, covering
+      ${unverifiedSol.toFixed(4)} SOL of entries: ${unverified.map(r => '$' + r.pos.symbol).join(', ')}.
+      Each is booked as a total loss because the reconciler found an empty wallet and closed the position — which is
+      what it should do, but it cannot tell a coin that rugged to nothing from one that was sold by hand with the SOL
+      never recorded here. <b>The realized figure is therefore a floor, not a measurement.</b> If any of those were
+      sold manually, the true number is better by whatever came back.
+    </p>` : ''}
     <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-top:6px">
       <b>basis from chain</b> means the entry price was read from the wallet after the swap rather than taken from
       Jupiter's quote — a quote said 852K tokens on $Layoo and 614K arrived, a 28% gap, so a quoted basis misstates
