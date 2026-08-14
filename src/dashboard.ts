@@ -360,6 +360,69 @@ const STRATEGIES: { key: string; name: string; color: string; fn: (P: number) =>
   { key: 'hyb2',    name: '50% @ 2X + trail −45%',        color: C.PINK,   fn: P => stratHybrid(P, 2, 0.5, 0.45) },
 ];
 
+
+/**
+ * Realized performance of every paper strategy, with the robustness stats that
+ * separate a real edge from one that rode a couple of lucky trades.
+ *
+ * Extracted so more than one page can read it. /api/shadow computed tStat,
+ * topShare and a verdict that nothing rendered, which is data collected and then
+ * thrown away.
+ */
+export function shadowRows(url: string) {
+  const hoursM = url.match(/[?&]hours=(\d+|all)/);
+  const hv = hoursM ? hoursM[1] : '24';
+  const cutoff = hv === 'all' ? 0 : Date.now() - parseInt(hv) * 3600_000;
+  return taskManager.all().filter(t => t.paper).map(t => {
+    const positions = taskManager.traderFor(t).getAllPositions();
+    const closed = positions.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cutoff);
+    // ── robustness stats: with 100+ strategies running, the leader is probably
+    // luck. These separate "real edge" from "rode 2 lucky trades".
+    const rs = closed.map(p => p.finalPnlSol ?? 0).sort((a, b) => b - a);
+    const n = rs.length;
+    const mean = n ? rs.reduce((s, x) => s + x, 0) / n : 0;
+    const sd = n > 1 ? Math.sqrt(rs.reduce((s, x) => s + (x - mean) ** 2, 0) / (n - 1)) : 0;
+    const stderr = n > 1 ? sd / Math.sqrt(n) : 0;
+    const tStat = stderr > 0 ? mean / stderr : 0;
+    const robust = n > 3 ? rs.slice(3).reduce((s, x) => s + x, 0) / (n - 3) : 0;  // drop best 3
+    const median = n ? rs[Math.floor(n / 2)] : 0;
+    const topShare = n && mean > 0 ? Math.max(0, rs.slice(0, 3).reduce((s, x) => s + x, 0)) / Math.max(1e-9, rs.reduce((s, x) => s + x, 0)) : 0;
+    const verdict = n < 15 ? 'thin'
+      : tStat > 2 && robust > 0.03 ? 'strong'
+      : tStat > 1.5 && robust > 0 ? 'promising'
+      : mean > 0 && robust <= 0 ? 'tail-driven'
+      : mean > 0 ? 'weak'
+      : 'losing';
+    const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
+    const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
+    const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
+    const _s = t.strategy;
+    const _stop = Math.round((1 - _s.stopLossPct) * 100);
+    return {
+      key: t.strategy.preset,
+      strategy: t.name.replace('📄 ', ''),
+      dipPct: _s.entryMode === 'dip' ? Math.round((_s.dipPct ?? 0) * 100) : 0,
+      targets: _s.tps.map(x => x.mult),
+      stopPct: _stop >= 95 ? null : _stop,
+      trailPct: _s.trailingDrop < 0.89 ? Math.round(_s.trailingDrop * 100) : 0,
+      holdMin: _s.maxHoldMin ?? 0,
+      trades: closed.length,
+      open: positions.filter(p => p.status === 'open').length,
+      wins,
+      winPct: closed.length ? Math.round(wins / closed.length * 100) : 0,
+      pnlSol: +pnl.toFixed(3),
+      avgPerTrade: closed.length ? +(pnl / closed.length).toFixed(4) : 0,
+      bestPeak: +best.toFixed(2),
+      // robustness
+      robustAvg: +robust.toFixed(4),
+      median: +median.toFixed(4),
+      tStat: +tStat.toFixed(2),
+      topShare: +topShare.toFixed(2),
+      verdict,
+    };
+  }).sort((a, b) => b.pnlSol - a.pnlSol);
+}
+
 function buildStrategyData(range: TimeRange = 'all') {
   let calls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
   calls = calls.filter(c => (c.peakMultiplier ?? 0) > 0);
@@ -1051,6 +1114,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
     <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
     <a href="/shadow" style="border-color:var(--border2)">📄 Shadow Fleet</a>
+    <a href="/params" style="border-color:var(--border2)">📐 What works</a>
     <a href="/builder" style="border-color:var(--border2)">🛠️ Build your own</a>
     <a href="/settings" style="border-color:var(--border2)">⚙️ Settings</a>
   </div>
@@ -1631,7 +1695,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -1814,6 +1878,169 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
 
 
 // ── Tasks pages (sneaker-bot style: N wallets × N strategies) ──
+
+/**
+ * Parameter attribution — which settings work, averaged over everything else.
+ *
+ * A leaderboard cannot answer this. Its top row is whichever strategy got lucky,
+ * and with 2000+ running the luckiest reaches t≈3.9 on noise alone. Averaging every
+ * strategy that shares a parameter value cancels the other parameters out and
+ * leaves that value's own contribution, over hundreds of trades instead of tens.
+ *
+ * This is how the -31 to -45% dip band and the stop-off band were found, both of
+ * which were invisible on the leaderboard.
+ */
+function buildParamsHTML(url: string): string {
+  const rows = shadowRows(url).filter(r => r.trades >= 5);
+  const hv = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '24';
+  const minTrades = 5;
+
+  type Row = ReturnType<typeof shadowRows>[number];
+  const agg = (rs: Row[]) => {
+    const n = rs.length;
+    const trades = rs.reduce((s, r) => s + r.trades, 0);
+    if (!n) return null;
+    const avg = rs.reduce((s, r) => s + r.avgPerTrade, 0) / n;
+    const rob = rs.reduce((s, r) => s + r.robustAvg, 0) / n;
+    const med = rs.reduce((s, r) => s + r.median, 0) / n;
+    const win = rs.reduce((s, r) => s + r.winPct, 0) / n;
+    const pos = rs.filter(r => r.avgPerTrade > 0).length;
+    return { n, trades, avg, rob, med, win, pos };
+  };
+
+  const BREAKEVEN = 0.03;   // real fees round-trip
+  const col = (v: number) => v >= BREAKEVEN ? '#10b981' : v > 0 ? '#eab308' : '#ef4444';
+
+  const axis = (title: string, why: string, buckets: [string, (r: Row) => boolean][]) => {
+    const cells = buckets.map(([label, pred]) => [label, agg(rows.filter(pred))] as const)
+      .filter(([, a]) => a && a.n > 0) as [string, NonNullable<ReturnType<typeof agg>>][];
+    if (!cells.length) return '';
+    const best = cells.reduce((b, c) => c[1].avg > b[1].avg ? c : b);
+    const span = Math.max(...cells.map(c => Math.abs(c[1].avg)), 0.01);
+    return `
+    <div class="card" style="max-width:none">
+      <h3>${title}</h3>
+      <p style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:10px">${why}</p>
+      <div style="overflow-x:auto"><table>
+        <tr><th>${title}</th><th>strategies</th><th>trades</th><th>avg/trade</th><th>robust</th><th>median</th><th>win%</th><th>profitable</th><th style="width:150px"></th></tr>
+        ${cells.map(([label, a]) => {
+          const w = Math.round(Math.abs(a.avg) / span * 70);
+          const isBest = label === best[0] && a.avg > 0;
+          return `<tr${isBest ? ' style="background:rgba(16,185,129,.07)"' : ''}>
+            <td style="white-space:nowrap"><b>${label}</b>${isBest ? ' <span style="color:#10b981;font-size:11px">best</span>' : ''}</td>
+            <td class="mono">${a.n}</td>
+            <td class="mono" style="color:var(--text2)">${a.trades}</td>
+            <td class="mono" style="color:${col(a.avg)};font-weight:700">${a.avg >= 0 ? '+' : ''}${a.avg.toFixed(4)}</td>
+            <td class="mono" style="color:${col(a.rob)}">${a.rob >= 0 ? '+' : ''}${a.rob.toFixed(4)}</td>
+            <td class="mono" style="color:${col(a.med)}">${a.med >= 0 ? '+' : ''}${a.med.toFixed(4)}</td>
+            <td class="mono">${a.win.toFixed(0)}%</td>
+            <td class="mono" style="color:var(--text2)">${a.pos}/${a.n}</td>
+            <td><div style="height:8px;border-radius:4px;background:${a.avg >= 0 ? '#10b981' : '#ef4444'};width:${w}px;margin-left:${a.avg >= 0 ? '75' : 75 - w}px"></div></td>
+          </tr>`;
+        }).join('')}
+      </table></div>
+    </div>`;
+  };
+
+  const dipOf = (r: Row) => r.dipPct;
+  const stopOf = (r: Row) => r.stopPct;
+  const topOf = (r: Row) => r.targets.length ? r.targets[r.targets.length - 1] : 0;
+
+  return settingsShell(`
+  <div class="card" style="max-width:none">
+    <h3>📐 What actually works</h3>
+    <p style="font-size:13px;color:var(--text2);line-height:1.7">
+      Every strategy sharing a parameter value, averaged together. That cancels out the other parameters and leaves
+      what this one setting contributes — over hundreds of trades rather than the dozen a single strategy has.
+      <b>A leaderboard cannot tell you this.</b> Its top row is whichever strategy got lucky; with
+      <b>${rows.length}</b> strategies reporting, the luckiest reaches a t-statistic near
+      <b>${Math.sqrt(2 * Math.log(Math.max(2, rows.length))).toFixed(1)}</b> on noise alone.
+    </p>
+    <p style="font-size:12px;color:var(--text3);line-height:1.6;margin-top:8px">
+      <b>robust</b> drops each strategy's best 3 trades — if a row is strong on avg and weak on robust, a couple of
+      trades carried it. <b>median</b> is the typical trade. Real fees cost roughly <b>+0.03/trade</b>, so anything
+      under that green line is not actually making money. Strategies with fewer than ${minTrades} trades are excluded.
+    </p>
+    <div style="display:flex;gap:6px;margin-top:12px">
+      ${['6', '24', '48', 'all'].map(h => `<a href="/params?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hv ? 'var(--border2)' : 'var(--border)'};background:${h === hv ? 'var(--bg3)' : 'transparent'};color:${h === hv ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h + 'h'}</a>`).join('')}
+    </div>
+  </div>
+
+  ${axis('Entry', 'Instant buys every call. A dip order only fills when the pullback arrives, so it trades less but at a better price — and never sees the coins that went straight up.', [
+    ['instant', r => dipOf(r) === 0],
+    ['dip 1-10%', r => dipOf(r) >= 1 && dipOf(r) <= 10],
+    ['dip 11-20%', r => dipOf(r) >= 11 && dipOf(r) <= 20],
+    ['dip 21-30%', r => dipOf(r) >= 21 && dipOf(r) <= 30],
+    ['dip 31-45%', r => dipOf(r) >= 31 && dipOf(r) <= 45],
+    ['dip 46%+', r => dipOf(r) >= 46],
+  ])}
+
+  ${axis('Stop width', 'How far the price may fall before cutting. A stop tight enough to fire on ordinary noise gets hit on the way to the target — which is a different failure from being stopped out of a genuine loser.', [
+    ['≤10%', r => stopOf(r) !== null && (stopOf(r) as number) <= 10],
+    ['11-20%', r => stopOf(r) !== null && (stopOf(r) as number) > 10 && (stopOf(r) as number) <= 20],
+    ['21-30%', r => stopOf(r) !== null && (stopOf(r) as number) > 20 && (stopOf(r) as number) <= 30],
+    ['31-45%', r => stopOf(r) !== null && (stopOf(r) as number) > 30 && (stopOf(r) as number) <= 45],
+    ['46-60%', r => stopOf(r) !== null && (stopOf(r) as number) > 45 && (stopOf(r) as number) <= 60],
+    ['61-90%', r => stopOf(r) !== null && (stopOf(r) as number) > 60],
+    ['effectively off', r => stopOf(r) === null],
+  ])}
+
+  ${axis('Top target', 'The highest take-profit. A far target is only reachable on the coins that run, so this trades hit-rate against size.', [
+    ['none (trail/clock)', r => topOf(r) === 0],
+    ['≤1.3X', r => topOf(r) > 0 && topOf(r) <= 1.3],
+    ['1.4-2X', r => topOf(r) > 1.3 && topOf(r) <= 2],
+    ['2.1-3X', r => topOf(r) > 2 && topOf(r) <= 3],
+    ['3.1-5X', r => topOf(r) > 3 && topOf(r) <= 5],
+    ['5X+', r => topOf(r) > 5],
+  ])}
+
+  ${axis('Exit shape', 'How the position is closed, independent of where it entered.', [
+    ['single target', r => r.targets.length === 1],
+    ['2-rung ladder', r => r.targets.length === 2],
+    ['3+ rung ladder', r => r.targets.length >= 3],
+    ['pure trailing', r => r.targets.length === 0 && r.trailPct > 0],
+    ['hard clock', r => r.holdMin > 0],
+  ])}
+
+  ${axis('Trailing width', 'Only strategies that trail. A −50% trail cannot break even below a 2.0X peak — that is arithmetic, not a statistic.', [
+    ['≤15%', r => r.trailPct > 0 && r.trailPct <= 15],
+    ['16-25%', r => r.trailPct > 15 && r.trailPct <= 25],
+    ['26-40%', r => r.trailPct > 25 && r.trailPct <= 40],
+    ['41%+', r => r.trailPct > 40],
+  ])}
+
+  ${axis('Time exit', 'A clock is the one exit a coin cannot game — it does not care about the shape of the candle, only that the edge has decayed.', [
+    ['none', r => r.holdMin === 0],
+    ['≤3 min', r => r.holdMin > 0 && r.holdMin <= 3],
+    ['4-10 min', r => r.holdMin > 3 && r.holdMin <= 10],
+    ['11-30 min', r => r.holdMin > 10 && r.holdMin <= 30],
+    ['30 min+', r => r.holdMin > 30],
+  ])}
+
+  <div class="card" style="max-width:none">
+    <h3>Verdicts</h3>
+    <p style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:10px">
+      Per-strategy classification from the same numbers: <b>strong</b> needs t&gt;2 and a robust average still above
+      fees; <b>tail-driven</b> is profitable on average but not once its best 3 trades are removed.
+    </p>
+    <div style="overflow-x:auto"><table>
+      <tr><th>verdict</th><th>strategies</th><th>avg/trade</th><th>robust</th><th>example</th></tr>
+      ${['strong', 'promising', 'tail-driven', 'weak', 'losing', 'thin'].map(v => {
+        const rs = rows.filter(r => r.verdict === v);
+        if (!rs.length) return '';
+        const a = agg(rs)!;
+        const ex = rs.sort((x, y) => y.avgPerTrade - x.avgPerTrade)[0];
+        return `<tr>
+          <td><b style="color:${v === 'strong' ? '#10b981' : v === 'promising' ? '#eab308' : v === 'thin' ? 'var(--text3)' : '#ef4444'}">${v}</b></td>
+          <td class="mono">${a.n}</td>
+          <td class="mono" style="color:${col(a.avg)}">${a.avg >= 0 ? '+' : ''}${a.avg.toFixed(4)}</td>
+          <td class="mono" style="color:${col(a.rob)}">${a.rob >= 0 ? '+' : ''}${a.rob.toFixed(4)}</td>
+          <td style="font-size:12px;color:var(--text2)"><a href="/builder?from=${ex.key}" style="color:#3b82f6;text-decoration:none">${ex.strategy.slice(0, 44)}</a></td>
+        </tr>`;
+      }).join('')}
+    </table></div>
+  </div>`, '/params');
+}
 
 function buildBuilderHTML(url: string, canAct: boolean): string {
   const fromKey = (url.match(/[?&]from=([\w-]+)/) || [])[1] ?? 'dip20tp2';
@@ -2939,6 +3166,14 @@ export function startDashboard(port?: number): void {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
+      }
+    } else if (pathname === '/params') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(buildParamsHTML(url));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building params: ' + err.message + '\n' + err.stack);
       }
     } else if (pathname === '/strategies') {
       try {
@@ -4368,57 +4603,8 @@ export function startDashboard(port?: number): void {
         // Defaults to the last 24h — trades older than that ran under different
         // filter settings and market conditions, so mixing them is misleading.
         // ?hours=all for full history, ?hours=N for any other window.
-        const hoursM = url.match(/[?&]hours=(\d+|all)/);
-        const hv = hoursM ? hoursM[1] : '24';
-        const cutoff = hv === 'all' ? 0 : Date.now() - parseInt(hv) * 3600_000;
-        const rows = taskManager.all().filter(t => t.paper).map(t => {
-          const positions = taskManager.traderFor(t).getAllPositions();
-          const closed = positions.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cutoff);
-          // ── robustness stats: with 100+ strategies running, the leader is probably
-          // luck. These separate "real edge" from "rode 2 lucky trades".
-          const rs = closed.map(p => p.finalPnlSol ?? 0).sort((a, b) => b - a);
-          const n = rs.length;
-          const mean = n ? rs.reduce((s, x) => s + x, 0) / n : 0;
-          const sd = n > 1 ? Math.sqrt(rs.reduce((s, x) => s + (x - mean) ** 2, 0) / (n - 1)) : 0;
-          const stderr = n > 1 ? sd / Math.sqrt(n) : 0;
-          const tStat = stderr > 0 ? mean / stderr : 0;
-          const robust = n > 3 ? rs.slice(3).reduce((s, x) => s + x, 0) / (n - 3) : 0;  // drop best 3
-          const median = n ? rs[Math.floor(n / 2)] : 0;
-          const topShare = n && mean > 0 ? Math.max(0, rs.slice(0, 3).reduce((s, x) => s + x, 0)) / Math.max(1e-9, rs.reduce((s, x) => s + x, 0)) : 0;
-          const verdict = n < 15 ? 'thin'
-            : tStat > 2 && robust > 0.03 ? 'strong'
-            : tStat > 1.5 && robust > 0 ? 'promising'
-            : mean > 0 && robust <= 0 ? 'tail-driven'
-            : mean > 0 ? 'weak'
-            : 'losing';
-          const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
-          const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
-          const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
-          const _s = t.strategy;
-          const _stop = Math.round((1 - _s.stopLossPct) * 100);
-          return {
-            key: t.strategy.preset,
-            strategy: t.name.replace('📄 ', ''),
-            dipPct: _s.entryMode === 'dip' ? Math.round((_s.dipPct ?? 0) * 100) : 0,
-            targets: _s.tps.map(x => x.mult),
-            stopPct: _stop >= 95 ? null : _stop,
-            trailPct: _s.trailingDrop < 0.89 ? Math.round(_s.trailingDrop * 100) : 0,
-            holdMin: _s.maxHoldMin ?? 0,
-            trades: closed.length,
-            open: positions.filter(p => p.status === 'open').length,
-            wins,
-            winPct: closed.length ? Math.round(wins / closed.length * 100) : 0,
-            pnlSol: +pnl.toFixed(3),
-            avgPerTrade: closed.length ? +(pnl / closed.length).toFixed(4) : 0,
-            bestPeak: +best.toFixed(2),
-            // robustness
-            robustAvg: +robust.toFixed(4),
-            median: +median.toFixed(4),
-            tStat: +tStat.toFixed(2),
-            topShare: +topShare.toFixed(2),
-            verdict,
-          };
-        }).sort((a, b) => b.pnlSol - a.pnlSol);
+        const rows = shadowRows(url);
+        const hv = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '24';
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           window: hv === 'all' ? 'all time' : `last ${hv}h`,
