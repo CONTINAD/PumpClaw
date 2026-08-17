@@ -1114,6 +1114,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
     <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
     <a href="/shadow" style="border-color:var(--border2)">📄 Shadow Fleet</a>
+    <a href="/bundles" style="border-color:var(--border2)">🔍 Bundles</a>
     <a href="/ledger" style="border-color:var(--border2)">💰 Ledger</a>
     <a href="/params" style="border-color:var(--border2)">📐 What works</a>
     <a href="/builder" style="border-color:var(--border2)">🛠️ Build your own</a>
@@ -1696,7 +1697,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/bundles">Bundles</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -2186,6 +2187,90 @@ function buildLedgerHTML(): string {
       </table></div>
     </div>`;
   })()}`, '/ledger');
+}
+
+/**
+ * Every bundle verdict, and what the coin did afterwards.
+ *
+ * The skip log records only rejections, so a check that runs on coins which pass —
+ * like the shadow slot-cluster detector — had nowhere to report. This carries both,
+ * which is the only arrangement in which "it fires on rugs and not on winners" is a
+ * statement that can be tested rather than asserted.
+ */
+async function buildBundlesHTML(): Promise<string> {
+  const idx = await import('./index.js');
+  const log = [...(idx.getBundleLog?.() ?? [])].sort((a: any, b: any) => b.timestamp - a.timestamp);
+
+  const passed = log.filter((b: any) => b.passed);
+  const blocked = log.filter((b: any) => !b.passed);
+  const clustered = log.filter((b: any) => (b.slotCluster ?? 0) > 0);
+  const clusteredPassed = clustered.filter((b: any) => b.passed);
+
+  const ago = (ts: number) => {
+    const m = Math.round((Date.now() - ts) / 60000);
+    return m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+  };
+  const tile = (label: string, value: string, sub: string, color?: string) => `
+    <div style="flex:1;min-width:145px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">${label}</div>
+      <div style="font-size:20px;font-weight:700;margin:4px 0;color:${color ?? 'var(--text)'}">${value}</div>
+      <div style="font-size:11px;color:var(--text3)">${sub}</div>
+    </div>`;
+
+  const row = (b: any) => `<tr style="border-top:1px solid var(--border)${(b.slotCluster ?? 0) > 0 ? ';background:rgba(245,158,11,.07)' : ''}">
+    <td style="white-space:nowrap"><b>${String(b.name ?? '?').slice(0, 18)}</b>
+      <div style="font-size:10px;color:var(--text3)">${ago(b.timestamp)} ago · ${b.mint.slice(0, 8)}…</div></td>
+    <td>${b.passed
+      ? '<span style="color:#10b981;font-size:12px">called</span>'
+      : `<span style="color:#ef4444;font-size:12px">${b.reason ?? 'blocked'}</span>`}</td>
+    <td class="mono" style="font-size:12px">${b.freshWallets ?? '—'}<span style="color:var(--text3)">/${(b.freshWallets ?? 0) + (b.veterans ?? 0)}</span></td>
+    <td class="mono" style="font-size:12px;color:${(b.sameFunderPct ?? 0) >= 25 ? '#ef4444' : (b.sameFunderPct ?? 0) >= 15 ? '#eab308' : 'var(--text2)'}">${b.sameFunderPct ?? '—'}%</td>
+    <td class="mono" style="font-size:12px">${b.devHoldPct != null ? b.devHoldPct + '%' : '—'}</td>
+    <td class="mono" style="font-size:12px">${b.lowBalPct != null ? b.lowBalPct + '%' : '—'}</td>
+    <td style="font-size:12px;white-space:nowrap">${(b.slotCluster ?? 0) > 0
+      ? `<b style="color:#f59e0b">${b.slotCluster} in ${b.slotSpan} slots</b><div style="font-size:10px;color:var(--text3)">${String(b.slotFunder ?? '').slice(0, 8)}…</div>`
+      : '<span style="color:var(--text3)">—</span>'}</td>
+    <td class="mono" style="font-size:12px;color:${(b.peakMultiplier ?? 0) >= 2 ? '#10b981' : (b.peakMultiplier ?? 0) > 0 ? 'var(--text2)' : 'var(--text3)'}">${b.peakMultiplier ? b.peakMultiplier.toFixed(2) + 'x' : 'pending'}</td>
+  </tr>`;
+
+  return settingsShell(`
+  <div class="card" style="max-width:none">
+    <h3>🔍 Bundle verdicts</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+      ${tile('Checked', String(log.length), 'coins with a recorded verdict')}
+      ${tile('Called', String(passed.length), `${log.length ? Math.round(passed.length / log.length * 100) : 0}% passed`, '#10b981')}
+      ${tile('Blocked', String(blocked.length), 'by one of the filters', '#ef4444')}
+      ${tile('Slot clusters', String(clustered.length), `${clusteredPassed.length} of them were called`, clustered.length ? '#f59e0b' : undefined)}
+    </div>
+    <p style="font-size:12px;color:var(--text2);line-height:1.7">
+      Both sides of the decision, which the skip log could never show. The shadow slot-cluster check runs
+      <b>after</b> every blocking test, so it only ever sees coins that pass — it was writing to a console log and
+      nowhere else, which makes a detector unreviewable and therefore useless as evidence.
+    </p>
+    ${clustered.length === 0 ? `<p style="font-size:12px;color:var(--text3);line-height:1.7;margin-top:8px;padding:9px 11px;background:var(--bg2);border:1px solid var(--border);border-radius:8px">
+      <b>No slot clusters recorded yet.</b> The log starts from this deploy, so it holds nothing earlier.
+      For context on how often it should fire: across 50 recent bundle checks, only 7 coins had 3+ holders sharing a
+      funder at all, and every one of those already scored above the 25% same-funder threshold — meaning the existing
+      check caught them. JOEY at 22% was the narrow miss this detector exists for, so a low hit rate is the expected
+      result, not a broken check.
+    </p>` : ''}
+  </div>
+
+  <div class="card" style="max-width:none">
+    <h3>Recent verdicts (${Math.min(log.length, 150)} of ${log.length})</h3>
+    <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:10px">
+      <b>fresh/total</b> — holders young enough to have a readable funding time, over all holders checked. Veterans
+      are excluded from the cluster maths because their funding transaction is unknowable, so a coin with few fresh
+      holders gives the check little to work with. <b>same funder</b> blocks at 25%. <b>peak</b> is what the coin did
+      afterwards — for a blocked coin that is what was avoided, for a called one what was captured.
+    </p>
+    ${log.length ? `<div style="overflow-x:auto"><table>
+      <tr><th>Coin</th><th>Verdict</th><th>Fresh</th><th>Same funder</th><th>Dev</th><th>&lt;1 SOL</th><th>Slot cluster</th><th>Peak</th></tr>
+      ${log.slice(0, 150).map(row).join('')}
+    </table></div>` : `<p style="font-size:13px;color:var(--text3)">
+      Nothing recorded yet — the log begins at this deploy and fills as calls come in.
+    </p>`}
+  </div>`, '/bundles');
 }
 
 function buildBuilderHTML(url: string, canAct: boolean): string {
@@ -3313,6 +3398,22 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
       }
+    } else if (pathname === '/bundles') {
+      buildBundlesHTML().then(html => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      }).catch((err: any) => {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building bundles: ' + err.message + '\n' + err.stack);
+      });
+    } else if (pathname === '/api/bundlelog') {
+      import('./index.js').then(idx => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ observations: idx.getBundleLog?.() ?? [] }, null, 2));
+      }).catch((err: any) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/ledger') {
       try {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

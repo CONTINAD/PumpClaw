@@ -114,6 +114,53 @@ function saveSkips(): void {
   } catch { /* non-critical */ }
 }
 
+/**
+ * Every bundle verdict, passed or blocked, with its metrics.
+ *
+ * The skip log only records coins that were rejected, which meant the shadow
+ * slot-cluster check — which runs after every blocking test, so only on coins that
+ * pass — wrote its findings to a console log and nowhere else. A detector whose
+ * output cannot be reviewed is not evidence, and the whole point of shipping it in
+ * shadow was to gather evidence before letting it block anything.
+ *
+ * Recording passes as well as blocks is also what makes the comparison possible:
+ * "the cluster check fires on rugs and not on winners" needs the winners in the
+ * file too.
+ */
+interface BundleObs {
+  mint: string; name: string; passed: boolean; reason?: string;
+  marketCap: number; entryPrice?: number; timestamp: number;
+  slotCluster?: number; slotSpan?: number; slotFunder?: string;
+  sameFunderPct?: number; freshWallets?: number; veterans?: number;
+  devHoldPct?: number; lowBalPct?: number;
+  peakMultiplier?: number;   // back-filled by the same grader the skip log uses
+}
+const BUNDLE_LOG_FILE = join(CONFIG.DATA_DIR, 'bundle-log.json');
+let bundleLog: BundleObs[] = [];
+try { bundleLog = JSON.parse(readFileSync(BUNDLE_LOG_FILE, 'utf-8')); } catch { bundleLog = []; }
+export function getBundleLog(): BundleObs[] { return bundleLog; }
+
+function recordBundleObs(post: { mint: string; name: string }, bundle: any, passed: boolean, reason: string | undefined, mc: number, price?: number): void {
+  const m = bundle?.metrics ?? {};
+  bundleLog.push({
+    mint: post.mint, name: post.name, passed, reason,
+    marketCap: mc, entryPrice: price, timestamp: Date.now(),
+    slotCluster: m.slotClusterSize || undefined,
+    slotSpan: m.slotClusterSpan,
+    slotFunder: m.slotClusterFunder,
+    sameFunderPct: m.sameFunderPct,
+    freshWallets: m.freshWallets,
+    veterans: m.veterans,
+    devHoldPct: typeof m.devHoldPct === 'number' ? +m.devHoldPct.toFixed(2) : undefined,
+    lowBalPct: m.lowBalPct,
+  });
+  try {
+    const cut = Date.now() - 30 * 86400_000;
+    bundleLog = bundleLog.filter(b => b.timestamp >= cut).slice(-4000);
+    writeFileSync(BUNDLE_LOG_FILE, JSON.stringify(bundleLog));
+  } catch { /* non-critical */ }
+}
+
 function recordSkip(post: { mint: string; name: string }, reason: string, details: string, mc: number, price?: number) {
   const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now() };
   skippedRing.push(rec);
@@ -353,6 +400,7 @@ async function fastScanCycle() {
       const reason = devHeavy ? 'DEV_HOLDS' : aged ? 'AGED_FARM' : blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
       log(`⚠ ${reason} — skipping ${post.name}: ${bundle.details}`);
       recordSkip(post, reason, bundle.details, market.marketCap, market.priceUsd);
+      recordBundleObs(post, bundle, false, reason, market.marketCap, market.priceUsd);
       if (blind && !devHeavy && !aged) noteBlindBlock(post.name); else blindBlocks = 0;
       continue;
     }
@@ -360,6 +408,7 @@ async function fastScanCycle() {
     if (bundle.totalChecked > 0) {
       log(`✅ Bundle check passed: ${bundle.details}`);
     }
+    recordBundleObs(post, bundle, true, undefined, market.marketCap, market.priceUsd);
 
     // Smart wallet check: informational, never blocking.
     //
