@@ -34,6 +34,9 @@ export interface CallRecord {
   entryVolume5m: number;
   entryTime: number;
   alertMessageId: string;
+  /** Which Telegram channel surfaced this coin. Absent on calls made before
+   *  multi-channel scraping, which is why every reader must tolerate undefined. */
+  source?: string;
 
   // Rich entry features (all optional for back-compat with old records).
   // Used for correlation analysis to figure out which signals predict winners.
@@ -107,7 +110,7 @@ export class PerformanceTracker {
     coin: PumpFunCoin,
     market: MarketData,
     alertMessageId: string,
-    extra?: { smartHolders?: number; bundleSafe?: boolean; holders?: CallRecord['entryHolders']; socials?: number },
+    extra?: { smartHolders?: number; bundleSafe?: boolean; holders?: CallRecord['entryHolders']; socials?: number; source?: string },
   ): CallRecord {
     const ageMin = market.pairCreatedAt > 0
       ? Math.floor((Date.now() - market.pairCreatedAt) / 60_000)
@@ -122,6 +125,7 @@ export class PerformanceTracker {
       entryVolume5m: market.volume5m,
       entryTime: Date.now(),
       alertMessageId,
+      source: extra?.source,
       // Rich features for correlation
       entryVolume1h: market.volume1h,
       entryVolume24h: market.volume24h,

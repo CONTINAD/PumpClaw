@@ -4904,6 +4904,49 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/api/channels') {
+      // Per-source call quality. Coverage was the reason for adding channels; this is
+      // whether they earned it. A channel posting twice as many coins that die twice
+      // as often has made the bot worse while looking busier.
+      try {
+        const calls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+        const graded = calls.filter(c => (c.peakMultiplier ?? 0) > 0);
+        const by: Record<string, any> = {};
+        for (const c of graded) {
+          // Calls made before multi-channel scraping have no source and are grouped
+          // separately rather than being silently attributed to the original channel.
+          const k = c.source ?? '(before source tracking)';
+          const b = by[k] ??= { n: 0, peaks: [] as number[], mcs: [] as number[] };
+          b.n++;
+          b.peaks.push(c.peakMultiplier);
+          if (c.entryMC > 0) b.mcs.push(c.entryMC);
+        }
+        for (const k of Object.keys(by)) {
+          const b = by[k];
+          const p = [...b.peaks].sort((x: number, y: number) => x - y);
+          const share = (f: (v: number) => boolean) => Math.round(p.filter(f).length / p.length * 100);
+          b.diedPct = share(v => v < 0.5);
+          b.hit15Pct = share(v => v >= 1.5);
+          b.hit2Pct = share(v => v >= 2);
+          b.hit5Pct = share(v => v >= 5);
+          b.medianPeak = +(p[Math.floor(p.length / 2)] ?? 0).toFixed(2);
+          b.bestPeak = +(p[p.length - 1] ?? 0).toFixed(1);
+          b.medianEntryMC = b.mcs.length ? Math.round(b.mcs.sort((x: number, y: number) => x - y)[Math.floor(b.mcs.length / 2)]) : null;
+          b.thin = b.n < 20;
+          delete b.peaks; delete b.mcs;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          gradedCalls: graded.length,
+          note: 'Median peak is what a typical call from that channel reached — the number a trader experiences. '
+              + 'bestPeak is one coin and must not be used to choose between channels. thin=true means under 20 '
+              + 'calls, which is a story rather than a statistic.',
+          byChannel: by,
+        }, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/skipgrades') {
       // What each filter actually cost. Every rejection we later graded, with the
       // multiple the coin went on to reach — under 0.5 means it died, which is the

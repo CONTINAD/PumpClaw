@@ -532,6 +532,10 @@ async function fastScanCycle() {
       bundleSafe: bundle.safe,
       holders: bundle.metrics,
       socials: await checkSocials(coin.mint).then(x => x.known ? x.count : undefined).catch(() => undefined),
+      // messageId is "channel:id" since multi-channel scraping. Which feed surfaced a
+      // coin is the only way to tell a channel that is worth scraping from one that
+      // is merely loud, and it cannot be reconstructed after the fact.
+      source: String(post.messageId ?? '').includes(':') ? String(post.messageId).split(':')[0] : undefined,
     });
     alertCount++;
 
