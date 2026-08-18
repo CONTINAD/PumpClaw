@@ -4904,6 +4904,42 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/api/skipgrades') {
+      // What each filter actually cost. Every rejection we later graded, with the
+      // multiple the coin went on to reach — under 0.5 means it died, which is the
+      // filter working. Grouped by reason so a threshold can be argued from results
+      // rather than from opinion.
+      import('./index.js').then(idx => {
+        const g = idx.gradedSkips();
+        const byReason: Record<string, any> = {};
+        for (const s of g) {
+          const b = byReason[s.reason] ??= { n: 0, died: 0, doubled: 0, peaks: [] as number[] };
+          b.n++;
+          if ((s.peakMultiplier ?? 0) < 0.5) b.died++;
+          if ((s.peakMultiplier ?? 0) >= 2) b.doubled++;
+          b.peaks.push(s.peakMultiplier ?? 0);
+        }
+        for (const k of Object.keys(byReason)) {
+          const b = byReason[k];
+          const p = b.peaks.sort((x: number, y: number) => x - y);
+          b.medianPeak = +(p[Math.floor(p.length / 2)] ?? 0).toFixed(2);
+          b.maxPeak = +(p[p.length - 1] ?? 0).toFixed(2);
+          b.diedPct = Math.round(b.died / b.n * 100);
+          b.doubledPct = Math.round(b.doubled / b.n * 100);
+          delete b.peaks;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          graded: g.length,
+          note: 'peakMultiplier is what the coin reached AFTER we rejected it. Under 0.5 means the filter saved us; '
+              + '2 or more means it cost us. Judge a threshold on doubledPct, not on how much it blocks.',
+          byReason,
+          recent: g.slice(-150).reverse(),
+        }, null, 2));
+      }).catch((err: any) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/api/skipped') {
       // Late-resolve at request time to avoid circular import on module load
       import('./index.js').then(idx => {

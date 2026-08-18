@@ -105,6 +105,18 @@ interface SkipRecord {
 let skipHistory: SkipRecord[] = [];
 try { skipHistory = JSON.parse(readFileSync(SKIPS_FILE, 'utf-8')); } catch { skipHistory = []; }
 
+/**
+ * Graded rejections, for anything that wants to judge a filter by its results.
+ *
+ * The records have been written and back-filled with outcomes for a while and were
+ * readable from nowhere — no endpoint, no page. A filter's cost is the winners it
+ * blocked, and that number existed on disk while every discussion about thresholds
+ * ran on opinion.
+ */
+export function gradedSkips(): SkipRecord[] {
+  return skipHistory.filter(s => s.peakMultiplier !== undefined);
+}
+
 function saveSkips(): void {
   try {
     // A month is enough to judge a filter and keeps the file small.
