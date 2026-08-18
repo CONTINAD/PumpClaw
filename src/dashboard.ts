@@ -1893,7 +1893,21 @@ async function handleSettingsPost(req: IncomingMessage, res: ServerResponse, bod
  * which were invisible on the leaderboard.
  */
 function buildParamsHTML(url: string): string {
-  const rows = shadowRows(url).filter(r => r.trades >= 5);
+  const raw = shadowRows(url).filter(r => r.trades >= 5);
+  // Survivorship guard.
+  //
+  // A strategy with no stop only *closes* trades that reach a target. The ones that
+  // dumped and never came back sit open forever and never enter the statistics, so
+  // its win rate and average are computed over the winners alone. Measured across
+  // the fleet: strategies with a stop close 99% of their trades and win 33% of them;
+  // strategies without one close 54% and appear to win 48%. That gap is not skill.
+  //
+  // Anything that has not closed most of what it opened is excluded from the
+  // averages rather than being allowed to flatter its band.
+  const closedShare = (r: typeof raw[number]) => (r.trades + r.open) > 0 ? r.trades / (r.trades + r.open) : 1;
+  const rows = raw.filter(r => closedShare(r) >= 0.8);
+  const excluded = raw.length - rows.length;
+  const exOpen = raw.filter(r => closedShare(r) < 0.8).reduce((s, r) => s + r.open, 0);
   const hv = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '24';
   const minTrades = 5;
 
@@ -1959,6 +1973,10 @@ function buildParamsHTML(url: string): string {
       <b>${Math.sqrt(2 * Math.log(Math.max(2, rows.length))).toFixed(1)}</b> on noise alone.
     </p>
     <p style="font-size:12px;color:var(--text3);line-height:1.6;margin-top:8px">
+      ${excluded ? `<b style="color:#f59e0b">${excluded} strategies are excluded</b> because they have not closed 80% of
+      what they opened — ${exOpen} positions still sitting open. A strategy with no stop only closes the trades that
+      reach a target, so counting it would measure its winners and call that performance. Fleet-wide: strategies with
+      a stop close 99% of their trades and win 33%; those without close 54% and appear to win 48%.<br><br>` : ''}
       <b>robust</b> drops each strategy's best 3 trades — if a row is strong on avg and weak on robust, a couple of
       trades carried it. <b>median</b> is the typical trade. Real fees cost roughly <b>+0.03/trade</b>, so anything
       under that green line is not actually making money. Strategies with fewer than ${minTrades} trades are excluded.
@@ -4598,7 +4616,7 @@ export function startDashboard(port?: number): void {
           <td style="font-size:12px;color:var(--text);white-space:nowrap">${r.targets.length ? r.targets.map((m: number) => m + '×').join('/') : r.holdMin ? `${r.holdMin}m clock` : `trail ${r.trailPct}%`}</td>
           <td style="font-size:12px;white-space:nowrap;color:${r.stopPct === null ? 'var(--text3)' : r.stopPct <= 20 ? '#ef4444' : r.stopPct <= 40 ? '#f59e0b' : 'var(--text2)'}">${r.stopPct === null ? 'none' : '−' + r.stopPct + '%'}</td>
           <td style="font-size:11px;color:var(--text3);white-space:nowrap">${r.trailPct ? `trail ${r.trailPct}%` : ''}${r.holdMin && r.targets.length ? ` ${r.holdMin}m cap` : ''}</td>
-          <td class="mono">${r.trades}${r.open ? ` <span style="color:#10b981">+${r.open}</span>` : ''}</td>
+          <td class="mono">${r.trades}${r.open ? ` <span style="color:${r.open > r.trades ? '#f59e0b' : '#10b981'}" title="${r.open} still open. When these outnumber the closed trades, the closed ones are mostly winners — losers without a stop never close.">+${r.open}</span>` : ''}</td>
           <td class="mono">${r.winPct}%</td>
           <td class="mono" style="color:${r.avg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
           <td class="mono" style="color:${r.pnl >= 0 ? '#10b981' : '#ef4444'}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}</td>
