@@ -1160,18 +1160,62 @@ function noteBlindBlock(name: string): void {
 /** Set every pass of the real-position loop. A stale value means exits are dead. */
 export let realLoopHeartbeat = Date.now();
 
+/** Last market-data fetch, reused between fast ticks so the tick is not gated on a network call. */
+let mdCache: { at: number; data: Map<string, Awaited<ReturnType<typeof fetchBatchMarketData>> extends Map<string, infer V> ? V : never> } | null = null;
+
 async function realPositionLoop() {
   while (true) {
+    // The tick is fast because it no longer waits on anything. Price arrives pushed
+    // from the pool subscription and is read from memory; market cap comes from a
+    // cached fetch refreshed on its own slower schedule. Polling every second was
+    // pacing the exit to a network round trip that the decision no longer needs.
     await new Promise(r => setTimeout(r, CONFIG.REAL_CHECK_INTERVAL_MS));
     realLoopHeartbeat = Date.now();
     try {
       const real = taskManager.openPositions().filter(({ task }) => !task.paper);
-      if (real.length === 0) continue;
+      if (real.length === 0) { mdCache = null; continue; }
       const mints = [...new Set(real.map(({ pos }) => pos.mint))];
-      const data = await fetchBatchMarketData(mints);
+      // Market cap and the fallback price change slowly enough to cache. The pool
+      // price does not come from here.
+      if (!mdCache || Date.now() - mdCache.at > CONFIG.MARKET_DATA_MAX_AGE_MS
+          || mints.some(m => !mdCache!.data.has(m))) {
+        mdCache = { at: Date.now(), data: await fetchBatchMarketData(mints) };
+      }
+      const data = mdCache.data;
+      const { poolPriceUsd } = await import('./pool-price.js');
       for (const mint of mints) {
         const m = data.get(mint);
         if (!m || m.priceUsd <= 0) continue;
+
+        // Decide on the pool, not on an aggregate.
+        //
+        // The pool subscription has been running since 08-12 and only ever fed the
+        // dashboard. Every exit was still decided from DexScreener, which publishes
+        // a smoothed average — measured 8.76% off a live pool of our own, and flat
+        // through a 45-second stretch where the real price moved 1.36e-5 to 1.50e-5
+        // and back. A stop 15% below entry loses most of its margin to an error that
+        // size, and worse, it fires late: the level is crossed on chain seconds
+        // before the number we are watching admits it.
+        //
+        // The pool price is what a sell would actually fill against. It arrives
+        // pushed, on every trade, with no poll and no rate limit.
+        //
+        // Still additive. A missing, stale or implausible reading yields to the feed
+        // that was already here rather than blocking the exit.
+        let px = m.priceUsd, mc = m.marketCap, src = 'feed';
+        const pool = await poolPriceUsd(mint, 15_000).catch(() => null);
+        if (pool && pool > 0 && plausible(pool, m.priceUsd)) {
+          // Market cap has to move with the price it is derived from, or an MC rule
+          // starts judging one number against another's scale.
+          mc = m.marketCap > 0 ? m.marketCap * (pool / m.priceUsd) : m.marketCap;
+          const drift = Math.abs(pool / m.priceUsd - 1) * 100;
+          if (drift > 5) {
+            console.log(`[RealLoop] ${mint.slice(0, 8)}… pool ${pool.toExponential(3)} vs feed ` +
+              `${m.priceUsd.toExponential(3)} (${drift.toFixed(1)}% apart) — using the pool`);
+          }
+          px = pool; src = 'pool';
+        }
+        void src;
         for (const task of taskManager.all().filter(t => !t.paper)) {
           const trader = taskManager.traderFor(task);
           if (trader.getPosition(mint)?.status !== 'open') continue;
@@ -1179,7 +1223,7 @@ async function realPositionLoop() {
           // manages every other position. A rejection here is logged and the loop
           // carries on; a hang used to take all exits down with it.
           const exits = await withTimeout(
-            trader.checkPosition(mint, m.priceUsd, m.marketCap),
+            trader.checkPosition(mint, px, mc),
             60_000, `checkPosition ${task.name}/${mint.slice(0, 8)}`,
           ).catch((e: any) => {
             console.error(`[RealLoop] ${e.message}`);
@@ -1214,14 +1258,19 @@ async function realPositionLoop() {
 async function poolPriceLoop() {
   const { watchMint, pruneWatches, revalidate } = await import('./pool-price.js');
   let ticks = 0;
+  let first = true;
   while (true) {
-    await new Promise(r => setTimeout(r, 30_000));
+    // Sleep after the first pass, not before it. A position opened just after a tick
+    // used to wait the full 30 seconds for its subscription — the window in which a
+    // fresh memecoin is most likely to rug, spent reading the slow feed.
+    if (!first) await new Promise(r => setTimeout(r, 5_000));
+    first = false;
     try {
       const real = taskManager.openPositions().filter(({ task }) => !task.paper);
       const mints = new Set(real.map(({ pos }) => pos.mint));
       pruneWatches(mints);
       for (const m of mints) await watchMint(m);
-      if (++ticks % 10 === 0 && mints.size) await revalidate();
+      if (++ticks % 60 === 0 && mints.size) await revalidate();
     } catch (err: any) {
       console.error(`[PoolPrice] loop: ${err.message}`);
     }

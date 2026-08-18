@@ -193,7 +193,11 @@ export const CONFIG = {
   TRADE_TRAILING_DROP: 0.45,           // -45% from ATH (trailing mode: from entry; ladder: after TP3)
   TRADE_MONITOR_INTERVAL_MS: 2_000,   // check open positions every 2s
   // ── Live-trading safety ──
-  REAL_CHECK_INTERVAL_MS: 1_000,      // dedicated fast loop for REAL positions only
+  // The tick no longer performs a network call — price is pushed from the pool
+  // subscription and read from memory — so it is paced by how fast we want to react
+  // rather than by an API. Solana blocks are ~400ms, so below ~200ms adds nothing.
+  REAL_CHECK_INTERVAL_MS: 250,        // dedicated fast loop for REAL positions only
+  MARKET_DATA_MAX_AGE_MS: 4_000,      // how stale cached market cap may get between fetches
   // Hard circuit breaker: force-exit any real position down this much from entry,
   // regardless of what its strategy says. A stop that never fires is the failure
   // mode that actually costs money.

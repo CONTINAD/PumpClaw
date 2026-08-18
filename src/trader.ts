@@ -414,7 +414,30 @@ export class Trader {
    * Check price against TP/SL levels and execute sells.
    * Returns any exits that fired.
    */
+  /**
+   * Positions with a check in flight. A sell takes seconds; the loop ticks in
+   * milliseconds. remainingPct is not reduced until the swap returns, so every tick
+   * in between sees the full position still open and is entitled to sell it again.
+   *
+   * At a one-second tick that was two overlapping sells. At 250ms it is eight. This
+   * is the same failure that bought $SAFETOAD twice, pointing the other way, and it
+   * has to be closed before the loop is allowed to run faster.
+   */
+  private checking = new Set<string>();
+
   async checkPosition(mint: string, currentPrice: number, currentMC: number, forceExitLabel?: string): Promise<RealExit[]> {
+    const pos = this.positions.get(mint);
+    if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
+    if (this.checking.has(mint)) return [];   // a sell is already in flight for this position
+    this.checking.add(mint);
+    try {
+      return await this.checkPositionInner(mint, currentPrice, currentMC, forceExitLabel);
+    } finally {
+      this.checking.delete(mint);
+    }
+  }
+
+  private async checkPositionInner(mint: string, currentPrice: number, currentMC: number, forceExitLabel?: string): Promise<RealExit[]> {
     const pos = this.positions.get(mint);
     if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
 
