@@ -4904,6 +4904,43 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/api/channel-audit') {
+      // Grades the FEED, not our calls: every mint a channel posted, including the
+      // ones our filters rejected. /api/channels answers "were our calls good";
+      // this answers "is this channel worth scraping at all".
+      import('./channel-audit.js').then(m => {
+        const obs = m.loadObs();
+        const by: Record<string, any> = {};
+        for (const o of obs) {
+          const b = by[o.channel] ??= { recorded: 0, measured: 0, peaks: [] as number[] };
+          b.recorded++;
+          if (o.peak !== undefined) { b.measured++; b.peaks.push(o.peak); }
+        }
+        for (const k of Object.keys(by)) {
+          const b = by[k];
+          const p = b.peaks.sort((x: number, y: number) => x - y);
+          const share = (f: (v: number) => boolean) => p.length ? Math.round(p.filter(f).length / p.length * 100) : null;
+          b.diedPct = share((v: number) => v < 0.5);
+          b.hit15Pct = share((v: number) => v >= 1.5);
+          b.hit2Pct = share((v: number) => v >= 2);
+          b.hit5Pct = share((v: number) => v >= 5);
+          b.medianPeak = p.length ? +(p[Math.floor(p.length / 2)]).toFixed(2) : null;
+          b.bestPeak = p.length ? +(p[p.length - 1]).toFixed(1) : null;
+          b.thin = b.measured < 20;
+          delete b.peaks;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          note: 'Every mint each channel posted, measured at least 2h after the post so the peak means something. '
+              + 'thin=true means under 20 measured, which is a story rather than a statistic. Compare on medianPeak '
+              + 'and diedPct; bestPeak is one coin and will pick the luckiest channel, not the best one.',
+          pending: obs.filter(o => o.peak === undefined).length,
+          byChannel: by,
+        }, null, 2));
+      }).catch((err: any) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/api/channels') {
       // Per-source call quality. Coverage was the reason for adding channels; this is
       // whether they earned it. A channel posting twice as many coins that die twice

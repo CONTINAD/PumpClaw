@@ -1271,6 +1271,26 @@ async function realPositionLoop() {
  * a stop early — so it earns its way into the trading path by being demonstrably
  * right in production first, not by looking right in a test.
  */
+/**
+ * Build the channel-quality dataset without anyone having to remember to.
+ *
+ * The standalone script needs running repeatedly over days before it can say
+ * anything, because a coin has to age two hours before its peak means anything and
+ * t.me only shows about an hour of posts. A tool that only works if someone keeps
+ * clicking it is a tool that will not get run.
+ */
+async function channelAuditLoop() {
+  const { auditPass } = await import('./channel-audit.js');
+  const { tgChannels } = await import('./telegram.js');
+  let first = true;
+  while (true) {
+    if (!first) await new Promise(r => setTimeout(r, 20 * 60_000));
+    first = false;
+    try { await auditPass(tgChannels()); }
+    catch (err: any) { console.error(`[ChannelAudit] loop: ${err.message}`); }
+  }
+}
+
 async function poolPriceLoop() {
   const { watchMint, pruneWatches, revalidate } = await import('./pool-price.js');
   let ticks = 0;
@@ -1605,6 +1625,9 @@ async function main() {
     });
     realPositionLoop().catch(err => {
       console.error(`[RealLoop] Fatal: ${err.message}`);
+    });
+    channelAuditLoop().catch(err => {
+      console.error(`[ChannelAudit] loop died: ${err.message}`);
     });
     poolPriceLoop().catch(err => {
       console.error(`[PoolPrice] Fatal: ${err.message}`);
