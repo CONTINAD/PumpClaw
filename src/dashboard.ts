@@ -2383,7 +2383,13 @@ function buildChannelsHTML(): string {
       ch, recorded: mine.length, n: measured.length,
       pending: mine.length - measured.length,
       raw, called, skipped, rawMed, callMed, skipMed: med(skipped),
-      rawDied: share(raw, v => v < 0.5),
+      // Death is a trough. A peak is a maximum and cannot go below 1, so a rate
+      // computed from it read 0-1% across every channel — for memecoins.
+      rawDied: (() => {
+        const t = measured.map((o: any) => o.trough).filter((v: any) => typeof v === 'number');
+        return t.length ? Math.round(t.filter((v: number) => v < 0.3).length / t.length * 100) : null;
+      })(),
+      troughN: measured.filter((o: any) => typeof o.trough === 'number').length,
       raw15: share(raw, v => v >= 1.5), raw2: share(raw, v => v >= 2),
       raw5: share(raw, v => v >= 5), raw10: share(raw, v => v >= 10),
       call2: share(called, v => v >= 2),
@@ -2470,7 +2476,7 @@ function buildChannelsHTML(): string {
         <td class="mono">${r.n}</td>
         <td class="mono" style="color:var(--text3)">${r.pending}</td>
         <td class="mono" style="color:var(--text2)">${r.perHour ? r.perHour.toFixed(1) : '—'}</td>
-        <td class="mono" style="color:${r.rawDied !== null && r.rawDied > 60 ? '#ef4444' : 'var(--text2)'}">${pct(r.rawDied)}</td>
+        <td class="mono" style="color:${r.rawDied !== null && r.rawDied > 60 ? '#ef4444' : 'var(--text2)'}" title="${r.troughN} of ${r.n} have a trough recorded">${pct(r.rawDied)}</td>
         <td class="mono">${pct(r.raw15)}</td><td class="mono">${pct(r.raw2)}</td>
         <td class="mono">${pct(r.raw5)}</td><td class="mono">${pct(r.raw10)}</td>
         <td class="mono" style="color:${col(r.rawMed, 1.5)};font-weight:700">${fmt(r.rawMed)}</td>
@@ -2587,6 +2593,9 @@ function buildChannelsHTML(): string {
     <h3>How to read this</h3>
     <ul style="font-size:12px;color:var(--text2);line-height:1.9;padding-left:18px">
       <li><b>Under 20 measured is a story, not a statistic.</b> Those rows are dimmed and marked thin.</li>
+      <li><b>died</b> is now measured from the trough, not the peak. A peak is a maximum and cannot go below 1, which
+          is why it previously read 0-1% for every channel. Only coins measured since that fix have a trough, so the
+          column fills in gradually — hover it for the count.</li>
       <li>High <b>died</b> with good <b>lift</b> — a noisy channel our filters handle well. Keep both.</li>
       <li>Good raw median with <b>lift near zero</b> — the filters add nothing there; the channel is doing the work.</li>
       <li><b>skipped median above called median</b> — we are rejecting that channel's winners. Look at which filter.</li>
@@ -5217,6 +5226,76 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/api/drawdown') {
+      // Where does a stop belong? That depends entirely on whether the drawdown comes
+      // BEFORE the peak or after it, and nothing here could answer that: minAtMin and
+      // peakAtMin were added recently and are populated on one call out of 223.
+      //
+      // The captured minute paths can answer it directly. For each coin: how far it
+      // fell before it peaked, and whether it still ran afterwards. A dip that happens
+      // after the peak costs nothing — the position was already exiting. A dip before
+      // the peak is precisely what a stop fires on, and every coin in that column that
+      // still doubled is a winner a stop at that level would have thrown away.
+      import('./candles.js').then(mod => {
+        const paths = mod.loadPaths(400);
+        const rows = paths.map(p => {
+          const cs = p.candles;
+          if (cs.length < 5 || !(p.entryPrice > 0)) return null;
+          let peakIdx = 0, peak = 0;
+          for (let i = 0; i < cs.length; i++) if (cs[i].h > peak) { peak = cs[i].h; peakIdx = i; }
+          // deepest point strictly before the peak — what a stop would have caught
+          let preLow = Infinity;
+          for (let i = 0; i <= peakIdx; i++) preLow = Math.min(preLow, cs[i].l);
+          let postLow = Infinity;
+          for (let i = peakIdx; i < cs.length; i++) postLow = Math.min(postLow, cs[i].l);
+          return {
+            mint: p.mint, symbol: p.symbol,
+            peak: peak / p.entryPrice,
+            preDip: (preLow === Infinity ? p.entryPrice : preLow) / p.entryPrice,
+            postDip: (postLow === Infinity ? p.entryPrice : postLow) / p.entryPrice,
+            peakAtMin: Math.round((cs[peakIdx].ts - p.callTs) / 60_000),
+          };
+        }).filter(Boolean) as any[];
+
+        // For each candidate stop: how many coins it fires on, and how many of those
+        // went on to double anyway. The second number is the cost of that stop.
+        const levels = [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.6, 0.5, 0.4, 0.3];
+        const stopTable = levels.map(lv => {
+          const fired = rows.filter(r => r.preDip < lv);
+          const wouldHaveWon = fired.filter(r => r.peak >= 2);
+          const survived = rows.filter(r => r.preDip >= lv);
+          const survivedWon = survived.filter(r => r.peak >= 2);
+          return {
+            stopPct: Math.round((1 - lv) * 100),
+            firesOn: fired.length,
+            firesOnPct: rows.length ? Math.round(fired.length / rows.length * 100) : 0,
+            winnersKilled: wouldHaveWon.length,
+            winnersKilledPct: fired.length ? Math.round(wouldHaveWon.length / fired.length * 100) : 0,
+            survivors: survived.length,
+            survivor2xPct: survived.length ? Math.round(survivedWon.length / survived.length * 100) : 0,
+          };
+        });
+
+        const sorted = (a: number[]) => a.slice().sort((x, y) => x - y);
+        const med = (a: number[]) => a.length ? sorted(a)[Math.floor(a.length / 2)] : null;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          paths: rows.length,
+          note: 'preDip is the deepest point BEFORE the peak — what a stop actually fires on. postDip is after the '
+              + 'peak and costs nothing, because the position is already exiting. winnersKilledPct is the share of '
+              + 'coins a stop at that level would have closed that went on to double anyway: the price of the stop.',
+          medianPreDip: med(rows.map(r => r.preDip)),
+          medianPostDip: med(rows.map(r => r.postDip)),
+          medianPeak: med(rows.map(r => r.peak)),
+          medianPeakAtMin: med(rows.map(r => r.peakAtMin)),
+          stopTable,
+          worst: rows.slice().sort((a, b) => a.preDip - b.preDip).slice(0, 15)
+            .map(r => ({ symbol: r.symbol, preDip: +r.preDip.toFixed(3), peak: +r.peak.toFixed(2) })),
+        }, null, 2));
+      }).catch((err: any) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/api/creators') {
       // Serial launchers. pump.fun returns the creator on every coin and it was being
       // discarded, so the same wallet could rug us repeatedly and each launch looked
@@ -5292,22 +5371,29 @@ export function startDashboard(port?: number): void {
         const obs = m.loadObs();
         const by: Record<string, any> = {};
         for (const o of obs) {
-          const b = by[o.channel] ??= { recorded: 0, measured: 0, peaks: [] as number[] };
+          const b = by[o.channel] ??= { recorded: 0, measured: 0, peaks: [] as number[], troughs: [] as number[] };
           b.recorded++;
           if (o.peak !== undefined) { b.measured++; b.peaks.push(o.peak); }
+          if (typeof o.trough === 'number') b.troughs.push(o.trough);
         }
         for (const k of Object.keys(by)) {
           const b = by[k];
           const p = b.peaks.sort((x: number, y: number) => x - y);
           const share = (f: (v: number) => boolean) => p.length ? Math.round(p.filter(f).length / p.length * 100) : null;
-          b.diedPct = share((v: number) => v < 0.5);
+          b.diedPct = null;   // replaced below — peak cannot express a death
           b.hit15Pct = share((v: number) => v >= 1.5);
           b.hit2Pct = share((v: number) => v >= 2);
           b.hit5Pct = share((v: number) => v >= 5);
           b.medianPeak = p.length ? +(p[Math.floor(p.length / 2)]).toFixed(2) : null;
           b.bestPeak = p.length ? +(p[p.length - 1]).toFixed(1) : null;
+          // Death is a trough, not a peak. Older rows have no trough recorded and are
+          // excluded rather than counted as survivors.
+          const t = (b.troughs as number[]).sort((x: number, y: number) => x - y);
+          b.troughsMeasured = t.length;
+          b.diedPct = t.length ? Math.round(t.filter((v: number) => v < 0.3).length / t.length * 100) : null;
+          b.medianTrough = t.length ? +(t[Math.floor(t.length / 2)]).toFixed(3) : null;
           b.thin = b.measured < 20;
-          delete b.peaks;
+          delete b.peaks; delete b.troughs;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({

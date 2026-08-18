@@ -26,6 +26,11 @@ const MIN_AGE_MIN = 120;
 export interface ChannelObs {
   channel: string; mint: string; postedAt: number;
   entry?: number; peak?: number; checked?: number; ageAtCheckMin?: number;
+  /** Deepest point after the post. A peak is a maximum and cannot go below 1, so a
+   *  "died" rate computed from it is structurally near-zero — which is exactly what
+   *  the channel table showed (0-1% across every feed, for memecoins). The trough is
+   *  the number that says whether a coin actually went to nothing. */
+  trough?: number;
 }
 
 const FILE = () => join(CONFIG.DATA_DIR, 'channel-audit.json');
@@ -67,23 +72,27 @@ async function scrape(channel: string): Promise<{ mint: string; postedAt: number
   return out;
 }
 
-async function outcome(mint: string, postedAt: number): Promise<{ entry: number; peak: number } | null> {
+async function outcome(mint: string, postedAt: number): Promise<{ entry: number; peak: number; trough: number } | null> {
   const ds: any = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { headers: UA, signal: AbortSignal.timeout(15_000) })
     .then(r => r.json()).catch(() => null);
   const pairs = (ds?.pairs ?? []).filter((p: any) => p.chainId === 'solana' && p.baseToken?.address === mint);
-  if (!pairs.length) return { entry: 1, peak: 0 };   // no pool left — the coin is gone, which is an outcome
+  if (!pairs.length) return { entry: 1, peak: 0, trough: 0 };   // no pool left — the coin is gone, which is an outcome
   const pair = pairs.sort((a: any, b: any) => (+b.volume?.h24 || 0) - (+a.volume?.h24 || 0))[0];
   const before = Math.floor(postedAt / 1000) + 6 * 3600;
   const gt = await gtFetch(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}`
     + `/ohlcv/minute?aggregate=1&before_timestamp=${before}&limit=400&currency=usd`);
   const after = ((gt?.data?.attributes?.ohlcv_list ?? []) as number[][])
-    .map(r => ({ ts: r[0] * 1000, h: r[2], o: r[1], c: r[4] }))
+    .map(r => ({ ts: r[0] * 1000, h: r[2], l: r[3], o: r[1], c: r[4] }))
     .filter(c => c.ts >= postedAt - 60_000)
     .sort((a, b) => a.ts - b.ts);
   if (after.length < 3) return null;
   const entry = after[0].o || after[0].c;
   if (!(entry > 0)) return null;
-  return { entry, peak: Math.max(...after.map(c => c.h)) / entry };
+  return {
+    entry,
+    peak: Math.max(...after.map(c => c.h)) / entry,
+    trough: Math.min(...after.map(c => c.l)) / entry,
+  };
 }
 
 /** One pass: record what is on the pages, then measure whatever has aged enough. */
@@ -111,7 +120,7 @@ export async function auditPass(channels: string[], budget = 25): Promise<{ reco
   for (const o of due) {
     const r = await outcome(o.mint, o.postedAt);
     if (r) {
-      o.entry = r.entry; o.peak = r.peak; o.checked = Date.now();
+      o.entry = r.entry; o.peak = r.peak; o.trough = r.trough; o.checked = Date.now();
       o.ageAtCheckMin = Math.round((Date.now() - o.postedAt) / 60_000);
       measured++;
     }

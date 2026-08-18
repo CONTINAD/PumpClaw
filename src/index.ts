@@ -102,7 +102,9 @@ interface SkipRecord {
    *  reads as cleaner than it is — we would only see the ones we fell for. */
   creator?: string;
   entryPrice?: number;      // price when we passed, so a peak means something
-  peakMultiplier?: number;  // filled in later — what we avoided, or missed
+  peakMultiplier?: number;  // running max across checks — what we missed
+  lastMultiplier?: number;  // most recent spot — what it settled at
+  checks?: number;          // how many samples the peak is built from
   checkedAt?: number;
 }
 let skipHistory: SkipRecord[] = [];
@@ -199,18 +201,30 @@ async function skipOutcomeLoop() {
     await new Promise(r => setTimeout(r, 3600_000));
     try {
       const now = Date.now();
+      // Re-check across the window instead of once. One sample cannot express a
+      // maximum, and the whole point of the field is what the coin reached.
       const due = skipHistory.filter(s =>
-        s.peakMultiplier === undefined && s.entryPrice && s.entryPrice > 0 &&
-        now - s.timestamp > 3600_000 && now - s.timestamp < 24 * 3600_000);
+        s.entryPrice && s.entryPrice > 0 && (s.checks ?? 0) < 6 &&
+        now - s.timestamp > 1800_000 && now - s.timestamp < 24 * 3600_000);
       if (!due.length) continue;
       for (let i = 0; i < due.length; i += 25) {
         const batch = due.slice(i, i + 25);
         const md = await fetchBatchMarketData(batch.map(s => s.mint));
         for (const s of batch) {
           const m = md.get(s.mint);
-          // No liquid pool left is itself an outcome: the coin died.
-          s.peakMultiplier = m && m.priceUsd > 0 ? m.priceUsd / s.entryPrice! : 0;
+          // A single spot price is not a peak, and calling it one made every filter
+          // verdict incomparable with the calls they are judged against: calls track
+          // a running maximum, so a rejection graded on one sample at ~90 minutes was
+          // being scored by a different measure under the same field name. Regrading
+          // our own calls this way marks 54% of them as good rejections.
+          //
+          // Keep the running maximum, and record the spot separately so a coin that
+          // doubled and came back is not filed as a death.
+          const spot = m && m.priceUsd > 0 ? m.priceUsd / s.entryPrice! : 0;
+          s.lastMultiplier = spot;
+          s.peakMultiplier = Math.max(s.peakMultiplier ?? 0, spot);
           s.checkedAt = now;
+          s.checks = (s.checks ?? 0) + 1;
         }
         await new Promise(r => setTimeout(r, 400));
       }
