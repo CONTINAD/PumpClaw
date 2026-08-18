@@ -24,8 +24,27 @@ import { URL } from 'url';
  * them unchanged — they were chosen for that as much as for their coverage.
  */
 const TG_CHANNELS: string[] = (process.env.TG_CHANNELS
-  ?? 'solearlytrending,soltrenchtrending,solwhaletrending')
+  ?? 'solearlytrending,soltrenchtrending,solwhaletrending,gem_tools_calls')
   .split(',').map(s => s.trim()).filter(Boolean);
+
+/**
+ * Not every channel writes a call the same way, and most of what a channel posts is
+ * not a call at all.
+ *
+ * gem_tools_calls is mostly a tracking feed — 18 of 20 posts are updates on coins it
+ * already called ("$BOLLOCKS x22") or whale alerts at $600-800K market cap, an order
+ * of magnitude above our entry ceiling. Treating every mint it mentions as a call
+ * would enter coins nine hours after the move and repeatedly re-enter the same one.
+ *
+ * Only the entry format counts:  🚀 $SYM (Name) | <mint>
+ */
+const CHANNEL_FORMATS: Record<string, RegExp> = {
+  // Entry posts read "$SYM (Name) <mint> GTscore: ⭐☆☆☆☆". The GTscore suffix is the
+  // reliable marker — it appears on calls and on nothing else, while the "x22" update
+  // posts and whale alerts carry no mint at all. Anchoring on the mint's position
+  // relative to a name would also match the preview card of an update.
+  gem_tools_calls: /([1-9A-HJ-NP-Za-km-z]{32,44})\s*GTscore/g,
+};
 
 export function tgChannels(): string[] { return [...TG_CHANNELS]; }
 
@@ -231,9 +250,18 @@ export async function scrapeTrendingPosts(channel: string = TG_CHANNELS[0]): Pro
       const posts: TrendingPost[] = [];
       const seen = new Set<string>();
 
-      for (const m of decoded.matchAll(POST_PATTERN)) {
-        const mint = m[1];
-        const name = m[2].replace(/[\u200e\u200f]/g, '').trim();
+      // A channel with its own entry format is parsed by that; everything else uses
+      // the Soul_Sniper link the trending channels share.
+      const custom = CHANNEL_FORMATS[channel];
+      const matches = custom
+        ? [...decoded.matchAll(custom)].map(m => ({ mint: m[1], name: m[1].slice(0, 8), index: m.index }))
+        : [...decoded.matchAll(POST_PATTERN)].map(m => ({
+            mint: m[1], name: m[2].replace(/[\u200e\u200f]/g, '').trim(), index: m.index,
+          }));
+
+      for (const m of matches) {
+        const mint = m.mint;
+        const name = m.name;
 
         if (seen.has(mint)) continue;
         seen.add(mint);

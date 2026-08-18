@@ -1115,6 +1115,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
     <a href="/shadow" style="border-color:var(--border2)">📄 Shadow Fleet</a>
     <a href="/bundles" style="border-color:var(--border2)">🔍 Bundles</a>
+    <a href="/channels" style="border-color:var(--border2)">📡 Channels</a>
     <a href="/ledger" style="border-color:var(--border2)">💰 Ledger</a>
     <a href="/params" style="border-color:var(--border2)">📐 What works</a>
     <a href="/builder" style="border-color:var(--border2)">🛠️ Build your own</a>
@@ -1697,7 +1698,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/bundles">Bundles</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/bundles">Bundles</a><a href="/channels">Channels</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -2289,6 +2290,143 @@ async function buildBundlesHTML(): Promise<string> {
       Nothing recorded yet — the log begins at this deploy and fills as calls come in.
     </p>`}
   </div>`, '/bundles');
+}
+
+/**
+ * Channels — is a feed worth scraping, and do our filters improve it?
+ *
+ * Two different questions that get confused constantly:
+ *
+ *   raw     every mint the channel posted, whether we acted on it or not
+ *   called  the subset that survived every filter and became a PumpClaw call
+ *
+ * A channel is worth adding if its RAW quality is decent. Our filters are worth
+ * having on that channel if CALLED beats RAW by more than the calls we gave up.
+ * A channel can be poor raw and excellent called — that is the filters earning
+ * their place — and one can be good raw and no better called, which means the
+ * filters are only costing us volume there.
+ */
+function buildChannelsHTML(): string {
+  let obs: any[] = [];
+  try { obs = JSON.parse(readFileSync(join(CONFIG.DATA_DIR, 'channel-audit.json'), 'utf-8')); } catch { /* none yet */ }
+  let calls: CallRecord[] = [];
+  try { calls = loadJSON(join(CONFIG.DATA_DIR, 'calls.json')); } catch { /* none */ }
+  let skips: any[] = [];
+  try { skips = JSON.parse(readFileSync(join(CONFIG.DATA_DIR, 'skips.json'), 'utf-8')); } catch { /* none */ }
+
+  const calledPeak = new Map<string, number>();
+  const callSource = new Map<string, string | undefined>();
+  for (const c of calls) {
+    if ((c.peakMultiplier ?? 0) > 0) calledPeak.set(c.mint, c.peakMultiplier);
+    callSource.set(c.mint, c.source);
+  }
+  const skipReason = new Map<string, string>();
+  for (const s of skips) skipReason.set(s.mint, s.reason);
+
+  const channels = [...new Set(obs.map(o => o.channel))].sort();
+  const med = (a: number[]) => a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : null;
+  const share = (a: number[], f: (v: number) => boolean) => a.length ? Math.round(a.filter(f).length / a.length * 100) : null;
+
+  const rows = channels.map(ch => {
+    const mine = obs.filter(o => o.channel === ch && o.peak !== undefined);
+    const raw = mine.map(o => o.peak as number);
+    const called = mine.filter(o => calledPeak.has(o.mint)).map(o => o.peak as number);
+    const skipped = mine.filter(o => !calledPeak.has(o.mint) && skipReason.has(o.mint)).map(o => o.peak as number);
+    const unseen = mine.length - called.length - skipped.length;
+    const rawMed = med(raw), callMed = med(called), skipMed = med(skipped);
+    return {
+      ch, n: mine.length, pending: obs.filter(o => o.channel === ch && o.peak === undefined).length,
+      raw, called, skipped, unseen, rawMed, callMed, skipMed,
+      rawDied: share(raw, v => v < 0.5), raw2x: share(raw, v => v >= 2),
+      call2x: share(called, v => v >= 2), skip2x: share(skipped, v => v >= 2),
+      lift: rawMed && callMed ? callMed / rawMed : null,
+      best: raw.length ? Math.max(...raw) : null,
+    };
+  });
+
+  const c = (v: number | null, good: number) => v === null ? 'var(--text3)' : v >= good ? '#10b981' : v > good * 0.6 ? '#eab308' : '#ef4444';
+  const fmt = (v: number | null, s = 'x') => v === null ? '—' : `${v.toFixed(2)}${s}`;
+  const pct = (v: number | null) => v === null ? '—' : `${v}%`;
+
+  const totalMeasured = rows.reduce((s, r) => s + r.n, 0);
+  const totalPending = rows.reduce((s, r) => s + r.pending, 0);
+
+  return settingsShell(`
+  <div class="card" style="max-width:none">
+    <h3>📡 Channels</h3>
+    <p style="font-size:13px;color:var(--text2);line-height:1.7">
+      Two questions that get confused. <b>Raw</b> is every mint a channel posted, whether we acted on it or not —
+      that is whether the channel is worth scraping. <b>Called</b> is the subset that survived every filter and
+      became a PumpClaw call — that is whether our filters improve what the channel gives us.
+    </p>
+    <p style="font-size:12px;color:var(--text3);line-height:1.6;margin-top:8px">
+      A channel can be poor raw and strong called, which is the filters earning their place. It can also be good raw
+      and no better called, which means the filters are only costing volume there. Every coin is measured at least
+      2 hours after it was posted, so its peak means something. <b>Median, not best</b> — best is one coin, and
+      choosing on it picks the luckiest channel rather than the best one.
+    </p>
+    <div style="margin-top:10px;font-size:12px;color:var(--text2)">
+      ${totalMeasured} measured · ${totalPending} recorded and awaiting age · refreshes every 20 min
+    </div>
+  </div>
+
+  ${!totalMeasured ? `<div class="card" style="max-width:none">
+    <h3>Nothing measured yet</h3>
+    <p style="font-size:13px;color:var(--text2);line-height:1.7">
+      ${totalPending} posts are recorded and waiting. A coin needs about two hours before its peak means anything,
+      and t.me only shows roughly an hour of posts, so the first numbers appear a couple of hours after this starts
+      and a usable sample takes a day or two. Nothing is broken.
+    </p>
+  </div>` : `
+  <div class="card" style="max-width:none">
+    <h3>Is the channel worth scraping? <span style="font-size:12px;color:var(--text3);font-weight:400">— raw feed, before our filters</span></h3>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Channel</th><th>measured</th><th>pending</th><th>died</th><th>hit 2x</th><th>median peak</th><th>best</th></tr>
+      ${rows.sort((a, b) => (b.rawMed ?? 0) - (a.rawMed ?? 0)).map(r => `<tr${r.n < 20 ? ' style="opacity:.65"' : ''}>
+        <td><b>${r.ch}</b>${r.n < 20 ? ' <span style="color:#f59e0b;font-size:11px">thin</span>' : ''}</td>
+        <td class="mono">${r.n}</td>
+        <td class="mono" style="color:var(--text3)">${r.pending}</td>
+        <td class="mono" style="color:${r.rawDied !== null && r.rawDied > 60 ? '#ef4444' : 'var(--text2)'}">${pct(r.rawDied)}</td>
+        <td class="mono">${pct(r.raw2x)}</td>
+        <td class="mono" style="color:${c(r.rawMed, 1.5)};font-weight:700">${fmt(r.rawMed)}</td>
+        <td class="mono" style="color:var(--text3)">${fmt(r.best)}</td>
+      </tr>`).join('')}
+    </table></div>
+  </div>
+
+  <div class="card" style="max-width:none">
+    <h3>Do our filters improve it? <span style="font-size:12px;color:var(--text3);font-weight:400">— what we called vs what we passed on</span></h3>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Channel</th><th>raw median</th><th>called</th><th>called median</th><th>skipped</th><th>skipped median</th><th>lift</th></tr>
+      ${rows.sort((a, b) => (b.lift ?? 0) - (a.lift ?? 0)).map(r => `<tr>
+        <td><b>${r.ch}</b></td>
+        <td class="mono" style="color:var(--text2)">${fmt(r.rawMed)}</td>
+        <td class="mono">${r.called.length}</td>
+        <td class="mono" style="color:${c(r.callMed, 1.5)};font-weight:700">${fmt(r.callMed)}</td>
+        <td class="mono" style="color:var(--text3)">${r.skipped.length}</td>
+        <td class="mono" style="color:var(--text2)">${fmt(r.skipMed)}</td>
+        <td class="mono" style="color:${r.lift === null ? 'var(--text3)' : r.lift >= 1.2 ? '#10b981' : r.lift >= 1 ? '#eab308' : '#ef4444'};font-weight:700">
+          ${r.lift === null ? '—' : `${r.lift >= 1 ? '+' : ''}${((r.lift - 1) * 100).toFixed(0)}%`}</td>
+      </tr>`).join('')}
+    </table></div>
+    <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-top:10px">
+      <b>lift</b> is called median over raw median. Above zero means the filters picked better than the channel's
+      average; below zero means they picked worse than picking at random from that channel, which is worth knowing.
+      <b>skipped median</b> is what we passed on — if it is higher than what we called, the filters are removing the
+      wrong coins. A blank means too few of that channel's posts have been both measured and judged yet.
+    </p>
+  </div>`}
+
+  <div class="card" style="max-width:none">
+    <h3>Reading this tomorrow</h3>
+    <ul style="font-size:12px;color:var(--text2);line-height:1.9;padding-left:18px">
+      <li>Under 20 measured is a story, not a statistic — those rows are dimmed and marked thin.</li>
+      <li>A high <b>died</b> rate with a good <b>lift</b> means a noisy channel our filters handle well. Keep both.</li>
+      <li>A good raw median with lift near zero means the filters add nothing there — the channel is doing the work.</li>
+      <li><b>skipped median above called median</b> is the alarm: we are systematically rejecting that channel's winners.</li>
+      <li>Channels are set by <b>TG_CHANNELS</b> in Railway; removing one is a single edit and takes effect on restart.</li>
+    </ul>
+  </div>`, '/channels');
 }
 
 function buildBuilderHTML(url: string, canAct: boolean): string {
@@ -3432,6 +3570,14 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/channels') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(buildChannelsHTML());
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building channels: ' + err.message + '\n' + err.stack);
+      }
     } else if (pathname === '/ledger') {
       try {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
