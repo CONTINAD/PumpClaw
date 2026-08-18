@@ -5217,6 +5217,73 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/api/creators') {
+      // Serial launchers. pump.fun returns the creator on every coin and it was being
+      // discarded, so the same wallet could rug us repeatedly and each launch looked
+      // like the first. Rejected launches count too — without them a creator's record
+      // reads cleaner than it is, showing only the ones we fell for.
+      try {
+        const calls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+        let skips: any[] = [];
+        try { skips = JSON.parse(readFileSync(join(CONFIG.DATA_DIR, 'skips.json'), 'utf-8')); } catch { /* none */ }
+        const by: Record<string, any> = {};
+        const put = (creator: string | undefined, peak: number | undefined, called: boolean, sym: string) => {
+          if (!creator || creator === 'unknown') return;
+          const b = by[creator] ??= { launches: 0, called: 0, skipped: 0, peaks: [] as number[], coins: [] as string[] };
+          b.launches++;
+          if (called) b.called++; else b.skipped++;
+          if (typeof peak === 'number') b.peaks.push(peak);
+          if (b.coins.length < 12) b.coins.push(sym);
+        };
+        for (const c of calls) put(c.creator, c.peakMultiplier, true, c.symbol);
+        for (const s of skips) put(s.creator, s.peakMultiplier, false, s.name);
+        for (const k of Object.keys(by)) {
+          const b = by[k];
+          const p = b.peaks.sort((x: number, y: number) => x - y);
+          b.measured = p.length;
+          b.medianPeak = p.length ? +(p[Math.floor(p.length / 2)]).toFixed(2) : null;
+          b.diedPct = p.length ? Math.round(p.filter((v: number) => v < 0.5).length / p.length * 100) : null;
+          b.doubledPct = p.length ? Math.round(p.filter((v: number) => v >= 2).length / p.length * 100) : null;
+          delete b.peaks;
+        }
+        // A wallet with one launch is not a pattern; repeats are the whole point.
+        const repeat = Object.fromEntries(Object.entries(by).filter(([, v]: any) => v.launches >= 2)
+          .sort((a: any, b: any) => b[1].launches - a[1].launches));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          creatorsKnown: Object.keys(by).length,
+          repeatLaunchers: Object.keys(repeat).length,
+          backfillPending: calls.filter(c => !c.creator).length,
+          note: 'Only wallets with 2+ launches are listed — one launch is not a history. diedPct over several '
+              + 'launches is the signal worth acting on; a single rug is a coin, a pattern is a person.',
+          repeat,
+        }, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (pathname === '/api/export-all') {
+      // Everything joined, in one fetch. Analysis that needs five endpoints stitched
+      // by hand gets done once and then not again.
+      try {
+        const read = (f: string) => { try { return JSON.parse(readFileSync(join(CONFIG.DATA_DIR, f), 'utf-8')); } catch { return []; } };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          exportedAt: Date.now(),
+          note: 'calls = what we called, with entry features, holder metrics and outcome shape. skips = what we '
+              + 'rejected, graded by what the coin did afterwards. channelAudit = every mint each channel posted, '
+              + 'measured 2h+ later. bundleLog = every holder verdict including passes. strategies = realised paper '
+              + 'performance. Join on mint.',
+          calls: read('calls.json'),
+          skips: read('skips.json'),
+          channelAudit: read('channel-audit.json'),
+          bundleLog: read('bundle-log.json'),
+          strategies: shadowRows('?hours=all'),
+        }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/channel-audit') {
       // Grades the FEED, not our calls: every mint a channel posted, including the
       // ones our filters rejected. /api/channels answers "were our calls good";

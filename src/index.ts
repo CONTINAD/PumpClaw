@@ -98,6 +98,9 @@ const SKIPS_FILE = `${CONFIG.DATA_DIR}/skips.json`;
 interface SkipRecord {
   mint: string; name: string; reason: string; details: string;
   marketCap: number; timestamp: number;
+  /** Without this a creator's rejected launches are invisible, and their history
+   *  reads as cleaner than it is — we would only see the ones we fell for. */
+  creator?: string;
   entryPrice?: number;      // price when we passed, so a peak means something
   peakMultiplier?: number;  // filled in later — what we avoided, or missed
   checkedAt?: number;
@@ -173,8 +176,8 @@ function recordBundleObs(post: { mint: string; name: string }, bundle: any, pass
   } catch { /* non-critical */ }
 }
 
-function recordSkip(post: { mint: string; name: string }, reason: string, details: string, mc: number, price?: number) {
-  const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now() };
+function recordSkip(post: { mint: string; name: string; creator?: string }, reason: string, details: string, mc: number, price?: number) {
+  const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now(), creator: post.creator };
   skippedRing.push(rec);
   if (skippedRing.length > 200) skippedRing.shift();
   // Only the judgement calls are worth grading. LOW_VOL and RATE_CAP reject coins
@@ -1279,6 +1282,38 @@ async function realPositionLoop() {
  * t.me only shows about an hour of posts. A tool that only works if someone keeps
  * clicking it is a tool that will not get run.
  */
+/**
+ * Fill in the creator for calls made before it was recorded.
+ *
+ * Creator history is only useful with history in it. Starting from zero means the
+ * signal is unavailable for weeks, when pump.fun will answer for coins we called
+ * months ago and the 300 records already on disk can be made to carry it.
+ *
+ * Deliberately slow — this is backfill, not a feature, and it must never compete
+ * with the scanner for rate limit.
+ */
+async function creatorBackfillLoop() {
+  const { fetchCoinDetails } = await import('./pumpfun.js');
+  while (true) {
+    await new Promise(r => setTimeout(r, 90_000));
+    try {
+      const missing = tracker.allCalls().filter(c => !c.creator).slice(0, 8);
+      if (!missing.length) continue;
+      let filled = 0;
+      for (const c of missing) {
+        const d = await fetchCoinDetails(c.mint).catch(() => null);
+        // Mark unresolvable ones so a delisted coin is not retried forever.
+        c.creator = d?.creator ?? 'unknown';
+        if (d?.creator) filled++;
+        await new Promise(r => setTimeout(r, 1500));
+      }
+      if (filled) { tracker.persist(); console.log(`[Backfill] creator filled for ${filled} past call(s)`); }
+    } catch (err: any) {
+      console.error(`[Backfill] ${err.message}`);
+    }
+  }
+}
+
 async function channelAuditLoop() {
   const { auditPass } = await import('./channel-audit.js');
   const { tgChannels } = await import('./telegram.js');
@@ -1625,6 +1660,9 @@ async function main() {
     });
     realPositionLoop().catch(err => {
       console.error(`[RealLoop] Fatal: ${err.message}`);
+    });
+    creatorBackfillLoop().catch(err => {
+      console.error(`[Backfill] loop died: ${err.message}`);
     });
     channelAuditLoop().catch(err => {
       console.error(`[ChannelAudit] loop died: ${err.message}`);

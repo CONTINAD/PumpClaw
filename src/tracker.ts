@@ -37,6 +37,11 @@ export interface CallRecord {
   /** Which Telegram channel surfaced this coin. Absent on calls made before
    *  multi-channel scraping, which is why every reader must tolerate undefined. */
   source?: string;
+  /** The wallet that launched the token. pump.fun returns it on every coin and it
+   *  was being discarded — which meant a creator could rug us repeatedly and each
+   *  launch looked like the first. A creator's own history is the strongest
+   *  predictor available and it costs nothing to keep. */
+  creator?: string;
 
   // Rich entry features (all optional for back-compat with old records).
   // Used for correlation analysis to figure out which signals predict winners.
@@ -100,6 +105,14 @@ export class PerformanceTracker {
     this.load();
   }
 
+  /** Every call on record. Used by the creator backfill and by analysis that needs
+   *  the whole set rather than the active ones. */
+  allCalls(): CallRecord[] { return [...this.calls.values()]; }
+
+  /** Persist after a caller has mutated records in place — the backfill fills a
+   *  field on existing records rather than adding new ones. */
+  persist(): void { this.save(); }
+
   /** Has this coin ever been alerted? */
   hasBeenCalled(mint: string): boolean {
     return this.calls.has(mint);
@@ -126,6 +139,7 @@ export class PerformanceTracker {
       entryTime: Date.now(),
       alertMessageId,
       source: extra?.source,
+      creator: coin.creator,
       // Rich features for correlation
       entryVolume1h: market.volume1h,
       entryVolume24h: market.volume24h,
