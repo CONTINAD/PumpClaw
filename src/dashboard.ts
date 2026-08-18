@@ -5371,9 +5371,13 @@ export function startDashboard(port?: number): void {
         const obs = m.loadObs();
         const by: Record<string, any> = {};
         for (const o of obs) {
-          const b = by[o.channel] ??= { recorded: 0, measured: 0, peaks: [] as number[], troughs: [] as number[] };
+          const b = by[o.channel] ??= { recorded: 0, measured: 0, v1Pending: 0, peaks: [] as number[], troughs: [] as number[] };
           b.recorded++;
-          if (o.peak !== undefined) { b.measured++; b.peaks.push(o.peak); }
+          if (o.peak === undefined) continue;
+          // v1 used a 60s lookback that inflated fast movers. Counted separately
+          // rather than averaged in, so the table is not a blend of two methods.
+          if ((o.v ?? 1) < 2) { b.v1Pending++; continue; }
+          b.measured++; b.peaks.push(o.peak);
           if (typeof o.trough === 'number') b.troughs.push(o.trough);
         }
         for (const k of Object.keys(by)) {

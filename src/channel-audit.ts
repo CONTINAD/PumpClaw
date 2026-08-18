@@ -31,7 +31,14 @@ export interface ChannelObs {
    *  the channel table showed (0-1% across every feed, for memecoins). The trough is
    *  the number that says whether a coin actually went to nothing. */
   trough?: number;
+  /** Measurement version. v1 allowed a candle from up to 60s before the post, which
+   *  gave fast movers an entry price from before they moved — 5 of 6 sampled rows
+   *  were inflated, mean 3.40x against a corrected 2.95x. v1 rows are re-measured
+   *  rather than mixed with v2 ones, because the bias is largest exactly on the
+   *  coins that decide whether a channel looks good. */
+  v?: number;
 }
+const MEASURE_VERSION = 2;
 
 const FILE = () => join(CONFIG.DATA_DIR, 'channel-audit.json');
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -81,9 +88,20 @@ async function outcome(mint: string, postedAt: number): Promise<{ entry: number;
   const before = Math.floor(postedAt / 1000) + 6 * 3600;
   const gt = await gtFetch(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}`
     + `/ohlcv/minute?aggregate=1&before_timestamp=${before}&limit=400&currency=usd`);
+  // Strictly after the post.
+  //
+  // A minute candle stamped T covers [T, T+60s), so the candle containing the post
+  // opened up to a minute before it. Allowing that candle in was meant to avoid
+  // clock skew and instead handed fast movers an entry price from before they moved:
+  // one coin was recorded at 2.68e-05 from this channel and 1.07e-04 from another
+  // three minutes later, against our own reading of 8.99e-05 in between. Its peak
+  // came out at 169x against a truer 42x.
+  //
+  // The bias is not random — it is largest on the coins that move fastest, which are
+  // exactly the ones that decide whether a channel looks good.
   const after = ((gt?.data?.attributes?.ohlcv_list ?? []) as number[][])
     .map(r => ({ ts: r[0] * 1000, h: r[2], l: r[3], o: r[1], c: r[4] }))
-    .filter(c => c.ts >= postedAt - 60_000)
+    .filter(c => c.ts >= postedAt)
     .sort((a, b) => a.ts - b.ts);
   if (after.length < 3) return null;
   const entry = after[0].o || after[0].c;
@@ -115,12 +133,15 @@ export async function auditPass(channels: string[], budget = 25): Promise<{ reco
     }
   }
 
-  const due = obs.filter(o => o.peak === undefined && (Date.now() - o.postedAt) / 60_000 >= MIN_AGE_MIN).slice(0, budget);
+  // Unmeasured rows first, then v1 rows needing correction.
+  const fresh = obs.filter(o => o.peak === undefined && (Date.now() - o.postedAt) / 60_000 >= MIN_AGE_MIN);
+  const stale = obs.filter(o => o.peak !== undefined && (o.v ?? 1) < MEASURE_VERSION);
+  const due = [...fresh, ...stale].slice(0, budget);
   let measured = 0;
   for (const o of due) {
     const r = await outcome(o.mint, o.postedAt);
     if (r) {
-      o.entry = r.entry; o.peak = r.peak; o.trough = r.trough; o.checked = Date.now();
+      o.entry = r.entry; o.peak = r.peak; o.trough = r.trough; o.checked = Date.now(); o.v = MEASURE_VERSION;
       o.ageAtCheckMin = Math.round((Date.now() - o.postedAt) / 60_000);
       measured++;
     }
