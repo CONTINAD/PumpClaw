@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { CONFIG } from './config.js';
-import { scrapeTrendingPosts } from './telegram.js';
+import { scrapeAllChannels } from './telegram.js';
 import { fetchCoinDetails } from './pumpfun.js';
 import { fetchBatchMarketData, fetchSingleMarketData, getSolPrice, type MarketData } from './dexscreener.js';
 import { sendAlert, updateWithPerformance, sendMilestoneAlert, sendLeaderboard, sendMonthlyLeaderboard, sendFullCallListReport, fmtUsd, fmtPct, type LeaderboardEntry, type MonthlyLeaderboardEntry } from './discord.js';
@@ -261,7 +261,7 @@ async function fastScanCycle() {
     return;
   }
 
-  const posts = await scrapeTrendingPosts();
+  const posts = await scrapeAllChannels();
 
   if (posts.length === 0) {
     log('⚠ No trending posts from Telegram');

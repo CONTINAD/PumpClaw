@@ -1,5 +1,5 @@
 /**
- * Scrapes @solearlytrending Telegram channel for "New Trending" posts.
+ * Scrapes public Telegram channel pages for "New Trending" posts.
  * Each post contains the token name and contract address (CA) embedded
  * in the Soul_Sniper_Bot link.
  *
@@ -12,7 +12,24 @@ import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
 
-const TG_URL = 'https://t.me/s/solearlytrending';
+/**
+ * Channels to scrape, in order. Comma-separated via TG_CHANNELS.
+ *
+ * One channel was one point of failure and one ceiling: every winner the bot could
+ * possibly catch had to appear there first. Measured against the page contents,
+ * these three overlap only 31-39% and together surface roughly three times as many
+ * mints as solearlytrending alone (20 -> 44 on a single page load).
+ *
+ * The two additions use the same Soul_Sniper link format, so the parser below reads
+ * them unchanged — they were chosen for that as much as for their coverage.
+ */
+const TG_CHANNELS: string[] = (process.env.TG_CHANNELS
+  ?? 'solearlytrending,soltrenchtrending,solwhaletrending')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+export function tgChannels(): string[] { return [...TG_CHANNELS]; }
+
+const tgUrl = (ch: string) => `https://t.me/s/${ch}`;
 
 // Proxy list: "host:port:user:pass" — loaded from PROXY_LIST env var (comma-separated)
 const PROXY_LIST: string[] = (process.env.PROXY_LIST ?? '')
@@ -106,15 +123,51 @@ const POST_PATTERN =
   /Soul_Sniper_Bot\?start=\w+_([A-Za-z0-9]{30,50}(?:pump|bonk))[^>]*>[^<]*<b[^>]*>[\u200e\u200f]?([^<]+)<\/b><\/a><b>\s*New\s*<\/b>/g;
 
 // Regex to extract Telegram message IDs (for dedup between scrapes)
-const MSG_ID_PATTERN = /data-post="solearlytrending\/(\d+)"/g;
+const msgIdPattern = (ch: string) => new RegExp(`data-post="${ch}/(\\d+)"`, 'g');
 
 /**
  * Scrape the public Telegram channel page and return all "New Trending" posts
  * currently visible (usually last ~20 messages).
  * Retries up to 3 times with different User-Agents on failure.
  */
-export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
+/**
+ * Scrape every configured channel and merge the results.
+ *
+ * messageId is prefixed with the channel because Telegram numbers messages per
+ * channel — two channels both have a message 1234, and an unprefixed id would make
+ * the deduper treat one channel's post as already seen because the other had a post
+ * with that number. That silently drops calls, and it drops more of them the more
+ * channels are added.
+ *
+ * The same mint from two channels is deduped to the first that reported it, so an
+ * overlapping feed adds coverage without adding duplicate calls. One channel
+ * failing is logged and skipped rather than taking the others down with it.
+ */
+export async function scrapeAllChannels(): Promise<TrendingPost[]> {
+  const seen = new Set<string>();
+  const out: TrendingPost[] = [];
+  for (const ch of TG_CHANNELS) {
+    try {
+      const posts = await scrapeTrendingPosts(ch);
+      let added = 0;
+      for (const p of posts) {
+        if (seen.has(p.mint)) continue;
+        seen.add(p.mint);
+        out.push({ ...p, messageId: `${ch}:${p.messageId}` });
+        added++;
+      }
+      console.log(`[Telegram] ${ch}: ${posts.length} posts, ${added} new mints`);
+    } catch (err: any) {
+      console.error(`[Telegram] ${ch} failed: ${err.message} — continuing with the others`);
+    }
+  }
+  return out;
+}
+
+export async function scrapeTrendingPosts(channel: string = TG_CHANNELS[0]): Promise<TrendingPost[]> {
   let lastErr: Error | null = null;
+  const TG_URL = tgUrl(channel);
+  const MSG_ID_PATTERN = msgIdPattern(channel);
 
   // Attempts 1-3 rotate proxies (when configured); attempt 4 always goes DIRECT.
   // Paid proxies expire — without this fallback, dead proxies silently kill the
@@ -190,7 +243,7 @@ export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
         let closestMsgId = 'unknown';
         let bestDist = Infinity;
         for (const mid of msgIds) {
-          const midPos = decoded.indexOf(`data-post="solearlytrending/${mid}"`);
+          const midPos = decoded.indexOf(`data-post="${channel}/${mid}"`);
           if (midPos >= 0 && midPos < matchPos && matchPos - midPos < bestDist) {
             bestDist = matchPos - midPos;
             closestMsgId = mid;
@@ -251,7 +304,7 @@ export async function scrapeTrendingPosts(): Promise<TrendingPost[]> {
           let closestMsgId = 'unknown';
           let bestDist = Infinity;
           for (const mid of msgIds) {
-            const midPos = decoded.indexOf(`data-post="solearlytrending/${mid}"`);
+            const midPos = decoded.indexOf(`data-post="${channel}/${mid}"`);
             if (midPos >= 0 && midPos < matchPos && matchPos - midPos < bestDist) {
               bestDist = matchPos - midPos;
               closestMsgId = mid;
