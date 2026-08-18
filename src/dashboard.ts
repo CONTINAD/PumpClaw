@@ -2306,6 +2306,21 @@ async function buildBundlesHTML(): Promise<string> {
  * their place — and one can be good raw and no better called, which means the
  * filters are only costing us volume there.
  */
+/**
+ * Channels — everything known about each feed we scrape.
+ *
+ * Three questions, deliberately kept apart because conflating them is how a channel
+ * gets judged on the wrong evidence:
+ *
+ *   RAW      every mint the channel posted, acted on or not — is it worth scraping?
+ *   CALLED   the subset that survived every filter — do our filters improve it?
+ *   COST     what the filters rejected and what those coins went on to do
+ *
+ * A channel can be poor raw and strong called, which is the filters earning their
+ * place. It can be good raw and no better called, meaning the filters only cost
+ * volume there. And it can have a skipped median above its called median, which
+ * means we are systematically throwing away that channel's winners.
+ */
 function buildChannelsHTML(): string {
   let obs: any[] = [];
   try { obs = JSON.parse(readFileSync(join(CONFIG.DATA_DIR, 'channel-audit.json'), 'utf-8')); } catch { /* none yet */ }
@@ -2314,117 +2329,269 @@ function buildChannelsHTML(): string {
   let skips: any[] = [];
   try { skips = JSON.parse(readFileSync(join(CONFIG.DATA_DIR, 'skips.json'), 'utf-8')); } catch { /* none */ }
 
-  const calledPeak = new Map<string, number>();
-  const callSource = new Map<string, string | undefined>();
+  const callPeak = new Map<string, number>();
+  const callMC = new Map<string, number>();
   for (const c of calls) {
-    if ((c.peakMultiplier ?? 0) > 0) calledPeak.set(c.mint, c.peakMultiplier);
-    callSource.set(c.mint, c.source);
+    if ((c.peakMultiplier ?? 0) > 0) callPeak.set(c.mint, c.peakMultiplier);
+    if (c.entryMC > 0) callMC.set(c.mint, c.entryMC);
   }
-  const skipReason = new Map<string, string>();
-  for (const s of skips) skipReason.set(s.mint, s.reason);
+  const skipInfo = new Map<string, { reason: string; peak?: number }>();
+  for (const s of skips) skipInfo.set(s.mint, { reason: s.reason, peak: s.peakMultiplier });
 
   const channels = [...new Set(obs.map(o => o.channel))].sort();
-  const med = (a: number[]) => a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : null;
+  const sorted = (a: number[]) => a.slice().sort((x, y) => x - y);
+  const med = (a: number[]) => a.length ? sorted(a)[Math.floor(a.length / 2)] : null;
   const share = (a: number[], f: (v: number) => boolean) => a.length ? Math.round(a.filter(f).length / a.length * 100) : null;
 
+  /**
+   * What one channel would have returned under a fixed exit rule.
+   *
+   * Peak alone flatters everything — no strategy captures a peak. This applies the
+   * shape the fleet's surviving strategies share (bank most at a modest target, cut
+   * otherwise) so channels are compared on something a trader could have actually
+   * held, not on their best candle.
+   */
+  const simulate = (peaks: number[], target: number, stop: number) => {
+    if (!peaks.length) return null;
+    const per = peaks.map(p => p >= target ? target - 1 : -(1 - stop));
+    return per.reduce((s, x) => s + x, 0) / per.length;   // SOL per 1 SOL staked
+  };
+
   const rows = channels.map(ch => {
-    const mine = obs.filter(o => o.channel === ch && o.peak !== undefined);
-    const raw = mine.map(o => o.peak as number);
-    const called = mine.filter(o => calledPeak.has(o.mint)).map(o => o.peak as number);
-    const skipped = mine.filter(o => !calledPeak.has(o.mint) && skipReason.has(o.mint)).map(o => o.peak as number);
-    const unseen = mine.length - called.length - skipped.length;
-    const rawMed = med(raw), callMed = med(called), skipMed = med(skipped);
+    const mine = obs.filter(o => o.channel === ch);
+    const measured = mine.filter(o => o.peak !== undefined);
+    const raw = measured.map(o => o.peak as number);
+    const called = measured.filter(o => callPeak.has(o.mint)).map(o => o.peak as number);
+    const skipped = measured.filter(o => !callPeak.has(o.mint) && skipInfo.has(o.mint)).map(o => o.peak as number);
+    const rawMed = med(raw), callMed = med(called);
+
+    // cadence, from the spread of post times we have recorded
+    const times = sorted(mine.map(o => o.postedAt));
+    const spanH = times.length > 1 ? (times[times.length - 1] - times[0]) / 3600_000 : 0;
+
+    // which filters fired on this channel's coins, and what they cost
+    const filterHits: Record<string, { n: number; doubled: number }> = {};
+    for (const o of mine) {
+      const si = skipInfo.get(o.mint);
+      if (!si) continue;
+      const f = filterHits[si.reason] ??= { n: 0, doubled: 0 };
+      f.n++;
+      if ((si.peak ?? o.peak ?? 0) >= 2) f.doubled++;
+    }
+
     return {
-      ch, n: mine.length, pending: obs.filter(o => o.channel === ch && o.peak === undefined).length,
-      raw, called, skipped, unseen, rawMed, callMed, skipMed,
-      rawDied: share(raw, v => v < 0.5), raw2x: share(raw, v => v >= 2),
-      call2x: share(called, v => v >= 2), skip2x: share(skipped, v => v >= 2),
+      ch, recorded: mine.length, n: measured.length,
+      pending: mine.length - measured.length,
+      raw, called, skipped, rawMed, callMed, skipMed: med(skipped),
+      rawDied: share(raw, v => v < 0.5),
+      raw15: share(raw, v => v >= 1.5), raw2: share(raw, v => v >= 2),
+      raw5: share(raw, v => v >= 5), raw10: share(raw, v => v >= 10),
+      call2: share(called, v => v >= 2),
       lift: rawMed && callMed ? callMed / rawMed : null,
       best: raw.length ? Math.max(...raw) : null,
+      perHour: spanH > 0.5 ? mine.length / spanH : null,
+      sim15: simulate(raw, 1.5, 0.85), sim2: simulate(raw, 2, 0.85),
+      simCalled15: simulate(called, 1.5, 0.85),
+      mcMed: (() => { const m = measured.map(o => callMC.get(o.mint)).filter((x): x is number => !!x); return med(m); })(),
+      filterHits,
+      mints: measured,
     };
   });
-
-  const c = (v: number | null, good: number) => v === null ? 'var(--text3)' : v >= good ? '#10b981' : v > good * 0.6 ? '#eab308' : '#ef4444';
-  const fmt = (v: number | null, s = 'x') => v === null ? '—' : `${v.toFixed(2)}${s}`;
-  const pct = (v: number | null) => v === null ? '—' : `${v}%`;
 
   const totalMeasured = rows.reduce((s, r) => s + r.n, 0);
   const totalPending = rows.reduce((s, r) => s + r.pending, 0);
 
+  const fmt = (v: number | null, d = 2, suf = 'x') => v === null ? '—' : `${v.toFixed(d)}${suf}`;
+  const pct = (v: number | null) => v === null ? '—' : `${v}%`;
+  const col = (v: number | null, good: number) => v === null ? 'var(--text3)' : v >= good ? '#10b981' : v > good * 0.6 ? '#eab308' : '#ef4444';
+  const signed = (v: number | null) => v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(3)}`;
+
+  const tile = (label: string, value: string, sub: string, color?: string) => `
+    <div style="flex:1;min-width:140px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">${label}</div>
+      <div style="font-size:19px;font-weight:700;margin:4px 0;color:${color ?? 'var(--text)'}">${value}</div>
+      <div style="font-size:11px;color:var(--text3)">${sub}</div>
+    </div>`;
+
+  const bestRaw = rows.filter(r => r.n >= 20).sort((a, b) => (b.rawMed ?? 0) - (a.rawMed ?? 0))[0];
+  const bestLift = rows.filter(r => r.lift !== null && r.called.length >= 10).sort((a, b) => (b.lift ?? 0) - (a.lift ?? 0))[0];
+
+  // ── overlap: how much of each channel is unique to it ──
+  const mintsBy = new Map<string, Set<string>>();
+  for (const ch of channels) mintsBy.set(ch, new Set(obs.filter(o => o.channel === ch).map(o => o.mint)));
+  const overlapRows = channels.map(a => ({
+    a,
+    cells: channels.map(b => {
+      if (a === b) return null;
+      const A = mintsBy.get(a)!, B = mintsBy.get(b)!;
+      return A.size ? Math.round([...A].filter(m => B.has(m)).length / A.size * 100) : 0;
+    }),
+    unique: (() => {
+      const A = mintsBy.get(a)!;
+      const others = channels.filter(c => c !== a).flatMap(c => [...mintsBy.get(c)!]);
+      const set = new Set(others);
+      return A.size ? Math.round([...A].filter(m => !set.has(m)).length / A.size * 100) : 0;
+    })(),
+  }));
+
+  const empty = totalMeasured === 0;
+
   return settingsShell(`
   <div class="card" style="max-width:none">
-    <h3>📡 Channels</h3>
-    <p style="font-size:13px;color:var(--text2);line-height:1.7">
-      Two questions that get confused. <b>Raw</b> is every mint a channel posted, whether we acted on it or not —
-      that is whether the channel is worth scraping. <b>Called</b> is the subset that survived every filter and
-      became a PumpClaw call — that is whether our filters improve what the channel gives us.
-    </p>
-    <p style="font-size:12px;color:var(--text3);line-height:1.6;margin-top:8px">
-      A channel can be poor raw and strong called, which is the filters earning their place. It can also be good raw
-      and no better called, which means the filters are only costing volume there. Every coin is measured at least
-      2 hours after it was posted, so its peak means something. <b>Median, not best</b> — best is one coin, and
-      choosing on it picks the luckiest channel rather than the best one.
-    </p>
-    <div style="margin-top:10px;font-size:12px;color:var(--text2)">
-      ${totalMeasured} measured · ${totalPending} recorded and awaiting age · refreshes every 20 min
+    <h3>📡 Channels — everything</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+      ${tile('Measured', String(totalMeasured), `${totalPending} awaiting age`)}
+      ${tile('Channels', String(channels.length), 'scraped right now')}
+      ${tile('Best raw', bestRaw ? bestRaw.ch.slice(0, 14) : '—', bestRaw ? `median ${fmt(bestRaw.rawMed)}` : 'need 20+ measured', bestRaw ? '#10b981' : undefined)}
+      ${tile('Best filter lift', bestLift ? bestLift.ch.slice(0, 14) : '—', bestLift && bestLift.lift ? `${((bestLift.lift - 1) * 100).toFixed(0)}% over raw` : 'need 10+ called', bestLift ? '#10b981' : undefined)}
     </div>
+    <p style="font-size:12px;color:var(--text2);line-height:1.7">
+      <b>RAW</b> is every mint a channel posted — whether the channel is worth scraping.
+      <b>CALLED</b> is the subset that survived every filter — whether our filters improve it.
+      Coins are measured at least 2h after posting so the peak means something, and every comparison uses the
+      <b>median</b>: best is one coin, and choosing on it picks the luckiest channel rather than the best one.
+    </p>
   </div>
 
-  ${!totalMeasured ? `<div class="card" style="max-width:none">
-    <h3>Nothing measured yet</h3>
+  ${empty ? `<div class="card" style="max-width:none">
+    <h3>Nothing measured yet — this is expected</h3>
     <p style="font-size:13px;color:var(--text2);line-height:1.7">
       ${totalPending} posts are recorded and waiting. A coin needs about two hours before its peak means anything,
-      and t.me only shows roughly an hour of posts, so the first numbers appear a couple of hours after this starts
-      and a usable sample takes a day or two. Nothing is broken.
+      and t.me only shows about an hour of posts, so the first numbers arrive a couple of hours after this starts
+      and a usable sample takes a day. The audit runs every 20 minutes on its own.
     </p>
   </div>` : `
   <div class="card" style="max-width:none">
-    <h3>Is the channel worth scraping? <span style="font-size:12px;color:var(--text3);font-weight:400">— raw feed, before our filters</span></h3>
+    <h3>Feed quality <span style="font-size:12px;color:var(--text3);font-weight:400">— raw, before our filters</span></h3>
     <div style="overflow-x:auto"><table>
-      <tr><th>Channel</th><th>measured</th><th>pending</th><th>died</th><th>hit 2x</th><th>median peak</th><th>best</th></tr>
-      ${rows.sort((a, b) => (b.rawMed ?? 0) - (a.rawMed ?? 0)).map(r => `<tr${r.n < 20 ? ' style="opacity:.65"' : ''}>
-        <td><b>${r.ch}</b>${r.n < 20 ? ' <span style="color:#f59e0b;font-size:11px">thin</span>' : ''}</td>
+      <tr><th>Channel</th><th>n</th><th>pend</th><th>posts/hr</th><th>died</th><th>1.5x</th><th>2x</th><th>5x</th><th>10x</th><th>median</th><th>best</th></tr>
+      ${rows.slice().sort((a, b) => (b.rawMed ?? 0) - (a.rawMed ?? 0)).map(r => `<tr${r.n < 20 ? ' style="opacity:.6"' : ''}>
+        <td><b>${r.ch}</b>${r.n < 20 ? ' <span style="color:#f59e0b;font-size:10px">thin</span>' : ''}</td>
         <td class="mono">${r.n}</td>
         <td class="mono" style="color:var(--text3)">${r.pending}</td>
+        <td class="mono" style="color:var(--text2)">${r.perHour ? r.perHour.toFixed(1) : '—'}</td>
         <td class="mono" style="color:${r.rawDied !== null && r.rawDied > 60 ? '#ef4444' : 'var(--text2)'}">${pct(r.rawDied)}</td>
-        <td class="mono">${pct(r.raw2x)}</td>
-        <td class="mono" style="color:${c(r.rawMed, 1.5)};font-weight:700">${fmt(r.rawMed)}</td>
-        <td class="mono" style="color:var(--text3)">${fmt(r.best)}</td>
+        <td class="mono">${pct(r.raw15)}</td><td class="mono">${pct(r.raw2)}</td>
+        <td class="mono">${pct(r.raw5)}</td><td class="mono">${pct(r.raw10)}</td>
+        <td class="mono" style="color:${col(r.rawMed, 1.5)};font-weight:700">${fmt(r.rawMed)}</td>
+        <td class="mono" style="color:var(--text3)">${fmt(r.best, 1)}</td>
       </tr>`).join('')}
     </table></div>
   </div>
 
   <div class="card" style="max-width:none">
-    <h3>Do our filters improve it? <span style="font-size:12px;color:var(--text3);font-weight:400">— what we called vs what we passed on</span></h3>
+    <h3>Do our filters improve it?</h3>
     <div style="overflow-x:auto"><table>
-      <tr><th>Channel</th><th>raw median</th><th>called</th><th>called median</th><th>skipped</th><th>skipped median</th><th>lift</th></tr>
-      ${rows.sort((a, b) => (b.lift ?? 0) - (a.lift ?? 0)).map(r => `<tr>
+      <tr><th>Channel</th><th>raw median</th><th>called</th><th>called median</th><th>skipped</th><th>skipped median</th><th>lift</th><th>verdict</th></tr>
+      ${rows.slice().sort((a, b) => (b.lift ?? 0) - (a.lift ?? 0)).map(r => {
+        const alarm = r.skipMed !== null && r.callMed !== null && r.skipMed > r.callMed;
+        const verdict = r.called.length < 10 ? '<span style="color:var(--text3)">too few called</span>'
+          : alarm ? '<span style="color:#ef4444">rejecting winners</span>'
+          : r.lift !== null && r.lift >= 1.2 ? '<span style="color:#10b981">filters earning it</span>'
+          : r.lift !== null && r.lift >= 1 ? '<span style="color:#eab308">marginal</span>'
+          : '<span style="color:#ef4444">filters not helping</span>';
+        return `<tr>
+          <td><b>${r.ch}</b></td>
+          <td class="mono" style="color:var(--text2)">${fmt(r.rawMed)}</td>
+          <td class="mono">${r.called.length}</td>
+          <td class="mono" style="color:${col(r.callMed, 1.5)};font-weight:700">${fmt(r.callMed)}</td>
+          <td class="mono" style="color:var(--text3)">${r.skipped.length}</td>
+          <td class="mono" style="color:${alarm ? '#ef4444' : 'var(--text2)'}">${fmt(r.skipMed)}</td>
+          <td class="mono" style="color:${r.lift === null ? 'var(--text3)' : r.lift >= 1.2 ? '#10b981' : r.lift >= 1 ? '#eab308' : '#ef4444'};font-weight:700">
+            ${r.lift === null ? '—' : `${r.lift >= 1 ? '+' : ''}${((r.lift - 1) * 100).toFixed(0)}%`}</td>
+          <td style="font-size:11px">${verdict}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>
+    <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-top:10px">
+      <b>lift</b> is called median over raw median — above zero the filters picked better than that channel's average,
+      below zero they picked worse than choosing at random from it. <b>skipped median above called median</b> is the
+      alarm: it means the filters are removing that channel's winners rather than its losers.
+    </p>
+  </div>
+
+  <div class="card" style="max-width:none">
+    <h3>What it would have paid <span style="font-size:12px;color:var(--text3);font-weight:400">— per 1 SOL staked, fixed exit</span></h3>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Channel</th><th>1.5x target</th><th>2x target</th><th>1.5x on called only</th><th>median entry MC</th></tr>
+      ${rows.slice().sort((a, b) => (b.sim15 ?? -9) - (a.sim15 ?? -9)).map(r => `<tr>
         <td><b>${r.ch}</b></td>
-        <td class="mono" style="color:var(--text2)">${fmt(r.rawMed)}</td>
-        <td class="mono">${r.called.length}</td>
-        <td class="mono" style="color:${c(r.callMed, 1.5)};font-weight:700">${fmt(r.callMed)}</td>
-        <td class="mono" style="color:var(--text3)">${r.skipped.length}</td>
-        <td class="mono" style="color:var(--text2)">${fmt(r.skipMed)}</td>
-        <td class="mono" style="color:${r.lift === null ? 'var(--text3)' : r.lift >= 1.2 ? '#10b981' : r.lift >= 1 ? '#eab308' : '#ef4444'};font-weight:700">
-          ${r.lift === null ? '—' : `${r.lift >= 1 ? '+' : ''}${((r.lift - 1) * 100).toFixed(0)}%`}</td>
+        <td class="mono" style="color:${(r.sim15 ?? -1) > 0.03 ? '#10b981' : (r.sim15 ?? -1) > 0 ? '#eab308' : '#ef4444'};font-weight:700">${signed(r.sim15)}</td>
+        <td class="mono" style="color:${(r.sim2 ?? -1) > 0.03 ? '#10b981' : (r.sim2 ?? -1) > 0 ? '#eab308' : '#ef4444'}">${signed(r.sim2)}</td>
+        <td class="mono" style="color:${(r.simCalled15 ?? -1) > 0.03 ? '#10b981' : (r.simCalled15 ?? -1) > 0 ? '#eab308' : '#ef4444'}">${signed(r.simCalled15)}</td>
+        <td class="mono" style="color:var(--text2)">${r.mcMed ? '$' + Math.round(r.mcMed / 1000) + 'K' : '—'}</td>
       </tr>`).join('')}
     </table></div>
     <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-top:10px">
-      <b>lift</b> is called median over raw median. Above zero means the filters picked better than the channel's
-      average; below zero means they picked worse than picking at random from that channel, which is worth knowing.
-      <b>skipped median</b> is what we passed on — if it is higher than what we called, the filters are removing the
-      wrong coins. A blank means too few of that channel's posts have been both measured and judged yet.
+      Buy every post, take profit at the target, cut at −15% otherwise. Not a strategy to run — a common yardstick, so
+      channels are compared on something a trader could have held rather than on their best candle. Real fees are about
+      <b>0.03/trade</b>, so anything under that green line loses money in practice.
     </p>
+  </div>
+
+  <div class="card" style="max-width:none">
+    <h3>Overlap <span style="font-size:12px;color:var(--text3);font-weight:400">— how much each channel duplicates the others</span></h3>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Channel</th>${channels.map(c => `<th style="font-size:10px">${c.slice(0, 10)}</th>`).join('')}<th>unique to it</th></tr>
+      ${overlapRows.map(r => `<tr>
+        <td><b>${r.a}</b></td>
+        ${r.cells.map(v => `<td class="mono" style="color:${v === null ? 'var(--border2)' : v > 60 ? '#ef4444' : v > 30 ? '#eab308' : 'var(--text2)'}">${v === null ? '·' : v + '%'}</td>`).join('')}
+        <td class="mono" style="color:${r.unique >= 50 ? '#10b981' : r.unique >= 25 ? '#eab308' : '#ef4444'};font-weight:700">${r.unique}%</td>
+      </tr>`).join('')}
+    </table></div>
+    <p style="font-size:11px;color:var(--text3);margin-top:8px">
+      Read a row as "this share of MY posts also appeared on that channel". A channel with low unique share is paying
+      rate limit and scrape time to tell us things we already knew.
+    </p>
+  </div>
+
+  ${rows.some(r => Object.keys(r.filterHits).length) ? `<div class="card" style="max-width:none">
+    <h3>Which filters fire, per channel</h3>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Channel</th><th>filter</th><th>blocked</th><th>of those, doubled</th></tr>
+      ${rows.flatMap(r => Object.entries(r.filterHits).sort((a, b) => b[1].n - a[1].n).map(([f, v], i) => `<tr>
+        <td>${i === 0 ? `<b>${r.ch}</b>` : ''}</td>
+        <td style="font-size:12px">${f}</td>
+        <td class="mono">${v.n}</td>
+        <td class="mono" style="color:${v.doubled / Math.max(1, v.n) > 0.08 ? '#ef4444' : 'var(--text2)'}">${v.doubled} (${Math.round(v.doubled / Math.max(1, v.n) * 100)}%)</td>
+      </tr>`)).join('')}
+    </table></div>
+    <p style="font-size:11px;color:var(--text3);margin-top:8px">
+      A filter blocking a lot of a channel's coins is fine. A filter whose blocked coins keep doubling is not — that is
+      the filter costing us that channel's winners specifically.
+    </p>
+  </div>` : ''}
+
+  <div class="card" style="max-width:none">
+    <h3>Recent measured coins</h3>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Coin</th><th>Channel</th><th>peak</th><th>what we did</th><th></th></tr>
+      ${rows.flatMap(r => r.mints.map((o: any) => ({ ...o, ch: r.ch })))
+        .sort((a: any, b: any) => b.postedAt - a.postedAt).slice(0, 40).map((o: any) => {
+          const si = skipInfo.get(o.mint);
+          const did = callPeak.has(o.mint) ? '<span style="color:#10b981">called</span>'
+            : si ? `<span style="color:#ef4444">skipped — ${si.reason}</span>`
+            : '<span style="color:var(--text3)">not evaluated</span>';
+          return `<tr>
+            <td class="mono" style="font-size:11px">${o.mint.slice(0, 10)}…</td>
+            <td style="font-size:11px;color:var(--text2)">${o.ch}</td>
+            <td class="mono" style="color:${col(o.peak, 1.5)};font-weight:700">${fmt(o.peak)}</td>
+            <td style="font-size:11px">${did}</td>
+            <td><a href="https://dexscreener.com/solana/${o.mint}" target="_blank" rel="noopener" style="color:#3b82f6;font-size:11px;text-decoration:none">chart →</a></td>
+          </tr>`;
+        }).join('')}
+    </table></div>
   </div>`}
 
   <div class="card" style="max-width:none">
-    <h3>Reading this tomorrow</h3>
+    <h3>How to read this</h3>
     <ul style="font-size:12px;color:var(--text2);line-height:1.9;padding-left:18px">
-      <li>Under 20 measured is a story, not a statistic — those rows are dimmed and marked thin.</li>
-      <li>A high <b>died</b> rate with a good <b>lift</b> means a noisy channel our filters handle well. Keep both.</li>
-      <li>A good raw median with lift near zero means the filters add nothing there — the channel is doing the work.</li>
-      <li><b>skipped median above called median</b> is the alarm: we are systematically rejecting that channel's winners.</li>
-      <li>Channels are set by <b>TG_CHANNELS</b> in Railway; removing one is a single edit and takes effect on restart.</li>
+      <li><b>Under 20 measured is a story, not a statistic.</b> Those rows are dimmed and marked thin.</li>
+      <li>High <b>died</b> with good <b>lift</b> — a noisy channel our filters handle well. Keep both.</li>
+      <li>Good raw median with <b>lift near zero</b> — the filters add nothing there; the channel is doing the work.</li>
+      <li><b>skipped median above called median</b> — we are rejecting that channel's winners. Look at which filter.</li>
+      <li>Low <b>unique</b> share — the channel is mostly duplicating another and paying scrape time for it.</li>
+      <li>Everything measured at least 2h after posting. Channels are set by <b>TG_CHANNELS</b> in Railway.</li>
     </ul>
   </div>`, '/channels');
 }
