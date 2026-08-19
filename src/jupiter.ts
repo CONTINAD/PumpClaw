@@ -79,6 +79,38 @@ async function rateLimitedQuote(urgent = false): Promise<void> {
   _lastQuoteTime = Date.now();
 }
 
+/**
+ * Prove the configured Jupiter credentials actually work.
+ *
+ * "A key is set" and "the key is accepted" are different claims, and the config
+ * cannot tell them apart — a wrong key produces exactly the same startup log as a
+ * right one, then fails every request. So this asks Jupiter, with a real quote on
+ * a pair that always routes.
+ *
+ * Cached, because health gets polled and this is the one check that costs quota.
+ */
+let _probe: { at: number; ok: boolean; status: number | string; ms: number } | null = null;
+
+export async function jupiterProbe(maxAgeMs = 60_000): Promise<{ ok: boolean; status: number | string; ms: number }> {
+  if (_probe && Date.now() - _probe.at < maxAgeMs) {
+    const { ok, status, ms } = _probe;
+    return { ok, status, ms };
+  }
+  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const url = `${JUPITER_QUOTE}?inputMint=${WSOL_MINT}&outputMint=${USDC}&amount=100000000&slippageBps=100`;
+  const t0 = Date.now();
+  try {
+    const res = await fetch(url, { headers: jupHeaders(), signal: AbortSignal.timeout(8_000) });
+    const ms = Date.now() - t0;
+    _probe = { at: Date.now(), ok: res.ok, status: res.status, ms };
+    return { ok: res.ok, status: res.status, ms };
+  } catch (err: any) {
+    const ms = Date.now() - t0;
+    _probe = { at: Date.now(), ok: false, status: err?.name ?? 'error', ms };
+    return { ok: false, status: err?.name ?? 'error', ms };
+  }
+}
+
 export interface SwapResult {
   txSignature: string;
   inputAmount: number;     // raw units
