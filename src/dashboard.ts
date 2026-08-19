@@ -3732,8 +3732,35 @@ export function startDashboard(port?: number): void {
           tradeEnabled: CONFIG.TRADE_ENABLED,
           taskCount: tasks.length,
           enabledCount: tasks.filter(t => t.enabled).length,
-          entryPct: tasks[0]?.strategy.entryPct ?? 0.1,
-          trailingDrop: tasks[0]?.strategy.trailingDrop ?? 0.45,
+          // tasks[0] is whatever sits first in the map — with 2,300 paper strategies
+          // and one real task that is essentially always a paper preset, so these
+          // fields were reporting a random strategy's settings on a page about real
+          // money. Report the real tasks explicitly instead.
+          realTasks: tasks.filter(t => !t.paper).map(t => ({
+            name: t.name,
+            enabled: t.enabled,
+            preset: t.strategy.preset,
+            entryPct: t.strategy.entryPct,
+            minEntrySol: t.strategy.minEntrySol,
+            maxEntrySol: t.strategy.maxEntrySol,
+            entryMode: t.strategy.entryMode,
+            dipPct: t.strategy.dipPct,
+            dipWindowMin: t.strategy.dipWindowMin,
+            tps: t.strategy.tps,
+            trailingDrop: t.strategy.trailingDrop,
+            trailingFrom: t.strategy.trailingFrom,
+            stopLossPct: t.strategy.stopLossPct,
+            breakEvenAfterTp1: t.strategy.breakEvenAfterTp1,
+            maxHoldMin: t.strategy.maxHoldMin,
+            sources: t.sources ?? null,
+            // How many consecutive losses before entries fall under the minimum and
+            // the bot silently stops buying — the failure that logs a line and no alert.
+            lossesUntilStalled: (() => {
+              let b = balance ?? 0, n = 0;
+              while (n < 99 && b * t.strategy.entryPct >= t.strategy.minEntrySol) { b -= b * t.strategy.entryPct * 0.25; n++; }
+              return n;
+            })(),
+          })),
           strategy: 'per-task',
           open,
         }));
