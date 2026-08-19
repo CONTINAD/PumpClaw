@@ -375,7 +375,18 @@ async function fastScanCycle() {
   let alertCount = 0;
   for (const post of freshPosts) {
     const market = marketData.get(post.mint);
-    if (!market) continue;
+    if (!market) {
+      // The one discard in this loop that left no trace. Every other rejection below
+      // records its reason, so "why did it not buy X" is answerable — except when the
+      // market lookup came back empty, which is common on a pair DexScreener has not
+      // indexed yet, i.e. exactly the newest coins. Those vanished silently and the
+      // skip log quietly under-counted itself.
+      //
+      // This is not a judgement about the coin, so it is recorded as its own reason
+      // rather than folded in with the filters.
+      recordSkip(post, 'NO_MARKET_DATA', 'no market data returned at scan time', 0);
+      continue;
+    }
 
     // Entry ceiling. A coin already at six figures has made its move; in the 7-day
     // sample nothing called above $100K reached 2x, median peak 1.06x.
