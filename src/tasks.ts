@@ -74,6 +74,7 @@ class TaskManager {
     this.migrateLegacy();
     this.repairOrphanedTasks();
     this.seedShadowFleet();
+    this.loadBuyLog();
   }
 
   // ── Pending dip entries ──
@@ -388,6 +389,22 @@ class TaskManager {
    * number honest. Paper only: real positions hold actual tokens and must be sold on
    * chain, never marked closed in a book.
    */
+  private buyLogFile(): string { return `${CONFIG.DATA_DIR}/buy-log.json`; }
+
+  private saveBuyLog(): void {
+    try {
+      mkdirSync(CONFIG.DATA_DIR, { recursive: true });
+      writeFileSync(this.buyLogFile(), JSON.stringify(this.buyLog));
+    } catch { /* diagnostic only — never break a trade over it */ }
+  }
+
+  loadBuyLog(): void {
+    try {
+      const rows = JSON.parse(readFileSync(this.buyLogFile(), 'utf-8'));
+      if (Array.isArray(rows)) this.buyLog.push(...rows.slice(0, 200));
+    } catch { /* none yet */ }
+  }
+
   async closeAllPaper(priceOf: (mint: string) => number | undefined): Promise<{ closed: number; tasks: number; realisedSol: number; unpriced: number }> {
     let closed = 0, tasks = 0, realised = 0, unpriced = 0;
     for (const t of this.all()) {
@@ -458,6 +475,14 @@ class TaskManager {
   private lastNoFillAlert = 0;
 
   /** Rolling record of what each live task did with each call. */
+  /**
+   * Why each call did or did not become a trade.
+   *
+   * This was in memory only, so every restart wiped it — and a restart is usually a
+   * deploy, which is exactly the moment the previous failures matter most. Twice
+   * today the log was empty right after a fix and there was no way to tell whether
+   * that meant "nothing failed" or "the evidence is gone".
+   */
   readonly buyLog: { ts: number; task: string; symbol: string; mint: string; bought: boolean; reason: string | null }[] = [];
   private consecutiveMisses = new Map<string, number>();
   private lastMissAlert = new Map<string, number>();
@@ -472,6 +497,7 @@ class TaskManager {
   private noteBuyOutcome(task: TradeTask, symbol: string, mint: string, bought: boolean, reason: string | null): void {
     this.buyLog.unshift({ ts: Date.now(), task: task.name, symbol, mint, bought, reason });
     if (this.buyLog.length > 200) this.buyLog.pop();
+    this.saveBuyLog();
 
     if (bought) { this.consecutiveMisses.set(task.id, 0); return; }
     const n = (this.consecutiveMisses.get(task.id) ?? 0) + 1;
