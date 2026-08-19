@@ -5287,6 +5287,36 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/api/trades') {
+      // Per-trade outcomes for one strategy, so a projection can bootstrap from the
+      // real distribution instead of assuming a shape.
+      //
+      // Assuming one is how a projection ends up claiming a 100% success rate: these
+      // strategies have a NEGATIVE median trade and a strongly positive mean, so most
+      // trades lose a little and a few win large. A two-point win/loss model cannot
+      // represent that and understates the variance enormously.
+      try {
+        const want = decodeURIComponent((url.match(/[?&]key=([^&]+)/) || [])[1] ?? '');
+        const t = taskManager.all().find(x => x.paper && (x.strategy.preset === want || x.name.replace('📄 ', '') === want));
+        if (!t) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end('{"error":"no such strategy"}'); return; }
+        const closed = taskManager.traderFor(t).getAllPositions()
+          .filter(p => p.status === 'closed' && p.entrySol > 0);
+        const rets = closed.map(p => +(((p.totalSolReturned ?? 0) - p.entrySol) / p.entrySol).toFixed(5))
+          .sort((a, b) => a - b);
+        const q = (f: number) => rets.length ? rets[Math.min(rets.length - 1, Math.floor(rets.length * f))] : 0;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          strategy: t.name.replace('📄 ', ''), key: t.strategy.preset,
+          trades: rets.length,
+          mean: rets.length ? +(rets.reduce((a, b) => a + b, 0) / rets.length).toFixed(4) : 0,
+          median: q(0.5), p10: q(0.1), p25: q(0.25), p75: q(0.75), p90: q(0.9),
+          worst: rets[0] ?? 0, best: rets[rets.length - 1] ?? 0,
+          returns: rets,
+        }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/simulate') {
       // Walk a strategy through the real minute paths and compound the result.
       //
