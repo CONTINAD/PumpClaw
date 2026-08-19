@@ -699,7 +699,7 @@ export class Trader {
 
     // Forced exit (e.g. the source caller posted a sell) — dump the rest at market
     if (forceExitLabel) {
-      await executeSell('source_exit', forceExitLabel, pos.remainingPct);
+      const srcExit = await executeSell('source_exit', forceExitLabel, pos.remainingPct);
       if (pos.remainingPct < 0.001 && pos.status === 'open') {
         pos.status = 'closed';
         pos.closedTime = Date.now();
@@ -707,7 +707,7 @@ export class Trader {
         if (!this.paper) closeTokenAccount(mint, this.kp()).catch(() => {});
       }
       this.save();
-      return newExits;
+      if (srcExit) return newExits;   // last of the three: a failed exit disarms nothing
     }
 
     // ── Take profit levels (generalized: any number of TPs from the strategy) ──

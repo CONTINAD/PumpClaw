@@ -1524,7 +1524,19 @@ async function missedExitAuditor() {
         const trailLvl = pos.trailingActive ? pos.trailingStopPrice : 0;
         const hardFloor = pos.entryPrice * (1 - CONFIG.TRADE_MAX_LOSS_PCT);
         const shouldExitAt = Math.max(pos.stopLossPrice, trailLvl);
-        const breached = px <= shouldExitAt * BAND || px <= hardFloor;
+
+        // The clock is an exit too, and this only ever audited price levels. A
+        // position that blew through its hold time sat here indefinitely so long as
+        // it stayed above its stop — which is precisely how $mRNA-4157 held for
+        // three hours against a five-minute clock while this layer, the one meant to
+        // catch exactly that, never looked. Ten minutes past the clock is not a race
+        // with the position loop at any hold length; it means the loop is not
+        // getting out.
+        const holdMin = (task as any).strategy?.maxHoldMin ?? 0;
+        const heldMin = (Date.now() - pos.entryTime) / 60_000;
+        const clockBlown = holdMin > 0 && heldMin >= holdMin + 10;
+
+        const breached = px <= shouldExitAt * BAND || px <= hardFloor || clockBlown;
         if (!breached) { seenBelow.delete(pos.mint); continue; }
 
         const since = seenBelow.get(pos.mint) ?? Date.now();
@@ -1532,11 +1544,13 @@ async function missedExitAuditor() {
         if (Date.now() - since < GRACE_MS) continue;
 
         const mult = pos.entryPrice > 0 ? px / pos.entryPrice : 0;
-        log(`🚨 MISSED EXIT [${task.name}] $${pos.symbol} at ${mult.toFixed(2)}X — should have exited at ` +
-            `${(shouldExitAt / pos.entryPrice).toFixed(2)}X and is still open. Force-selling.`);
+        const why = clockBlown
+          ? `is ${heldMin.toFixed(0)}m into a ${holdMin}m clock`
+          : `should have exited at ${(shouldExitAt / pos.entryPrice).toFixed(2)}X`;
+        log(`🚨 MISSED EXIT [${task.name}] $${pos.symbol} at ${mult.toFixed(2)}X — ${why} and is still open. Force-selling.`);
         sendOpsAlert(
           `🚨 **Missed exit caught** — **${task.name}** still holds **$${pos.symbol}** at **${mult.toFixed(2)}X**, ` +
-          `below its exit level of ${(shouldExitAt / pos.entryPrice).toFixed(2)}X for over 90 seconds. ` +
+          `${clockBlown ? `${heldMin.toFixed(0)} minutes into a ${holdMin}-minute clock` : `below its exit level of ${(shouldExitAt / pos.entryPrice).toFixed(2)}X for over 90 seconds`}. ` +
           `The position loop did not act, so the auditor is force-selling. This is a bug worth looking at.`,
           CONFIG.TRADES_WEBHOOK,
         ).catch(() => {});
