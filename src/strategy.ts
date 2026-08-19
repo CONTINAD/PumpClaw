@@ -1120,6 +1120,105 @@ for (const dp of [35, 45, 55]) {
 
 GRID.push(...GRID9);
 
+// ── GRID10 (214) ────────────────────────────────────────────
+//
+// Targeted at holes, not breadth. Two regions in the fleet beat the base rate by an
+// order of magnitude, and the obvious combination of them does not exist:
+//
+//   instant + hold <= 3 min     23 of 48 clear fees (47%)   base rate 3%
+//   dip 30-45% + trail 10-20%    6 of 15 clear fees (40%)   base rate 3%
+//   hold <= 3 min WITH a trail   0 strategies
+//   trail 12-16% + a time cap    0 strategies
+//
+// Both regions are also what the captured price paths independently predict: median
+// time-to-peak is 3 minutes and median pre-peak dip is 0.712x. A short clock and a
+// trail are two ways of saying the same thing — leave while the move is still
+// happening — and nothing tests them together.
+//
+// No single strategy in the fleet clears the noise bar (best t=2.72 against 3.90 for
+// 1,982 candidates) and adding more raises that bar. These are placed to make the
+// two regions decidable, not to find a new leader.
+const GRID10: Spec[] = [];
+const n10 = (x: number) => String(x).replace('.', '');
+
+// ── A. Short clock crossed with a trail (48) ────────────────
+// The gap that matters most: a clock caps how long the edge is given to decay, a
+// trail caps how much of a move is given back. They fail in different ways, so a
+// coin that peaks at 90 seconds and one that grinds up for ten minutes are handled
+// by different halves.
+for (const hold of [1, 2, 3, 5]) {
+  for (const tr of [8, 10, 12, 15, 20]) {
+    for (const [en, dip] of [['i', 0], ['d20', 0.20]] as [string, number][]) {
+      if (GRID10.length >= 48) break;
+      GRID10.push({
+        key: `gA${hold}t${tr}${en}`,
+        name: `${dip ? 'Dip −20%' : 'Instant'} → trail ${tr}% or ${hold}m`,
+        desc: `Trails at ${tr}% and closes at ${hold} minute${hold === 1 ? '' : 's'} regardless. Median time-to-peak is 3 minutes; a clock and a trail cap different failures and nothing in the fleet combines them.`,
+        dip: dip || undefined, win: dip ? 10 : undefined,
+        hold, trail: tr / 100, trailFrom: 'entry', stop: (100 - tr) / 100,
+      });
+    }
+  }
+}
+
+// ── B. The contested trail band, with a cap (40) ────────────
+// 12-16% is where the fleet's sampled prices and the true-candle simulator disagree
+// most — one says tighter is better, the other says this band. Neither has a version
+// with a time cap, which is the cheapest way to stop that argument mattering.
+for (const tr of [12, 13, 14, 15, 16]) {
+  for (const hold of [2, 3, 5, 10]) {
+    for (const [en, dip] of [['i', 0], ['d30', 0.30]] as [string, number][]) {
+      if (GRID10.filter(g => g.key.startsWith('gB')).length >= 40) break;
+      GRID10.push({
+        key: `gB${tr}h${hold}${en}`,
+        name: `${dip ? 'Dip −30%' : 'Instant'} → trail ${tr}%, cap ${hold}m`,
+        desc: `The band where the two measurement methods disagree, with a ${hold}-minute cap so the disagreement matters less.`,
+        dip: dip || undefined, win: dip ? 10 : undefined,
+        hold, trail: tr / 100, trailFrom: 'entry', stop: (100 - tr) / 100,
+      });
+    }
+  }
+}
+
+// ── C. Deep dip × tight trail, properly covered (72) ────────
+// The strongest region in the fleet and the thinnest — fifteen strategies carrying
+// a 40% clear rate. A deep entry buys the discount a stop would otherwise have to
+// protect, which is why the tight trail survives here and not on instant entries.
+for (const dp of [30, 35, 40, 45]) {
+  for (const tr of [8, 10, 12, 15, 18, 20]) {
+    for (const [tn, tp] of [['0', 0], ['15', 1.5], ['2', 2]] as [string, number][]) {
+      GRID10.push({
+        key: `gC${dp}t${tr}${tn}`,
+        name: `Dip −${dp}% → ${tp ? `50%@${tp}X + ` : ''}trail ${tr}%`,
+        desc: `Deep entry with a tight trail — the fleet's best region at 40% clearing fees, and only fifteen strategies covering it.`,
+        dip: dp / 100, win: 12,
+        tps: tp ? [[tp, 0.5]] : undefined,
+        trail: tr / 100, trailFrom: 'entry', stop: (100 - tr) / 100,
+      });
+    }
+  }
+}
+
+// ── D. Short clock × stop width (54) ────────────────────────
+// Extends the family that actually produced the survivors — eleven of the
+// twenty-one were instant with a 1-3 minute clock and a stop of 12% or 25%. Nothing
+// sits between those two stop widths, and nothing pairs the clock with a target.
+for (const hold of [1, 2, 3]) {
+  for (const st of [10, 12, 15, 18, 20, 25]) {
+    for (const [tn, tp] of [['0', 0], ['16', 1.6], ['2', 2]] as [string, number][]) {
+      GRID10.push({
+        key: `gD${hold}s${st}${tn}`,
+        name: `Instant → ${tp ? `${tp}X or ` : ''}${hold}m, stop −${st}%`,
+        desc: `The shape that produced most of the fleet's survivors, filled in between the −12% and −25% stops that were tested and the gap between them that was not.`,
+        hold, tps: tp ? [[tp, 1]] : undefined, stop: (100 - st) / 100,
+      });
+    }
+  }
+}
+
+GRID.push(...GRID10);
+
+
 
 
 
