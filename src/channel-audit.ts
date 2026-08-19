@@ -133,13 +133,23 @@ export async function auditPass(channels: string[], budget = 25): Promise<{ reco
     }
   }
 
-  // Unmeasured rows first, then v1 rows needing correction.
+  // Split the budget rather than concatenating.
+  //
+  // Taking fresh-then-stale and slicing to the budget meant stale was only ever
+  // reached when fewer than `budget` fresh rows were due — and with four channels
+  // posting there are always more. Six hours of passes corrected zero v1 rows while
+  // appearing to work, because new measurements kept arriving and the count went up.
+  //
+  // A third of each pass goes to correction, so the backlog drains at a predictable
+  // rate instead of never.
   const fresh = obs.filter(o => o.peak === undefined && (Date.now() - o.postedAt) / 60_000 >= MIN_AGE_MIN);
   const stale = obs.filter(o => o.peak !== undefined && (o.v ?? 1) < MEASURE_VERSION);
-  const due = [...fresh, ...stale].slice(0, budget);
-  let measured = 0;
+  const staleShare = Math.min(stale.length, Math.ceil(budget / 3));
+  const due = [...fresh.slice(0, budget - staleShare), ...stale.slice(0, staleShare)];
+  let measured = 0, failed = 0;
   for (const o of due) {
     const r = await outcome(o.mint, o.postedAt);
+    if (!r) failed++;
     if (r) {
       o.entry = r.entry; o.peak = r.peak; o.trough = r.trough; o.checked = Date.now(); o.v = MEASURE_VERSION;
       o.ageAtCheckMin = Math.round((Date.now() - o.postedAt) / 60_000);
@@ -152,6 +162,9 @@ export async function auditPass(channels: string[], budget = 25): Promise<{ reco
   const cut = Date.now() - 30 * 86400_000;
   saveObs(obs.filter(o => o.postedAt >= cut).slice(-6000));
   const pending = obs.filter(o => o.peak === undefined).length;
-  if (recorded || measured) console.log(`[ChannelAudit] recorded ${recorded}, measured ${measured}, ${pending} pending`);
+  if (recorded || measured || failed) {
+    console.log(`[ChannelAudit] recorded ${recorded}, measured ${measured}, ${failed} unmeasurable, `
+      + `${stale.length} awaiting correction, ${pending} awaiting age`);
+  }
   return { recorded, measured, pending };
 }
