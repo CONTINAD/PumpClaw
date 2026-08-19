@@ -5347,16 +5347,30 @@ export function startDashboard(port?: number): void {
             // measurable rather than arguable.
             const hi = sampled ? c.c / p.entryPrice : c.h / p.entryPrice;
             const lo = sampled ? c.c / p.entryPrice : c.l / p.entryPrice;
-            if (hi > high) high = hi;
-            // Take-profit first: within a bar we cannot know the order, so credit the
-            // target before the stop. This flatters the result and is stated as such.
-            if (!tpDone && tp > 0 && hi >= tp) { proceeds += tpSell * tp; remaining -= tpSell; tpDone = true; }
+
+            // Test the stop against the level that existed BEFORE this bar, then
+            // ratchet.
+            //
+            // Doing it the other way round — raise the trail on this bar's high, then
+            // test this bar's low — invents a stop level that could not have been
+            // active when the low happened. On a minute bar that spikes to 1.6 and
+            // dips to 0.9, it "trails out" at 0.97 a coin that went on to 20x. That is
+            // exactly what it did: peak 20.27x exited at 0.97x, peak 14.84x at 0.83x.
+            //
+            // Within a bar the order of the high and the low is unknowable, so the
+            // only defensible choice is the one that does not use information from
+            // after the event. This is the standard backtest convention and it
+            // matters most for tight trails, where the level sits closest to the high.
             if (remaining > 0.001) {
               const trailLvl = trail > 0 ? high * (1 - trail) : 0;
               const beLvl = bePct > 0 && high >= 1 + bePct ? 1 : 0;
               const stopLvl = Math.max(trailLvl, beLvl, hardStop > 0 ? 1 - hardStop : 0);
               if (stopLvl > 0 && lo <= stopLvl) { proceeds += remaining * stopLvl; remaining = 0; exitReason = tpDone ? 'trailed out after TP' : 'stopped out'; break; }
             }
+            if (hi > high) high = hi;
+            // Take-profit after the stop test, for the same reason: the target is only
+            // credited on a bar the position actually survived into.
+            if (!tpDone && tp > 0 && hi >= tp) { proceeds += tpSell * tp; remaining -= tpSell; tpDone = true; }
             if (remaining <= 0.001) { exitReason = 'TP took it all'; break; }
           }
           if (remaining > 0.001) {
