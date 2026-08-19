@@ -5226,6 +5226,112 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (pathname === '/api/simulate') {
+      // Walk a strategy through the real minute paths and compound the result.
+      //
+      // A simulation built on peakMultiplier is fantasy: nothing captures a peak, and
+      // a trailing stop in particular is defined by the order prices arrive in. This
+      // replays the captured candles bar by bar — take-profit when the high crosses
+      // the target, trail the remainder from the running high, stop out when the low
+      // crosses the level — and sizes each entry off the balance the previous trade
+      // left behind.
+      //
+      //   ?start=0.5&pct=30&min=0.05&max=2&tp=2&tpSell=50&trail=50&stop=0&hours=24
+      try {
+        const q = (k: string, dflt: number) => {
+          const m = url.match(new RegExp(`[?&]${k}=([0-9.]+)`));
+          return m ? parseFloat(m[1]) : dflt;
+        };
+        const start = q('start', 0.5), pct = q('pct', 30) / 100;
+        const minEntry = q('min', 0.05), maxEntry = q('max', 2);
+        const tp = q('tp', 2), tpSell = q('tpSell', 50) / 100;
+        const trail = q('trail', 50) / 100, hardStop = q('stop', 0) / 100;
+        const hours = q('hours', 24);
+        // Round-trip cost. Protocol fee plus realised slippage, measured on our own
+        // fills rather than assumed — a simulation that ignores it prints money.
+        const FEE = q('fee', 3) / 100;
+
+        import('./candles.js').then(candleMod => {
+        const paths = candleMod.loadPaths(600);
+        const calls: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
+        const callBy = new Map(calls.map(c => [c.mint, c]));
+        const cutoff = Date.now() - hours * 3600_000;
+
+        const usable = paths
+          .filter(p => p.callTs >= cutoff && p.candles.length >= 3 && p.entryPrice > 0)
+          .sort((a, b) => a.callTs - b.callTs);
+
+        let bal = start;
+        const trades: any[] = [];
+        for (const p of usable) {
+          const raw = Math.floor(bal * pct * 1000) / 1000;
+          let size = Math.max(raw, minEntry);
+          if (maxEntry > 0) size = Math.min(size, maxEntry);
+          // Cannot deploy what is not there; leave a little for fees.
+          if (size > bal - 0.005) size = bal - 0.005;
+          if (size < minEntry) { trades.push({ symbol: p.symbol, skipped: 'balance too low' }); continue; }
+
+          let remaining = 1, proceeds = 0, high = 1, tpDone = false, exitReason = 'held to end';
+          for (const c of p.candles) {
+            const hi = c.h / p.entryPrice, lo = c.l / p.entryPrice;
+            if (hi > high) high = hi;
+            // Take-profit first: within a bar we cannot know the order, so credit the
+            // target before the stop. This flatters the result and is stated as such.
+            if (!tpDone && tp > 0 && hi >= tp) { proceeds += tpSell * tp; remaining -= tpSell; tpDone = true; }
+            if (remaining > 0.001) {
+              const trailLvl = trail > 0 ? high * (1 - trail) : 0;
+              const stopLvl = Math.max(trailLvl, hardStop > 0 ? 1 - hardStop : 0);
+              if (stopLvl > 0 && lo <= stopLvl) { proceeds += remaining * stopLvl; remaining = 0; exitReason = tpDone ? 'trailed out after TP' : 'stopped out'; break; }
+            }
+            if (remaining <= 0.001) { exitReason = 'TP took it all'; break; }
+          }
+          if (remaining > 0.001) {
+            const last = p.candles[p.candles.length - 1].c / p.entryPrice;
+            proceeds += remaining * last;
+          }
+          const gross = size * proceeds;
+          const net = gross * (1 - FEE);
+          const pnl = net - size;
+          bal = bal - size + net;
+          trades.push({
+            symbol: p.symbol, mint: p.mint,
+            source: callBy.get(p.mint)?.source ?? null,
+            entryMC: callBy.get(p.mint)?.entryMC ?? null,
+            size: +size.toFixed(4), multiple: +proceeds.toFixed(3),
+            pnl: +pnl.toFixed(4), balanceAfter: +bal.toFixed(4),
+            peak: +Math.max(...p.candles.map(c => c.h / p.entryPrice)).toFixed(2),
+            exitReason,
+          });
+        }
+
+        const done = trades.filter(t => !t.skipped);
+        const wins = done.filter(t => t.pnl > 0);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          config: { start, entryPct: pct, minEntry, maxEntry, takeProfit: tp, tpSellPct: tpSell,
+                    trailPct: trail, hardStopPct: hardStop, feePct: FEE, windowHours: hours },
+          note: 'Sequential and non-overlapping: each entry is sized off the balance the previous trade left. '
+              + 'Real calls overlap in time, so a live run would size differently and could not always deploy the '
+              + 'full percentage. Within a single candle the take-profit is credited before the stop, which '
+              + 'flatters any bar that touched both. Only calls with a captured minute path are included.',
+          pathsAvailable: paths.length,
+          tradesSimulated: done.length,
+          skippedForBalance: trades.filter(t => t.skipped).length,
+          startBalance: start,
+          endBalance: +bal.toFixed(4),
+          profit: +(bal - start).toFixed(4),
+          roiPct: +(((bal / start) - 1) * 100).toFixed(1),
+          winRate: done.length ? Math.round(wins.length / done.length * 100) : 0,
+          trades: done,
+        }, null, 2));
+        }).catch((err: any) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        });
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message, stack: err.stack }));
+      }
     } else if (pathname === '/api/drawdown') {
       // Where does a stop belong? That depends entirely on whether the drawdown comes
       // BEFORE the peak or after it, and nothing here could answer that: minAtMin and
