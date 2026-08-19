@@ -30,16 +30,26 @@ let _lastQuoteTime = 0;
 // times more conservative than the endpoint actually requires, and it sat directly
 // in the stop path — a position near its stop waited over a second for the one
 // price that decides whether to sell.
-const QUOTE_MIN_GAP_MS = 150;
-
-/** Exit-critical quotes skip the queue entirely. Waiting to find out whether to
- *  sell is the one delay that cannot be justified. */
-const EXIT_QUOTE_BYPASS = true;
+// Two budgets, because they compete and only one of them is a trade.
+//
+// This was 150ms with urgent traffic bypassing the throttle entirely, which permits
+// roughly 400 requests a minute against a free tier that allows about 60. It cost a
+// real buy: $HOMES, a $15K call from the channel that has been producing the
+// winners, failed all three attempts on "Jupiter quote failed (429)".
+//
+// The bypass did not help, it hurt. Background checks ate the quota and the urgent
+// request that skipped the queue arrived at an endpoint already refusing us — there
+// is no priority lane on someone else's rate limit, only a shared budget.
+//
+// The original reason for lowering it has also gone. It was lowered to speed up
+// exits back when exits were priced from Jupiter; exits now read the pool
+// subscription at 250ms and do not touch this path at all.
+const QUOTE_GAP_BACKGROUND_MS = 1500;   // ~40/min, leaves headroom for trades
+const QUOTE_GAP_URGENT_MS = 200;        // fast, but never unbounded
 
 async function rateLimitedQuote(urgent = false): Promise<void> {
-  if (urgent && EXIT_QUOTE_BYPASS) return;
-  const now = Date.now();
-  const wait = QUOTE_MIN_GAP_MS - (now - _lastQuoteTime);
+  const gap = urgent ? QUOTE_GAP_URGENT_MS : QUOTE_GAP_BACKGROUND_MS;
+  const wait = gap - (Date.now() - _lastQuoteTime);
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
   _lastQuoteTime = Date.now();
 }
@@ -70,7 +80,11 @@ async function getQuote(
   const url = `${JUPITER_QUOTE}?${params}`;
   let lastErr: Error | null = null;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // A 429 needs waiting out, not retrying into. Three attempts a second apart
+  // against a rate limit are three refusals — which is exactly how $HOMES was lost,
+  // the log reading "swap failed after 3 attempts" as though the route were bad.
+  // Backoff separately and for longer on 429, and say which it was.
+  for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const res = await fetch(url, {
         signal: AbortSignal.timeout(15_000),
@@ -78,14 +92,21 @@ async function getQuote(
 
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`Jupiter quote failed (${res.status}): ${text}`);
+        const e: any = new Error(`Jupiter quote failed (${res.status}): ${text}`);
+        e.status = res.status;
+        throw e;
       }
 
       return res.json();
     } catch (err: any) {
       lastErr = err;
-      console.log(`[Jupiter] Quote attempt ${attempt + 1} failed: ${err.message}`);
-      if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
+      const limited = err?.status === 429;
+      console.log(`[Jupiter] Quote attempt ${attempt + 1} failed${limited ? ' (RATE LIMITED)' : ''}: ${err.message}`);
+      if (attempt < 3) {
+        // Rate limits clear on their own clock; a bad route will not improve either
+        // way, so the long wait is only spent when it can actually help.
+        await new Promise(r => setTimeout(r, limited ? 1200 * (attempt + 1) : 600));
+      }
     }
   }
 
