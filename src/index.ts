@@ -258,6 +258,11 @@ function recordSkip(post: { mint: string; name: string; creator?: string }, reas
  * Runs hourly and only looks at skips between 1 and 24 hours old — younger than
  * that and the coin has not had time to show its hand, older and it is settled.
  */
+/** Last skip-grading pass: when, and what it found. Exposed on /api/health.
+ *  Three correct fixes to this path changed nothing tonight and there was no way
+ *  to tell a stalled loop from an empty one — so it now says. */
+export let graderLastRun: { at: number; eligible: number; historySize: number } | null = null;
+
 async function skipOutcomeLoop() {
   // Sleep-first meant the first grading pass came 60 minutes after boot, so a day
   // of frequent deploys graded nothing at all: every restart reset the timer before
@@ -277,7 +282,8 @@ async function skipOutcomeLoop() {
       const due = skipHistory.filter(s =>
         s.entryPrice && s.entryPrice > 0 && (s.checks ?? 0) < 6 &&
         now - s.timestamp > 1800_000 && now - s.timestamp < 24 * 3600_000);
-      if (!due.length) continue;
+      graderLastRun = { at: now, eligible: due.length, historySize: skipHistory.length };
+      if (!due.length) { log(`📋 Skip grader: 0 of ${skipHistory.length} rejections eligible`); continue; }
       for (let i = 0; i < due.length; i += 25) {
         const batch = due.slice(i, i + 25);
         const md = await fetchBatchMarketData(batch.map(s => s.mint));

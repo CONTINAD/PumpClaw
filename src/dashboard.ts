@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from 'fs';
+import { graderLastRun } from './index.js';
 import { BIRDEYE_ON } from './price-oracle.js';
 import { CANDIDATES } from './filter-lab.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
@@ -5206,6 +5207,14 @@ export function startDashboard(port?: number): void {
           dataDir: CONFIG.DATA_DIR,
           persistentVolume: !CONFIG.DATA_DIR.includes('/app/dist') && CONFIG.DATA_DIR !== './data',
           uptimeMin: Math.round(process.uptime() / 60),
+          // Which build is actually serving. Without this, "the fix did not work"
+          // and "the fix is not deployed" look identical from the outside, and
+          // tonight that cost three rounds of patching a path that was fine.
+          build: (process.env.RAILWAY_GIT_COMMIT_SHA ?? 'unknown').slice(0, 7),
+          skipGrader: graderLastRun
+            ? { lastRunMinAgo: Math.round((Date.now() - graderLastRun.at) / 60000),
+                eligibleLastRun: graderLastRun.eligible, historySize: graderLastRun.historySize }
+            : { lastRunMinAgo: null, note: 'has not run since boot' },
           // Pool size is the difference between "one bad node lost the trade" and
           // "one bad node was outvoted", so it belongs where it can be watched.
           rpc: poolHealth(),
