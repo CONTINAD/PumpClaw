@@ -1755,6 +1755,37 @@ async function buildSettingsHTML(msg?: { ok: boolean; text: string }): Promise<s
       <input type="number" name="slippage" min="1" max="99" step="1" value="${Math.round(CONFIG.TRADE_SLIPPAGE_BPS / 100)}">
     </div>
     <div class="card">
+      <h3>Paper book maintenance</h3>
+      <div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:10px">
+        An open paper position appears in no statistic — so a strategy that never closes its losers shows only its
+        winners. Fleet-wide, strategies with a stop close 99% of their trades and win 33%; those without close 54%
+        and appear to win 48%. That gap is the missing losers, and it is why the leaderboard favoured stopless
+        strategies for weeks.
+      </div>
+      <button type="button" id="closepaper" style="background:#b45309;color:#fff;border:0;border-radius:6px;padding:8px 16px;font-size:13px;cursor:pointer">
+        Close all open paper positions at market
+      </button>
+      <span id="cpstatus" style="font-size:12px;color:var(--text2);margin-left:10px"></span>
+      <div class="warn">Paper only — real positions hold actual tokens and are never marked closed in a book.
+        <b>Leaderboards will fall afterwards.</b> That is the correction arriving, not a regression.</div>
+      <script>
+      document.getElementById('closepaper').addEventListener('click', function () {
+        var b = this, st = document.getElementById('cpstatus');
+        if (!confirm('Close every open paper position at current market price? This cannot be undone.')) return;
+        b.disabled = true; st.textContent = 'closing… this takes a minute';
+        fetch('/api/close-paper', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            st.textContent = d.error ? ('error: ' + d.error)
+              : (d.closed + ' closed across ' + d.tasks + ' strategies, ' + d.realisedSol + ' SOL realised'
+                 + (d.unpriced ? ', ' + d.unpriced + ' had no live price' : ''));
+            b.disabled = false;
+          })
+          .catch(function (e) { st.textContent = 'failed: ' + e.message; b.disabled = false; });
+      });
+      </script>
+    </div>
+    <div class="card">
       <h3>Backup RPC endpoints</h3>
       <div style="font-size:12px;color:var(--text3);line-height:1.6;margin-bottom:10px">
         Every buy and sell is broadcast to <b style="color:var(--text2)">all</b> of these at once, not one after
