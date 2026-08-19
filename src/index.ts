@@ -1482,6 +1482,82 @@ async function stopWatchdog() {
 // ── Panic-sell loop (8s) — retries any stop that fired but never cleared.
 //    Independent of price feeds: once a stop triggers, getting OUT is the only goal.
 
+/**
+ * Independent exit auditor — the layer that assumes the main loop is broken.
+ *
+ * Every existing safety net depends on the position loop having already decided to
+ * sell: getStuckPositions only returns positions where stopTriggered is true, so it
+ * catches a sell that FAILED, never a sell that was never attempted. The failures
+ * that actually cost money this week were all of the second kind — a hung loop, a
+ * price feed 8.76% off, a balance read that returned 0. In each case the stop logic
+ * ran happily and concluded there was nothing to do.
+ *
+ * So this shares nothing with the main loop. Its own timer, its own price read, its
+ * own arithmetic on the position's recorded levels. If a position is trading below
+ * the level the strategy says it should have exited at, that is a missed exit
+ * regardless of what the position loop believes, and it sells.
+ *
+ * A grace band is applied before acting — a stop is not missed until the price has
+ * been through it, not merely touching it — because firing on noise would make this
+ * layer the thing that loses money.
+ */
+async function missedExitAuditor() {
+  const { poolPriceUsd } = await import('./pool-price.js');
+  const seenBelow = new Map<string, number>();   // mint -> first time seen below its stop
+  const GRACE_MS = 90_000;                       // must stay below for this long
+  const BAND = 0.97;                             // 3% under the level, so noise does not trip it
+
+  while (true) {
+    await new Promise(r => setTimeout(r, 45_000));
+    try {
+      for (const { task, pos } of taskManager.openPositions()) {
+        if (task.paper || pos.remainingPct < 0.001) continue;
+
+        // Price read independent of the position loop's feed.
+        let px = await poolPriceUsd(pos.mint, 120_000).catch(() => null);
+        if (!px || px <= 0) {
+          const md = await fetchSingleMarketData(pos.mint).catch(() => null);
+          px = md && md.priceUsd > 0 ? md.priceUsd : null;
+        }
+        if (!px || !plausible(px, pos.entryPrice * (pos.peakMultiplier || 1))) { seenBelow.delete(pos.mint); continue; }
+
+        const trailLvl = pos.trailingActive ? pos.trailingStopPrice : 0;
+        const hardFloor = pos.entryPrice * (1 - CONFIG.TRADE_MAX_LOSS_PCT);
+        const shouldExitAt = Math.max(pos.stopLossPrice, trailLvl);
+        const breached = px <= shouldExitAt * BAND || px <= hardFloor;
+        if (!breached) { seenBelow.delete(pos.mint); continue; }
+
+        const since = seenBelow.get(pos.mint) ?? Date.now();
+        seenBelow.set(pos.mint, since);
+        if (Date.now() - since < GRACE_MS) continue;
+
+        const mult = pos.entryPrice > 0 ? px / pos.entryPrice : 0;
+        log(`🚨 MISSED EXIT [${task.name}] $${pos.symbol} at ${mult.toFixed(2)}X — should have exited at ` +
+            `${(shouldExitAt / pos.entryPrice).toFixed(2)}X and is still open. Force-selling.`);
+        sendOpsAlert(
+          `🚨 **Missed exit caught** — **${task.name}** still holds **$${pos.symbol}** at **${mult.toFixed(2)}X**, ` +
+          `below its exit level of ${(shouldExitAt / pos.entryPrice).toFixed(2)}X for over 90 seconds. ` +
+          `The position loop did not act, so the auditor is force-selling. This is a bug worth looking at.`,
+          CONFIG.TRADES_WEBHOOK,
+        ).catch(() => {});
+
+        const trader = taskManager.traderFor(task);
+        pos.stopTriggered = true;            // the panic seller keeps working if this attempt fails
+        const exits = await trader.panicSell(pos.mint).catch((e: any) => {
+          console.error(`[Auditor] force-sell failed for ${pos.symbol}: ${e.message}`);
+          return [];
+        });
+        for (const ex of exits) {
+          log(`💰 AUDITOR EXIT [${task.name}]: $${pos.symbol} — ${ex.label} → ${ex.solReceived.toFixed(4)} SOL`);
+        }
+        seenBelow.delete(pos.mint);
+      }
+    } catch (err: any) {
+      console.error(`[Auditor] ${err.message}`);
+    }
+  }
+}
+
 async function panicSellLoop() {
   while (true) {
     await new Promise(r => setTimeout(r, 8_000));
@@ -1665,6 +1741,9 @@ async function main() {
     });
     externalSourceLoop().catch(err => {
       console.error(`[Sources] Fatal: ${err.message}`);
+    });
+    missedExitAuditor().catch(err => {
+      console.error(`[Auditor] loop died: ${err.message}`);
     });
     panicSellLoop().catch(err => {
       console.error(`[Panic] Fatal: ${err.message}`);
