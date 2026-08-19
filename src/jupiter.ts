@@ -86,6 +86,15 @@ async function getQuote(
   // Backoff separately and for longer on 429, and say which it was.
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
+      // The trade path was never throttled. rateLimitedQuote was wired into the two
+      // read-only price helpers only, so every buy and sell went straight to fetch.
+      // That is survivable until a position cannot exit: the time exit re-fires on
+      // each 250ms loop tick, and each attempt spends up to four unthrottled quotes
+      // here plus a second trader-level attempt on top. One stuck sell is then
+      // issuing tens of quotes a second and exhausting the very quota it needs —
+      // which is exactly how $mRNA-4157 held for an hour while $INT and $MRK were
+      // both refused with 429s. Trades take the urgent budget, but bounded.
+      await rateLimitedQuote(true);
       const res = await fetch(url, {
         signal: AbortSignal.timeout(15_000),
       });

@@ -87,6 +87,24 @@ export class Trader {
   private positions = new Map<string, RealPosition>();
   private positionsFile: string;
   private sellFailCounts = new Map<string, number>();
+  /**
+   * Earliest time a further sell may be attempted for a mint.
+   *
+   * A failed exit used to retry on the very next loop tick, four times a second,
+   * forever. Against a shared rate limit that is not persistence, it is a denial of
+   * service aimed at ourselves: the retries keep the quota empty, so the sell can
+   * never land and no other trade can either. Spacing them costs nothing — the
+   * blocker on a failing sell is never that we asked too rarely.
+   */
+  private nextSellAttempt = new Map<string, number>();
+  /**
+   * Failures counted for PACING only.
+   *
+   * Deliberately separate from sellFailCounts, which escalates slippage. Being
+   * refused by Jupiter is not evidence that the market will not fill us, so a rate
+   * limit must not widen slippage — but it must still slow the retries down.
+   */
+  private sellAttemptFails = new Map<string, number>();
   private tpFailCounts = new Map<string, number>();
 
   /**
@@ -445,10 +463,34 @@ export class Trader {
     const newExits: RealExit[] = [];
     let stateChanged = false;
 
+    const strat = this.getStrategy();
+
     // Track peak multiplier
     if (mult > (pos.peakMultiplier ?? 1)) {
       pos.peakMultiplier = mult;
       stateChanged = true;
+    }
+
+    // ── Ratchet the trailing stop BEFORE any exit branch can return ──
+    //
+    // This lived below the take-profit ladder, which puts it after the time exit's
+    // `return`. That is invisible while exits succeed. Once the clock passes,
+    // checkPositionInner returns at the time exit on every tick and never reaches
+    // the ratchet again — so the trailing high freezes at whatever it held the
+    // moment the clock expired.
+    //
+    // $mRNA-4157 ran to 4.02x with its high stuck at the 1.39x it had at minute 5.
+    // Its trail therefore sat at 0.766x instead of 2.21x, and when the coin gave the
+    // whole move back there was no level for the auditor to fire on. Peak said 4.02x
+    // and the stop said 0.77x, about the same position, at the same instant.
+    //
+    // State must be current before it is acted on, so it is updated first.
+    if (pos.trailingActive && currentPrice > pos.trailingHighPrice) {
+      pos.trailingHighPrice = currentPrice;
+      stateChanged = true;
+    }
+    if (pos.trailingActive) {
+      pos.trailingStopPrice = pos.trailingHighPrice * (1 - strat.trailingDrop);
     }
 
     // Helper to execute a partial sell
@@ -532,6 +574,14 @@ export class Trader {
       // Stop-type exits escalate slippage — when a stop fires the priority is OUT,
       // not price. A 30% cap that fails during a rug is not a stop-loss.
       const isStopExit = reason === 'trailing_stop' || reason === 'stop_loss' || reason === 'be_stop' || reason === 'profit_protect';
+
+      // Back off between failed attempts rather than hammering. Returning early
+      // spends no quote at all, which is the point: it leaves the budget for the
+      // attempt that is actually due.
+      const notBefore = this.nextSellAttempt.get(mint) ?? 0;
+      if (Date.now() < notBefore) return null;
+
+      let rateLimited = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const tokensNow = attempt === 1 ? sellAmount : await getTokenBalance(mint, this.kp());
@@ -575,6 +625,8 @@ export class Trader {
           pos.tokensRemaining = Math.max(0, pos.tokensRemaining - finalSellAmount);
           newExits.push(exit);
           this.sellFailCounts.delete(mint);
+          this.nextSellAttempt.delete(mint);   // a landed sell clears the backoff
+        this.sellAttemptFails.delete(mint);
 
           // Verify on-chain that the tokens actually left. Jupiter can report success
           // on a tx that later fails; without this the book says "sold" while the
@@ -596,6 +648,7 @@ export class Trader {
           console.log(`[Trader] ✅ ${label}: sold ${finalSellAmount} tokens → ${solReceived.toFixed(4)} SOL (tx: ${result.txSignature.slice(0, 16)}...)`);
           return exit;
         } catch (err: any) {
+          rateLimited = /\(429\)|rate limit/i.test(err?.message ?? '');
           console.error(`[Trader] Sell failed for $${pos.symbol} (${label}) attempt ${attempt}: ${err.message}`);
           if (attempt < 2) {
             console.log(`[Trader] Retrying $${pos.symbol} sell in 5s...`);
@@ -605,17 +658,38 @@ export class Trader {
       }
 
       console.error(`[Trader] ⚠ Sell FAILED after 2 attempts for $${pos.symbol} (${label}) — will retry next check cycle`);
-      const failCount = (this.sellFailCounts.get(mint) ?? 0) + 1;
-      this.sellFailCounts.set(mint, failCount);
+      // Pace every retry, whatever the cause. 5s, 10s, 20s, 40s, then once a minute.
+      // Still 12 attempts a minute at the floor — plenty to catch a recovering route,
+      // and little enough that a position which cannot exit stops starving the ones
+      // that can.
+      const paceFails = (this.sellAttemptFails.get(mint) ?? 0) + 1;
+      this.sellAttemptFails.set(mint, paceFails);
+      const backoffMs = Math.min(60_000, 5_000 * Math.pow(2, paceFails - 1));
+      this.nextSellAttempt.set(mint, Date.now() + backoffMs);
+
+      // Slippage escalation answers a market that will not fill us. A 429 is the API
+      // declining to answer at all, which says nothing about liquidity — so it must
+      // not widen the tolerance. 175 rate-limited retries had already walked
+      // $mRNA-4157 to the 95% ceiling, leaving a profitable position with essentially
+      // no protection the moment a quote finally landed.
+      const failCount = (this.sellFailCounts.get(mint) ?? 0) + (rateLimited ? 0 : 1);
+      if (!rateLimited) this.sellFailCounts.set(mint, failCount);
+      console.error(`[Trader] $${pos.symbol} (${label}) next sell attempt in ${Math.round(backoffMs / 1000)}s ` +
+        `(${rateLimited ? 'rate-limited — slippage held' : `fail #${failCount}`})`);
       // A stop sell that keeps failing means the position is bleeding uncontrolled —
       // yell in Discord (once per 5 min per mint) so a human can intervene.
-      if (isStopExit && failCount >= 2) {
+      // A time exit that cannot fill strands the position exactly as badly as a
+      // stop that cannot fill, but only stop-type exits alerted — so $mRNA-4157 sat
+      // 56 minutes past a 5-minute clock in silence. Any full exit that keeps
+      // failing is a stranded position and gets shouted about.
+      if ((isStopExit || isFullExit) && paceFails >= 2) {
         const last = this.lastSellFailAlert.get(mint) ?? 0;
         if (Date.now() - last > 5 * 60 * 1000) {
           this.lastSellFailAlert.set(mint, Date.now());
           sendOpsAlert(
-            `**${label}** sell for **$${pos.symbol}** [${this.taskId}] has FAILED ${failCount}x — position bleeding below its stop. ` +
-            `Retrying with escalated slippage; consider selling manually: https://dexscreener.com/solana/${mint}`,
+            `**${label}** sell for **$${pos.symbol}** [${this.taskId}] has FAILED ${paceFails}x` +
+            `${rateLimited ? ' — every attempt RATE LIMITED, not a liquidity problem' : ' — position bleeding below its stop'}. ` +
+            `Consider selling manually: https://dexscreener.com/solana/${mint}`,
             CFG.TRADES_WEBHOOK,
           ).catch(() => {});
         }
@@ -637,7 +711,6 @@ export class Trader {
     }
 
     // ── Take profit levels (generalized: any number of TPs from the strategy) ──
-    const strat = this.getStrategy();
 
     // ── Circuit breaker ── independent of strategy config. If a real position is
     // down more than the hard limit, get out. This is the backstop for every way a
@@ -646,7 +719,7 @@ export class Trader {
       pos.stopTriggered = true;
       this.save();
       console.error(`[Trader:${this.taskId}] 🚨 CIRCUIT BREAKER $${pos.symbol} at ${mult.toFixed(3)}X — forcing exit`);
-      await executeSell('circuit_breaker', `Circuit breaker −${Math.round(CFG.TRADE_MAX_LOSS_PCT * 100)}% at ${mult.toFixed(2)}X`, pos.remainingPct);
+      const cbExit = await executeSell('circuit_breaker', `Circuit breaker −${Math.round(CFG.TRADE_MAX_LOSS_PCT * 100)}% at ${mult.toFixed(2)}X`, pos.remainingPct);
       if (pos.remainingPct < 0.001 && pos.status === 'open') {
         pos.status = 'closed';
         pos.closedTime = Date.now();
@@ -654,14 +727,14 @@ export class Trader {
         closeTokenAccount(mint, this.kp()).catch(() => {});
       }
       this.save();
-      return newExits;
+      if (cbExit) return newExits;   // same rule: a failed breaker must not disarm the stop below
     }
 
     // Hard time exit — the most-maintained public bots exit on a clock, not a price.
     if (strat.maxHoldMin && strat.maxHoldMin > 0) {
       const heldMin = (Date.now() - pos.entryTime) / 60_000;
       if (heldMin >= strat.maxHoldMin && pos.remainingPct >= 0.001) {
-        await executeSell('time_exit', `Time exit ${strat.maxHoldMin}m at ${mult.toFixed(2)}X`, pos.remainingPct);
+        const timeExit = await executeSell('time_exit', `Time exit ${strat.maxHoldMin}m at ${mult.toFixed(2)}X`, pos.remainingPct);
         if (pos.remainingPct < 0.001 && pos.status === 'open') {
           pos.status = 'closed';
           pos.closedTime = Date.now();
@@ -669,7 +742,19 @@ export class Trader {
           if (!this.paper) closeTokenAccount(mint, this.kp()).catch(() => {});
         }
         this.save();
-        return newExits;
+        // Only stop here if the clock actually got us out.
+        //
+        // This returned unconditionally, which retired every other exit for the rest
+        // of the position's life — the take-profit ladder, the trailing stop and the
+        // stop loss all sit below this line, and once heldMin passes maxHoldMin the
+        // condition above is true on every tick forever.
+        //
+        // $mRNA-4157 expired its 5-minute clock at 1.39x, so no TP had armed yet.
+        // It then ran to 4.99x with the ladder never once evaluated, and had the
+        // price kept falling it would have held all the way to the -65% circuit
+        // breaker — the only exit above this line. A failed exit must never disarm
+        // the exits that might still work.
+        if (timeExit) return newExits;
       }
     }
     if (!pos.tpHits || pos.tpHits.length !== strat.tps.length) {
@@ -714,11 +799,9 @@ export class Trader {
       pos.trailingStopPrice = currentPrice * (1 - strat.trailingDrop);
     }
 
-    // ── Update trailing stop high (drop % is live-editable per task) ──
-    if (pos.trailingActive && currentPrice > pos.trailingHighPrice) {
-      pos.trailingHighPrice = currentPrice;
-      stateChanged = true;
-    }
+    // The ratchet itself now runs at the top of this function, before any exit can
+    // return. Only the afterLastTp arming above can newly activate trailing at this
+    // point, so all that is left is to price the stop it just armed.
     if (pos.trailingActive) {
       pos.trailingStopPrice = pos.trailingHighPrice * (1 - strat.trailingDrop);
     }
@@ -815,6 +898,7 @@ export class Trader {
     const feeCeiling = Math.max(50_000, Math.floor(pos.entrySol * 1e9 * 0.02));
     const priorityFeeLamports = Math.min(feeCeiling, Math.max(strat.priorityFeeLamports, 100_000) * (1 + fails * 2));
 
+    let lastPanicErr = '';
     let onChain = pos.tokensRemaining;
     try { onChain = await getTokenBalance(mint, this.kp()); } catch { /* use tracked */ }
 
@@ -864,6 +948,8 @@ export class Trader {
         pos.remainingPct = Math.max(0, pos.remainingPct - soldPct);
         pos.tokensRemaining = Math.max(0, onChain - amount);
         this.sellFailCounts.delete(mint);
+        this.nextSellAttempt.delete(mint);   // a landed sell clears the backoff
+        this.sellAttemptFails.delete(mint);
         if (pos.remainingPct < 0.001) {
           pos.status = 'closed';
           pos.closedTime = Date.now();
@@ -875,18 +961,24 @@ export class Trader {
         console.log(`[Panic:${this.taskId}] ✅ Cleared ${(frac * 100).toFixed(0)}% of $${pos.symbol} → ${solReceived.toFixed(4)} SOL`);
         return [exit];
       } catch (err: any) {
+        lastPanicErr = err?.message ?? '';
         console.error(`[Panic:${this.taskId}] ${(frac * 100).toFixed(0)}% sell failed for $${pos.symbol}: ${err.message}`);
       }
     }
 
-    const n = fails + 1;
-    this.sellFailCounts.set(mint, n);
-    if (n === 3 || n % 10 === 0) {
+    // Same rule as executeSell: only a genuine fill failure may widen slippage.
+    const panicRateLimited = /\(429\)|rate limit/i.test(lastPanicErr);
+    const n = fails + (panicRateLimited ? 0 : 1);
+    if (!panicRateLimited) this.sellFailCounts.set(mint, n);
+    const panicPace = (this.sellAttemptFails.get(mint) ?? 0) + 1;
+    this.sellAttemptFails.set(mint, panicPace);
+    if (panicPace === 3 || panicPace % 10 === 0) {
       const last = this.lastSellFailAlert.get(mint) ?? 0;
       if (Date.now() - last > 5 * 60 * 1000) {
         this.lastSellFailAlert.set(mint, Date.now());
         sendOpsAlert(
-          `🆘 **$${pos.symbol}** [${this.taskId}] — stop fired but the sell has failed **${n}x**. Still holding ${(pos.remainingPct * 100).toFixed(0)}%. ` +
+          `🆘 **$${pos.symbol}** [${this.taskId}] — stop fired but the sell has failed **${panicPace}x**` +
+          `${panicRateLimited ? ' (RATE LIMITED — the quote API is refusing us, the market is fine)' : ''}. Still holding ${(pos.remainingPct * 100).toFixed(0)}%. ` +
           `Retrying with higher slippage/fees; sell manually if you can: https://pump.fun/${mint}`,
           CFG.TRADES_WEBHOOK,
         ).catch(() => {});
