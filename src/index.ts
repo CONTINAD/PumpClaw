@@ -178,6 +178,54 @@ function recordBundleObs(post: { mint: string; name: string }, bundle: any, pass
   } catch { /* non-critical */ }
 }
 
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+//
+// Railway sends SIGTERM on every deploy and nothing caught it, so the process
+// died wherever it happened to be standing. $DJT was called at 15:22:06 and the
+// restart landed at 15:22:35: the call was written to calls.json, the buy never
+// finished, and no buylog entry was left to say either had happened. It went 4.2x.
+//
+// A missed call is the mild version. The same signal arriving between a landed
+// swap and the position being persisted leaves tokens in the wallet with nothing
+// tracking them — no stop, no trail, and a reconciler that can only report the
+// bag after the fact.
+//
+// So: stop starting new buys the moment the signal arrives, let the ones already
+// running finish and persist, then exit.
+let shuttingDown = false;
+const inFlightBuys = new Set<Promise<unknown>>();
+
+function trackBuy<T>(p: Promise<T>): Promise<T> {
+  inFlightBuys.add(p);
+  // Settle-tracking only; the caller still owns the result and any rejection.
+  p.finally(() => inFlightBuys.delete(p)).catch(() => {});
+  return p;
+}
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Shutdown] ${signal} — refusing new buys, ${inFlightBuys.size} still in flight`);
+  // Railway's grace period before SIGKILL is 30s; stop well short of it so the
+  // exit is ours and any final write lands.
+  const deadline = Date.now() + 20_000;
+  while (inFlightBuys.size > 0 && Date.now() < deadline) {
+    await Promise.race([
+      Promise.allSettled([...inFlightBuys]),
+      new Promise(r => setTimeout(r, 500)),
+    ]);
+  }
+  if (inFlightBuys.size > 0) {
+    console.error(`[Shutdown] ${inFlightBuys.size} buy(s) unfinished at the deadline — exiting; the reconciler will surface any untracked bag`);
+  } else {
+    console.log('[Shutdown] every buy settled, exiting cleanly');
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(0)); });
+process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(0)); });
+
 function recordSkip(post: { mint: string; name: string; creator?: string }, reason: string, details: string, mc: number, price?: number) {
   const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now(), creator: post.creator };
   skippedRing.push(rec);
@@ -566,9 +614,11 @@ async function fastScanCycle() {
     }
 
     // Execute real buy via Jupiter
-    if (CONFIG.TRADE_ENABLED) {
+    if (CONFIG.TRADE_ENABLED && shuttingDown) {
+      log(`⏹ BUY NOT STARTED for $${coin.symbol} — process is shutting down. The call is recorded; it was not traded.`);
+    } else if (CONFIG.TRADE_ENABLED) {
       log(`[Trader] 🔄 Fan-out buy for $${coin.symbol} across ${taskManager.enabledTasks().length} task(s)...`);
-      const boughtCount = await taskManager.buyAll(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap);
+      const boughtCount = await trackBuy(taskManager.buyAll(coin.mint, coin.symbol, coin.name, market.priceUsd, market.marketCap));
       if (boughtCount > 0) {
         log(`💰 REAL BUY: $${coin.symbol} — filled on ${boughtCount}/${taskManager.enabledTasks().length} task(s)`);
       } else {
@@ -1078,7 +1128,11 @@ async function externalSourceLoop() {
 
             log(`⚡ ${source.name} CALL: ${mint.slice(0, 8)}… at ${fmtUsd(market.marketCap)} MC — buying on ${subscribers.length} task(s)`);
             const symbol = mint.slice(0, 6);
-            const bought = await taskManager.buyAll(mint, symbol, symbol, market.priceUsd, market.marketCap, source.id);
+            if (shuttingDown) {
+              log(`⏹ ${source.name}: not starting a buy for ${mint.slice(0, 8)}… — process is shutting down`);
+              continue;
+            }
+            const bought = await trackBuy(taskManager.buyAll(mint, symbol, symbol, market.priceUsd, market.marketCap, source.id));
             recordSourceEvent(source.name, mint, bought > 0 ? 'buy' : 'nofill',
               bought > 0 ? `${bought} task(s) filled at ${fmtUsd(market.marketCap)} MC` : `0 fills at ${fmtUsd(market.marketCap)} MC — check balance/entry size`);
             if (bought === 0) {
