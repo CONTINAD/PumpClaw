@@ -18,8 +18,29 @@ export interface SwapOpts {
   maxTipLamports?: number;
 }
 
-const JUPITER_QUOTE = 'https://lite-api.jup.ag/swap/v1/quote';
-const JUPITER_SWAP = 'https://lite-api.jup.ag/swap/v1/swap';
+// ── Jupiter tier ────────────────────────────────────────────────────────────
+// Set JUPITER_API_KEY in Railway to move off the free tier. Nothing else needs
+// touching: the base URL, the auth header and the throttle all follow from
+// whether the key is present.
+//
+//   free (no key)   lite-api.jup.ag   1 req/sec
+//   Developer $25   api.jup.ag        10 req/sec
+//
+// The free ceiling is what cost four buys and stranded a position on the first
+// live night: one request a second has to cover background price checks AND the
+// quotes that decide a trade, so the two starve each other under any load.
+const JUP_API_KEY = (process.env.JUPITER_API_KEY ?? '').trim();
+export const JUP_PAID = JUP_API_KEY.length > 0;
+const JUP_BASE = JUP_PAID ? 'https://api.jup.ag' : 'https://lite-api.jup.ag';
+const JUPITER_QUOTE = `${JUP_BASE}/swap/v1/quote`;
+const JUPITER_SWAP = `${JUP_BASE}/swap/v1/swap`;
+
+/** Auth header on every call, or nothing at all on the free tier. */
+function jupHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return JUP_PAID ? { 'x-api-key': JUP_API_KEY, ...extra } : extra;
+}
+
+console.log(`[Jupiter] ${JUP_PAID ? 'PAID key detected — api.jup.ag' : 'no key — free tier lite-api.jup.ag (1 req/sec)'}`);
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ── Rate limiter for Jupiter quote API ──
@@ -44,8 +65,12 @@ let _lastQuoteTime = 0;
 // The original reason for lowering it has also gone. It was lowered to speed up
 // exits back when exits were priced from Jupiter; exits now read the pool
 // subscription at 250ms and do not touch this path at all.
-const QUOTE_GAP_BACKGROUND_MS = 1500;   // ~40/min, leaves headroom for trades
-const QUOTE_GAP_URGENT_MS = 200;        // fast, but never unbounded
+// Gaps are set by the ceiling we actually have. On the free tier the background
+// budget has to stay small so a trade quote can still get through; with 10 req/sec
+// both fit comfortably, and the tighter background gap is the real prize — it is
+// how quickly the bot notices a stop.
+const QUOTE_GAP_BACKGROUND_MS = JUP_PAID ? 400 : 1500;   // 2.5/sec vs ~40/min
+const QUOTE_GAP_URGENT_MS = JUP_PAID ? 120 : 200;        // 8.3/sec, under the 10/sec cap
 
 async function rateLimitedQuote(urgent = false): Promise<void> {
   const gap = urgent ? QUOTE_GAP_URGENT_MS : QUOTE_GAP_BACKGROUND_MS;
@@ -96,6 +121,7 @@ async function getQuote(
       // both refused with 429s. Trades take the urgent budget, but bounded.
       await rateLimitedQuote(true);
       const res = await fetch(url, {
+        headers: jupHeaders(),
         signal: AbortSignal.timeout(15_000),
       });
 
@@ -160,7 +186,7 @@ async function getSwapTransaction(
 
   const res = await fetch(JUPITER_SWAP, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jupHeaders({ 'Content-Type': 'application/json' }),
     signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({
       quoteResponse,
@@ -282,6 +308,7 @@ export async function jupiterQuoteSol(mint: string, tokenAmount: number): Promis
       slippageBps: '100',
     });
     const res = await fetch(`${JUPITER_QUOTE}?${params}`, {
+      headers: jupHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) return null;
@@ -314,6 +341,7 @@ export async function jupiterGetPrice(mint: string, solPriceUsd?: number, urgent
       slippageBps: '100',
     });
     const res = await fetch(`${JUPITER_QUOTE}?${params}`, {
+      headers: jupHeaders(),
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return null;

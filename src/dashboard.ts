@@ -13,7 +13,7 @@ import { buildHqHTML } from './hq.js';
 import { fmtUsd } from './discord.js';
 import { runtime } from './runtime.js';
 import { getSolPrice, fetchBatchMarketData } from './dexscreener.js';
-import { jupiterGetPrice } from './jupiter.js';
+import { jupiterGetPrice, JUP_PAID } from './jupiter.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { loadPaths, backtest, type BacktestCfg } from './candles.js';
@@ -5142,6 +5142,11 @@ export function startDashboard(port?: number): void {
           // Pool size is the difference between "one bad node lost the trade" and
           // "one bad node was outvoted", so it belongs where it can be watched.
           rpc: poolHealth(),
+          // Which Jupiter tier is actually live. Pasting a key into Railway and
+          // hoping is not verification — this says whether the process picked it up.
+          jupiter: JUP_PAID
+            ? { tier: 'paid', host: 'api.jup.ag', rateLimit: '10 req/sec (Developer) or higher' }
+            : { tier: 'free', host: 'lite-api.jup.ag', rateLimit: '1 req/sec', note: 'set JUPITER_API_KEY in Railway to upgrade' },
           tasks: { total: taskManager.all().length, real: real.length, paper: taskManager.all().length - real.length },
           liveTasks: real.map(t => ({
             name: t.name, enabled: t.enabled,
