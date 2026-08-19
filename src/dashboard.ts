@@ -12,7 +12,7 @@ import { verifyInteractionSignature, handleInteraction } from './interactions.js
 import { buildHqHTML } from './hq.js';
 import { fmtUsd } from './discord.js';
 import { runtime } from './runtime.js';
-import { getSolPrice } from './dexscreener.js';
+import { getSolPrice, fetchBatchMarketData } from './dexscreener.js';
 import { jupiterGetPrice } from './jupiter.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
@@ -5226,6 +5226,36 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       });
+    } else if (req.method === 'POST' && pathname === '/api/close-paper') {
+      // Realise every open paper position at market.
+      //
+      // Open positions are excluded from every statistic, so a strategy that never
+      // closes its losers reports only its winners — 9,000+ of them were sitting
+      // outside the numbers. This makes the book honest in one pass. Paper only.
+      if (!authOk(req)) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end('{"error":"unauthorized"}'); return; }
+      (async () => {
+        const open = taskManager.all().filter(t => t.paper)
+          .flatMap(t => taskManager.traderFor(t).getOpenPositions());
+        const mints = [...new Set(open.map(p => p.mint))];
+        const px = new Map<string, number>();
+        for (let i = 0; i < mints.length; i += 30) {
+          const md = await fetchBatchMarketData(mints.slice(i, i + 30));
+          for (const [m, v] of md) if (v.priceUsd > 0) px.set(m, v.priceUsd);
+          await new Promise(r => setTimeout(r, 250));
+        }
+        const out = await taskManager.closeAllPaper(m => px.get(m));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ...out,
+          uniqueMints: mints.length,
+          note: 'Paper positions only. Every strategy statistic now includes the trades it was '
+              + 'previously hiding, so leaderboards will drop — that is the correction, not a regression. '
+              + 'Positions whose coin has no live price could not be marked and stay open.',
+        }, null, 2));
+      })().catch((err: any) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     } else if (pathname === '/api/simulate') {
       // Walk a strategy through the real minute paths and compound the result.
       //
@@ -5251,6 +5281,10 @@ export function startDashboard(port?: number): void {
         // fills rather than assumed — a simulation that ignores it prints money.
         const FEE = q('fee', 3) / 100;
         const sampled = /[?&]bars=close/.test(url);
+        // Move the stop to entry once the position is up this much. The idea being
+        // tested is that a winner should never become a loser, which is a different
+        // claim from where the initial stop belongs.
+        const bePct = q('be', 0) / 100;
 
         import('./candles.js').then(candleMod => {
         const paths = candleMod.loadPaths(600);
@@ -5288,7 +5322,8 @@ export function startDashboard(port?: number): void {
             if (!tpDone && tp > 0 && hi >= tp) { proceeds += tpSell * tp; remaining -= tpSell; tpDone = true; }
             if (remaining > 0.001) {
               const trailLvl = trail > 0 ? high * (1 - trail) : 0;
-              const stopLvl = Math.max(trailLvl, hardStop > 0 ? 1 - hardStop : 0);
+              const beLvl = bePct > 0 && high >= 1 + bePct ? 1 : 0;
+              const stopLvl = Math.max(trailLvl, beLvl, hardStop > 0 ? 1 - hardStop : 0);
               if (stopLvl > 0 && lo <= stopLvl) { proceeds += remaining * stopLvl; remaining = 0; exitReason = tpDone ? 'trailed out after TP' : 'stopped out'; break; }
             }
             if (remaining <= 0.001) { exitReason = 'TP took it all'; break; }
@@ -5317,7 +5352,7 @@ export function startDashboard(port?: number): void {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           config: { start, entryPct: pct, minEntry, maxEntry, takeProfit: tp, tpSellPct: tpSell,
-                    trailPct: trail, hardStopPct: hardStop, feePct: FEE, windowHours: hours,
+                    trailPct: trail, hardStopPct: hardStop, breakEvenAtPct: bePct, feePct: FEE, windowHours: hours,
                     bars: sampled ? 'close (what paper sees)' : 'high/low (what really happened)' },
           note: 'Sequential and non-overlapping: each entry is sized off the balance the previous trade left. '
               + 'Real calls overlap in time, so a live run would size differently and could not always deploy the '

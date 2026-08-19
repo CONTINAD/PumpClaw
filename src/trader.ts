@@ -979,6 +979,10 @@ export class Trader {
     this.flush();
   }
 
+  /** Persist after a caller mutated positions directly — the bulk paper close
+   *  writes to many traders and each needs flushing once, not per position. */
+  persist(): void { this.save(); }
+
   private save(): void {
     if (!this.paper) { this.flush(); return; }
     this.dirty = true;

@@ -375,6 +375,50 @@ class TaskManager {
   }
 
   /** Reconcile every real task's book against the chain. */
+  /**
+   * Mark every open PAPER position closed at the current market price.
+   *
+   * An open position is excluded from every statistic the fleet reports, so a
+   * strategy that never closes its losers shows only its winners. Measured: with a
+   * stop, 99% of trades close and 33% of those won; without one, 54% close and 48%
+   * "won". That fifteen-point gap is the absent losers, not skill — and it is why
+   * the leaderboard ranked no-stop strategies at the top for weeks.
+   *
+   * Closing them at market realises what is already true and makes every downstream
+   * number honest. Paper only: real positions hold actual tokens and must be sold on
+   * chain, never marked closed in a book.
+   */
+  async closeAllPaper(priceOf: (mint: string) => number | undefined): Promise<{ closed: number; tasks: number; realisedSol: number; unpriced: number }> {
+    let closed = 0, tasks = 0, realised = 0, unpriced = 0;
+    for (const t of this.all()) {
+      if (!t.paper) continue;   // guard: never touch a position backed by real tokens
+      const trader = this.traderFor(t);
+      let touched = 0;
+      for (const pos of trader.getOpenPositions()) {
+        const px = priceOf(pos.mint);
+        if (!px || px <= 0) { unpriced++; continue; }
+        const mult = pos.entryPrice > 0 ? px / pos.entryPrice : 0;
+        const proceeds = pos.entrySol * pos.remainingPct * mult;
+        pos.totalSolReturned = (pos.totalSolReturned ?? 0) + proceeds;
+        pos.exits = [...(pos.exits ?? []), {
+          reason: 'forced_close', label: 'Closed at market (bulk)',
+          multiplierAtExit: +mult.toFixed(4), pctSold: pos.remainingPct,
+          tokensSold: pos.tokensRemaining ?? 0, solReceived: +proceeds.toFixed(6),
+          txSignature: 'paper-bulk-close', timestamp: Date.now(),
+        }];
+        pos.remainingPct = 0;
+        pos.tokensRemaining = 0;
+        pos.status = 'closed';
+        pos.closedTime = Date.now();
+        pos.finalPnlSol = +(pos.totalSolReturned - pos.entrySol).toFixed(6);
+        realised += pos.finalPnlSol;
+        closed++; touched++;
+      }
+      if (touched) { trader.persist(); tasks++; }
+    }
+    return { closed, tasks, realisedSol: +realised.toFixed(3), unpriced };
+  }
+
   async reconcileAll(): Promise<{ task: string; fixed: string[]; orphans: string[]; ghosts: string[] }[]> {
     const out: { task: string; fixed: string[]; orphans: string[]; ghosts: string[] }[] = [];
     for (const t of this.all().filter(x => !x.paper)) {
