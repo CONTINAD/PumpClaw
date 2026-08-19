@@ -230,9 +230,16 @@ function recordSkip(post: { mint: string; name: string; creator?: string }, reas
   const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now(), creator: post.creator };
   skippedRing.push(rec);
   if (skippedRing.length > 200) skippedRing.shift();
-  // Only the judgement calls are worth grading. LOW_VOL and RATE_CAP reject coins
-  // that were never candidates, and would bury the signal in noise.
-  if (!['LOW_VOL', 'RATE_CAP', 'COOLING_OFF'].includes(reason)) {
+  // LOW_VOL and COOLING_OFF used to be excluded here as "coins that were never
+  // candidates". That reasoning is untestable by construction: LOW_VOL is the single
+  // most common rejection the scanner makes, and excluding it meant the biggest
+  // filter in the stack was the one with no evidence behind it. Asked how LOW_VOL
+  // performs, the only honest answer was that we had never looked.
+  //
+  // RATE_CAP stays out. It is not a judgement about the coin — it fires when we have
+  // already called too many this hour — so grading it measures our own throttle, not
+  // the filter's taste, and it would be read as the former.
+  if (reason !== 'RATE_CAP') {
     skipHistory.push({ ...rec, entryPrice: price });
     saveSkips();
   }
@@ -419,7 +426,7 @@ async function fastScanCycle() {
         ? CONFIG.MIN_5M_VOLUME_LOW_MC
         : CONFIG.MIN_5M_VOLUME_HIGH_MC;
     if (market.volume5m < volThreshold) {
-      recordSkip(post, 'LOW_VOL', `${fmtUsd(market.volume5m)} vol < ${fmtUsd(volThreshold)}`, market.marketCap);
+      recordSkip(post, 'LOW_VOL', `${fmtUsd(market.volume5m)} vol < ${fmtUsd(volThreshold)}`, market.marketCap, market.priceUsd);
       continue;
     }
 
@@ -453,7 +460,7 @@ async function fastScanCycle() {
       const concentration = market.volume5m / market.volume1h;
       if (concentration < 0.15) {
         log(`⚠ COOLING OFF — skipping ${post.name}: only ${(concentration*100).toFixed(0)}% of 1h vol in last 5m`);
-        recordSkip(post, 'COOLING_OFF', `${(concentration*100).toFixed(0)}% of 1h vol in last 5m`, market.marketCap);
+        recordSkip(post, 'COOLING_OFF', `${(concentration*100).toFixed(0)}% of 1h vol in last 5m`, market.marketCap, market.priceUsd);
         continue;
       }
     }
