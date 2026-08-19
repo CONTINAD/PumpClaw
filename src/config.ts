@@ -239,3 +239,22 @@ export function saveSettingsOverrides(patch: Record<string, any>): void {
 }
 
 loadSettingsOverrides();
+
+/**
+ * Mints that are never a memecoin position.
+ *
+ * A wallet holding USDC is not a wallet holding an unmanaged bag, but the
+ * reconciler counted any non-position token as one — so 0.19 USDC of dust alarmed
+ * Discord every two minutes, forever, and pinned /api/verify to MISMATCH. An
+ * alarm that is always on is not an alarm; a real stranded position would have
+ * arrived as one more identical line in a channel already full of them.
+ *
+ * Deliberately shared: this was fixed in the dashboard first and the reconciler
+ * kept firing because the same knowledge lived in two places. One definition, both
+ * call sites.
+ */
+export const NON_POSITION_MINTS = new Set<string>([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',   // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',   // USDT
+  'So11111111111111111111111111111111111111112',    // wSOL
+]);

@@ -16,8 +16,18 @@
  */
 const BASE = 'https://pumpclaw-production.up.railway.app';
 const UA = { 'User-Agent': 'Mozilla/5.0' };
-const QUOTE = 'https://lite-api.jup.ag/swap/v1/quote';
-const SWAP = 'https://lite-api.jup.ag/swap/v1/swap';
+// Follow the same tier the bot follows. This hardcoded the free host, so once
+// JUPITER_API_KEY went live the preflight was exercising a different endpoint,
+// with different limits, from the one that actually trades — a dry run that no
+// longer rehearses the real thing is worse than none, because it reports green.
+// Note the key lives in Railway; run this with JUPITER_API_KEY set locally to
+// rehearse the paid path, otherwise it honestly reports that it tested the free one.
+const JUP_KEY = (process.env.JUPITER_API_KEY ?? '').trim();
+const JUP_BASE = JUP_KEY ? 'https://api.jup.ag' : 'https://lite-api.jup.ag';
+const jupHeaders = (extra: Record<string, string> = {}) =>
+  JUP_KEY ? { 'x-api-key': JUP_KEY, ...extra } : extra;
+const QUOTE = `${JUP_BASE}/swap/v1/quote`;
+const SWAP = `${JUP_BASE}/swap/v1/swap`;
 const WSOL = 'So11111111111111111111111111111111111111112';
 // Any valid pubkey works for building — the transaction is never signed or sent.
 const DUMMY = '11111111111111111111111111111112';
@@ -41,14 +51,15 @@ if (!mint) { console.log('no mint to test'); process.exit(1); }
 const slippage = 1500;
 console.log(`mint       ${mint}`);
 console.log(`size       ${sol.toFixed(4)} SOL  (${task ? `${(task.entryPct * 100).toFixed(0)}% of ${live.balance.toFixed(4)}` : 'default'})`);
-console.log(`slippage   ${slippage / 100}%\n`);
+console.log(`slippage   ${slippage / 100}%`);
+console.log(`jupiter    ${JUP_BASE.replace('https://', '')}  ${JUP_KEY ? '(paid, key set locally)' : '(FREE tier — no local JUPITER_API_KEY, so this is NOT the path the bot uses)'}\n`);
 
 let fail = 0;
 const t0 = Date.now();
 
 // ── 1. quote ──
 const qUrl = `${QUOTE}?inputMint=${WSOL}&outputMint=${mint}&amount=${Math.floor(sol * 1e9)}&slippageBps=${slippage}`;
-const qRes = await fetch(qUrl, { signal: AbortSignal.timeout(15_000) });
+const qRes = await fetch(qUrl, { headers: jupHeaders(), signal: AbortSignal.timeout(15_000) });
 const qMs = Date.now() - t0;
 if (!qRes.ok) {
   const body = await qRes.text();
@@ -65,7 +76,7 @@ if (+quote.priceImpactPct > 0.15) { console.log(`  ⚠ price impact over 15% at 
 const t1 = Date.now();
 const sRes = await fetch(SWAP, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: jupHeaders({ 'Content-Type': 'application/json' }),
   body: JSON.stringify({ quoteResponse: quote, userPublicKey: DUMMY, wrapAndUnwrapSol: true }),
   signal: AbortSignal.timeout(15_000),
 });
@@ -84,7 +95,7 @@ if (raw.length > 1232) { console.log(`  ✗ over the 1232-byte transaction limit
 // ── 3. the sell path, on the same coin ──
 const t2 = Date.now();
 const sellUrl = `${QUOTE}?inputMint=${mint}&outputMint=${WSOL}&amount=${quote.outAmount}&slippageBps=${slippage}`;
-const sellRes = await fetch(sellUrl, { signal: AbortSignal.timeout(15_000) });
+const sellRes = await fetch(sellUrl, { headers: jupHeaders(), signal: AbortSignal.timeout(15_000) });
 if (!sellRes.ok) {
   console.log(`✗ SELL QUOTE  HTTP ${sellRes.status} in ${Date.now() - t2}ms — exit route unavailable`);
   fail++;

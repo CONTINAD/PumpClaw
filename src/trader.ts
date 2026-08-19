@@ -5,7 +5,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { Keypair } from '@solana/web3.js';
-import { CONFIG } from './config.js';
+import { CONFIG, NON_POSITION_MINTS } from './config.js';
 import { getSolBalance, getSolBalanceFresh, getTokenBalance, closeTokenAccount, getConnection, mintDecimals } from './wallet.js';
 import { getSolPrice } from './dexscreener.js';
 import { jupiterBuy, jupiterSell, jupiterGetPrice, type SwapResult, type SwapOpts } from './jupiter.js';
@@ -1027,7 +1027,9 @@ export class Trader {
     try {
       const { getTokenHoldings } = await import('./wallet.js');
       for (const h of await getTokenHoldings(this.kp())) {
-        if (!tracked.has(h.mint) && h.uiAmount > 0) orphans.push(`${h.mint.slice(0, 8)}…`);
+        if (!tracked.has(h.mint) && h.uiAmount > 0 && !NON_POSITION_MINTS.has(h.mint)) {
+          orphans.push(`${h.mint.slice(0, 8)}…`);
+        }
       }
     } catch { /* skip */ }
 
