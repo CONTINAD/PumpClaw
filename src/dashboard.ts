@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from 'fs';
+import { CANDIDATES } from './filter-lab.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -1698,7 +1699,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Shadow</a><a href="/bundles">Bundles</a><a href="/channels">Channels</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/filter-lab">Filter Lab</a><a href="/shadow">Shadow</a><a href="/bundles">Bundles</a><a href="/channels">Channels</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -4381,6 +4382,72 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Live page error: ' + err.message);
       });
+    } else if (pathname === '/filter-lab') {
+      // Candidate filters that reject nothing.
+      //
+      // /filters grades the rules already running, which can only ever tell you
+      // about decisions you have made. This is the other question: which rule
+      // SHOULD be running. Every candidate is scored against every coin we have an
+      // outcome for, and none of them can block a buy.
+      try {
+        const hm = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '168';
+        const qs = `hours=${hm}`;
+        const inner = `
+        <div class="card" style="max-width:none">
+          <h3>🧪 Filter Lab — candidates that do nothing</h3>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin:6px 0 14px">
+            Thirty-one entry rules, none of them wired to anything. Each is scored against every
+            coin with a measured outcome — the ones we bought and the ones we rejected alike.
+            <b>Edge</b> is the EV of coins a rule would let through minus the EV of the ones it
+            would block, so positive means it is picking the better half. Candidates are evaluated
+            when this page loads rather than when a coin is scanned, which is why a rule added
+            later still gets the full history instead of starting at zero.
+          </p>
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            ${['24', '48', '168', 'all'].map(h => `<a href="/filter-lab?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hm ? 'var(--border2)' : 'var(--border)'};background:${h === hm ? 'var(--bg3)' : 'transparent'};color:${h === hm ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h === '168' ? '7d' : h + 'h'}</a>`).join('')}
+          </div>
+          <div id="meta" style="font-size:12px;color:var(--text3);margin-bottom:10px">loading…</div>
+          <div style="overflow-x:auto"><table style="width:100%;font-size:13px" id="tbl">
+            <tr style="text-align:left;color:var(--text3);font-size:11px">
+              <th>candidate</th><th>group</th><th>lets through</th><th>blocks</th>
+              <th>EV allowed</th><th>EV blocked</th><th>EDGE</th><th>2x allowed</th><th></th>
+            </tr>
+          </table></div>
+        </div>
+        <script>
+        (async () => {
+          const d = await (await fetch('/api/filter-lab?${qs}')).json();
+          document.getElementById('meta').textContent =
+            d.observations + ' coins scored (' + d.taken + ' taken, ' + d.rejected + ' rejected) over ' + d.windowHours + (d.windowHours === 'all' ? '' : 'h');
+          const pct = v => (v * 100).toFixed(0) + '%';
+          const t = document.getElementById('tbl');
+          for (const f of d.filters) {
+            const c = f.edge > 0.15 ? '#10b981' : f.edge < -0.15 ? '#ef4444' : 'var(--text2)';
+            const tr = document.createElement('tr');
+            tr.style.opacity = f.usable ? '1' : '0.42';
+            tr.innerHTML =
+              '<td style="font-weight:600">' + f.name + '</td>' +
+              '<td style="color:var(--text3);font-size:11px">' + f.group + '</td>' +
+              '<td class="mono">' + f.nPass + '</td>' +
+              '<td class="mono">' + f.nFail + '</td>' +
+              '<td class="mono">' + pct(f.evPass) + '</td>' +
+              '<td class="mono" style="color:var(--text3)">' + pct(f.evFail) + '</td>' +
+              '<td class="mono" style="font-weight:700;color:' + c + '">' + (f.edge >= 0 ? '+' : '') + pct(f.edge) + '</td>' +
+              '<td class="mono" style="color:var(--text3)">' + f.hit2Pass.toFixed(0) + '%</td>' +
+              '<td style="font-size:11px;color:var(--text3)">' + (f.usable ? '' : 'too few either side') + '</td>';
+            t.appendChild(tr);
+          }
+        })();
+        </script>`;
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PumpClaw Filter Lab</title><style>${SETTINGS_STYLE}</style></head><body>
+<div class="topbar"><h1>🧪 Filter Lab</h1><div style="display:flex;gap:14px"><a href="/filters">Filters</a><a href="/filter-lab">Filter Lab</a><a href="/shadow">Shadow</a><a href="/params">Params</a><a href="/">← Dashboard</a></div></div>
+<div class="wrap" style="max-width:1200px">${inner}</div></body></html>`);
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building filter lab: ' + err.message + '\n' + err.stack);
+      }
     } else if (pathname === '/filters') {
       // Is each filter earning its keep, or quietly costing money?
       //
@@ -5610,6 +5677,78 @@ export function startDashboard(port?: number): void {
           note: 'Only wallets with 2+ launches are listed — one launch is not a history. diedPct over several '
               + 'launches is the signal worth acting on; a single rug is a coin, a pattern is a person.',
           repeat,
+        }, null, 2));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (pathname === '/api/filter-lab') {
+      // Score every candidate filter against every coin we have an outcome for.
+      //
+      // Evaluated here rather than at scan time on purpose: a candidate added today
+      // is measured against the whole history immediately, instead of starting at
+      // n=0 and needing a month before it can say anything.
+      try {
+        const read = (f: string) => { try { return JSON.parse(readFileSync(join(CONFIG.DATA_DIR, f), 'utf-8')); } catch { return []; } };
+        const hm = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '168';
+        const hours = hm === 'all' ? 0 : Math.max(1, parseInt(hm));
+        const cut = hours ? Date.now() - hours * 3600_000 : 0;
+
+        // One shape for both sides of the ledger: what we bought and what we passed on.
+        const obs: { name: string; taken: boolean; peak: number; snap: any }[] = [];
+        for (const c of read('calls.json')) {
+          if (!c.peakMultiplier || (c.entryTime ?? 0) < cut) continue;
+          obs.push({ name: c.symbol ?? c.name, taken: true, peak: c.peakMultiplier, snap: {
+            mc: c.entryMC ?? 0, liq: c.entryLiquidity ?? 0,
+            vol5m: c.entryVolume5m ?? 0, vol1h: c.entryVolume1h ?? 0, vol24h: c.entryVolume24h ?? 0,
+            buys5m: c.entryBuys5m ?? 0, sells5m: c.entrySells5m ?? 0,
+            buys1h: c.entryBuys1h ?? 0, sells1h: c.entrySells1h ?? 0,
+            chg5m: c.entryPriceChange5m ?? 0, chg1h: c.entryPriceChange1h ?? 0, chg6h: c.entryPriceChange6h ?? 0,
+            ageMin: c.entryAgeMin ?? 0, dexId: c.entryDexId,
+            socials: typeof c.entrySocials === 'number' ? c.entrySocials : undefined,
+          } });
+        }
+        for (const k of read('skips.json')) {
+          if (k.peakMultiplier === undefined || (k.timestamp ?? 0) < cut) continue;
+          if (!k.snap) continue;   // pre-dates snapshot capture; cannot be scored
+          obs.push({ name: k.name, taken: false, peak: k.peakMultiplier, snap: k.snap });
+        }
+
+        // Same proxy the strategy work uses: 45% trail off the peak, -25% floor, 3% costs.
+        const ret = (peak: number) => (peak >= 1 ? Math.max(peak * 0.55, 0.75) : 0.75) - 1 - 0.03;
+        const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+        const rate = (a: number[], t: number) => (a.length ? (100 * a.filter(x => x >= t).length) / a.length : 0);
+
+        const rows = CANDIDATES.map(f => {
+          const yes: number[] = [], no: number[] = [], yesPk: number[] = [], noPk: number[] = [];
+          for (const o of obs) {
+            let v: boolean | null = null;
+            try { v = f.pass(o.snap); } catch { v = null; }
+            if (v === null) continue;
+            (v ? yes : no).push(ret(o.peak));
+            (v ? yesPk : noPk).push(o.peak);
+          }
+          const evYes = mean(yes), evNo = mean(no);
+          return {
+            key: f.key, name: f.name, group: f.group,
+            nPass: yes.length, nFail: no.length,
+            evPass: evYes, evFail: evNo, edge: evYes - evNo,
+            hit2Pass: rate(yesPk, 2), hit2Fail: rate(noPk, 2),
+            // A filter that passes everything, or nothing, has told you nothing.
+            usable: yes.length >= 15 && no.length >= 15,
+          };
+        }).sort((a, b) => b.edge - a.edge);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          windowHours: hours || 'all',
+          observations: obs.length,
+          taken: obs.filter(o => o.taken).length,
+          rejected: obs.filter(o => !o.taken).length,
+          note: 'edge = EV of coins the filter would ALLOW minus EV of the ones it would BLOCK. '
+              + 'Positive means the rule is picking the better half. Nothing here blocks a buy. '
+              + 'usable=false means one side has under 15 samples, which is not yet an opinion.',
+          filters: rows,
         }, null, 2));
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });

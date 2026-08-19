@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { snapshotFrom } from './filter-lab.js';
 import { join } from 'path';
 import { CONFIG } from './config.js';
 import { scrapeAllChannels } from './telegram.js';
@@ -226,8 +227,13 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(0)); });
 process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(0)); });
 
-function recordSkip(post: { mint: string; name: string; creator?: string }, reason: string, details: string, mc: number, price?: number) {
-  const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now(), creator: post.creator };
+function recordSkip(post: { mint: string; name: string; creator?: string }, reason: string, details: string, mc: number, price?: number, market?: any, extra?: any) {
+  // The snapshot is the whole point of the filter lab: candidates are evaluated when
+  // the page is read, so a rule invented next week is scored against every coin
+  // already seen instead of starting from nothing. Storing the verdict instead of
+  // the inputs would mean a fresh month of waiting for each threshold tweak.
+  const snap = market ? snapshotFrom(market, extra ?? {}) : undefined;
+  const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now(), creator: post.creator, snap };
   skippedRing.push(rec);
   if (skippedRing.length > 200) skippedRing.shift();
   // LOW_VOL and COOLING_OFF used to be excluded here as "coins that were never
@@ -399,7 +405,7 @@ async function fastScanCycle() {
     // sample nothing called above $100K reached 2x, median peak 1.06x.
     if (CONFIG.MAX_ENTRY_MC > 0 && market.marketCap > CONFIG.MAX_ENTRY_MC) {
       log(`⚠ HIGH_MC — skipping ${post.name}: ${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)} ceiling`);
-      recordSkip(post, 'HIGH_MC', `${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)}`, market.marketCap, market.priceUsd);
+      recordSkip(post, 'HIGH_MC', `${fmtUsd(market.marketCap)} > ${fmtUsd(CONFIG.MAX_ENTRY_MC)}`, market.marketCap, market.priceUsd, market);
       continue;
     }
 
@@ -410,7 +416,7 @@ async function fastScanCycle() {
       const social = await checkSocials(post.mint);
       if (social.known && social.count === 0) {
         log(`⚠ NO_SOCIALS — skipping ${post.name}: no twitter, website or telegram`);
-        recordSkip(post, 'NO_SOCIALS', 'no twitter / website / telegram', market.marketCap, market.priceUsd);
+        recordSkip(post, 'NO_SOCIALS', 'no twitter / website / telegram', market.marketCap, market.priceUsd, market, { socials: 0 });
         continue;
       }
       if (!social.known) {
@@ -426,13 +432,13 @@ async function fastScanCycle() {
         ? CONFIG.MIN_5M_VOLUME_LOW_MC
         : CONFIG.MIN_5M_VOLUME_HIGH_MC;
     if (market.volume5m < volThreshold) {
-      recordSkip(post, 'LOW_VOL', `${fmtUsd(market.volume5m)} vol < ${fmtUsd(volThreshold)}`, market.marketCap, market.priceUsd);
+      recordSkip(post, 'LOW_VOL', `${fmtUsd(market.volume5m)} vol < ${fmtUsd(volThreshold)}`, market.marketCap, market.priceUsd, market);
       continue;
     }
 
     if (market.priceChange5m < -25) {
       log(`⚠ DUMP — skipping ${post.name}: 5m change ${market.priceChange5m.toFixed(1)}% (actively dumping)`);
-      recordSkip(post, 'DUMP', `5m ${market.priceChange5m.toFixed(1)}%`, market.marketCap, market.priceUsd);
+      recordSkip(post, 'DUMP', `5m ${market.priceChange5m.toFixed(1)}%`, market.marketCap, market.priceUsd, market);
       continue;
     }
 
@@ -441,7 +447,7 @@ async function fastScanCycle() {
       const sellRatio = market.sells5m / market.buys5m;
       if (sellRatio > 1.3) {
         log(`⚠ HEAVY SELLING — skipping ${post.name}: ${market.buys5m}B/${market.sells5m}S (${sellRatio.toFixed(2)}x sells)`);
-        recordSkip(post, 'HEAVY_SELLING', `${market.buys5m}B / ${market.sells5m}S (${sellRatio.toFixed(2)}x)`, market.marketCap, market.priceUsd);
+        recordSkip(post, 'HEAVY_SELLING', `${market.buys5m}B / ${market.sells5m}S (${sellRatio.toFixed(2)}x)`, market.marketCap, market.priceUsd, market);
         continue;
       }
     }
@@ -450,7 +456,7 @@ async function fastScanCycle() {
     // (≥20 buys in last 5min = a buy every 15s on average)
     if (market.buys5m > 0 && market.buys5m < 20) {
       log(`⚠ LOW ACTIVITY — skipping ${post.name}: only ${market.buys5m} buys in 5m`);
-      recordSkip(post, 'LOW_ACTIVITY', `${market.buys5m} buys in 5m`, market.marketCap, market.priceUsd);
+      recordSkip(post, 'LOW_ACTIVITY', `${market.buys5m} buys in 5m`, market.marketCap, market.priceUsd, market);
       continue;
     }
 
@@ -460,7 +466,7 @@ async function fastScanCycle() {
       const concentration = market.volume5m / market.volume1h;
       if (concentration < 0.15) {
         log(`⚠ COOLING OFF — skipping ${post.name}: only ${(concentration*100).toFixed(0)}% of 1h vol in last 5m`);
-        recordSkip(post, 'COOLING_OFF', `${(concentration*100).toFixed(0)}% of 1h vol in last 5m`, market.marketCap, market.priceUsd);
+        recordSkip(post, 'COOLING_OFF', `${(concentration*100).toFixed(0)}% of 1h vol in last 5m`, market.marketCap, market.priceUsd, market);
         continue;
       }
     }
@@ -468,7 +474,7 @@ async function fastScanCycle() {
     // Liquidity floor — coins with shallow liq are easy rug targets
     if (market.liquidity > 0 && market.liquidity < CONFIG.MIN_LIQUIDITY) {
       log(`⚠ LOW LIQ — skipping ${post.name}: ${fmtUsd(market.liquidity)} liquidity (need ≥${fmtUsd(CONFIG.MIN_LIQUIDITY)})`);
-      recordSkip(post, 'LOW_LIQ', `${fmtUsd(market.liquidity)} liquidity`, market.marketCap, market.priceUsd);
+      recordSkip(post, 'LOW_LIQ', `${fmtUsd(market.liquidity)} liquidity`, market.marketCap, market.priceUsd, market);
       continue;
     }
 
@@ -494,7 +500,7 @@ async function fastScanCycle() {
       const aged = /\[AGED COHORT\]/.test(bundle.details);
       const reason = devHeavy ? 'DEV_HOLDS' : aged ? 'AGED_FARM' : blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
       log(`⚠ ${reason} — skipping ${post.name}: ${bundle.details}`);
-      recordSkip(post, reason, bundle.details, market.marketCap, market.priceUsd);
+      recordSkip(post, reason, bundle.details, market.marketCap, market.priceUsd, market, { devHoldPct: bundle.metrics?.devHoldPct, freshWallets: bundle.metrics?.freshWallets, veterans: bundle.metrics?.veterans, sameFunderPct: bundle.metrics?.sameFunderPct });
       recordBundleObs(post, bundle, false, reason, market.marketCap, market.priceUsd);
       if (blind && !devHeavy && !aged) noteBlindBlock(post.name); else blindBlocks = 0;
       continue;
@@ -537,7 +543,7 @@ async function fastScanCycle() {
         : CONFIG.MIN_FEES_BONDED_SOL;
       if (estFees < needed) {
         log(`⚠ LOW FEES — skipping ${post.name}: ${estFees.toFixed(2)} SOL fees, needs ≥${needed} at ${fmtUsd(market.marketCap)} MC (vol ${volumeSol.toFixed(0)} SOL)`);
-        recordSkip(post, 'LOW_FEES', `${estFees.toFixed(2)}/${needed} SOL fees at ${fmtUsd(market.marketCap)} MC`, market.marketCap, market.priceUsd);
+        recordSkip(post, 'LOW_FEES', `${estFees.toFixed(2)}/${needed} SOL fees at ${fmtUsd(market.marketCap)} MC`, market.marketCap, market.priceUsd, market);
         continue;
       }
       log(`✅ Fees ok: ${estFees.toFixed(2)} SOL (needed ${needed}) at ${fmtUsd(market.marketCap)} MC`);
@@ -562,7 +568,7 @@ async function fastScanCycle() {
       const fade = 1 - freshMarket.priceUsd / market.priceUsd;
       if (fade > 0.08) {
         log(`⚠ FADED — skipping ${post.name}: price dropped ${(fade * 100).toFixed(1)}% while checks ran`);
-        recordSkip(post, 'FADED', `-${(fade * 100).toFixed(1)}% during checks`, freshMarket.marketCap, freshMarket.priceUsd);
+        recordSkip(post, 'FADED', `-${(fade * 100).toFixed(1)}% during checks`, freshMarket.marketCap, freshMarket.priceUsd, freshMarket);
         continue;
       }
     }
