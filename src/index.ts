@@ -1335,7 +1335,10 @@ async function channelAuditLoop() {
   while (true) {
     if (!first) await new Promise(r => setTimeout(r, 20 * 60_000));
     first = false;
-    try { await auditPass(tgChannels()); }
+    // 60 per pass at 4s spacing is four minutes of a twenty-minute cycle, and
+    // measurement has been reliable at that rate. The default of 25 was set before
+    // there was a correction backlog to drain.
+    try { await auditPass(tgChannels(), 60); }
     catch (err: any) { console.error(`[ChannelAudit] loop: ${err.message}`); }
   }
 }

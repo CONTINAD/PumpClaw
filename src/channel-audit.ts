@@ -144,7 +144,10 @@ export async function auditPass(channels: string[], budget = 25): Promise<{ reco
   // rate instead of never.
   const fresh = obs.filter(o => o.peak === undefined && (Date.now() - o.postedAt) / 60_000 >= MIN_AGE_MIN);
   const stale = obs.filter(o => o.peak !== undefined && (o.v ?? 1) < MEASURE_VERSION);
-  const staleShare = Math.min(stale.length, Math.ceil(budget / 3));
+  // Weight toward correction while a backlog exists — a table split across two
+  // measurement methods is the thing worth clearing fastest. Falls back to a third
+  // once the backlog is small.
+  const staleShare = Math.min(stale.length, stale.length > 50 ? Math.floor(budget * 0.6) : Math.ceil(budget / 3));
   const due = [...fresh.slice(0, budget - staleShare), ...stale.slice(0, staleShare)];
   let measured = 0, failed = 0;
   for (const o of due) {
