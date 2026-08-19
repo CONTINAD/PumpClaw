@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { truePrice } from './price-oracle.js';
 import { snapshotFrom } from './filter-lab.js';
 import { join } from 'path';
 import { CONFIG } from './config.js';
@@ -600,13 +601,35 @@ async function fastScanCycle() {
     let adjustedMarket = liveMarket;
     try {
       const supply = await mintSupply(coin.mint);
-      if (supply > 0 && liveMarket.priceUsd > 0) {
-        const derived = liveMarket.priceUsd * supply;
-        // Only trust it when it is in the same ballpark; a wrong supply reading
-        // must not rewrite a sane market cap.
-        if (derived > liveMarket.marketCap / 3 && derived < liveMarket.marketCap * 3) {
-          adjustedMarket = { ...liveMarket, marketCap: derived, fdv: derived };
+
+      // Price it at what it will actually trade for, not what the indexer thinks.
+      //
+      // $Hyper was recorded at $8,024 and filled at $5,137: DexScreener had not
+      // indexed the pool (it reported $0 liquidity) and its price was 56% high. The
+      // fill was fine — Jupiter priced the swap — but the call record, the entry
+      // basis and every statistic derived from them were keyed to a price the coin
+      // never traded at, understating a 1.56x head start as 1.00x.
+      //
+      // This runs AFTER the MAX_ENTRY_MC gate on purpose. It corrects what gets
+      // recorded; it does not move any threshold or change which coins are called.
+      const solUsd = await getSolPrice().catch(() => 0);
+      const truth = solUsd > 0 ? await truePrice(coin.mint, solUsd, liveMarket.priceUsd) : null;
+      const priceForRecord = truth && truth.priceUsd > 0 ? truth.priceUsd : liveMarket.priceUsd;
+      if (truth && truth.source !== 'dexscreener' && Math.abs(truth.disagreePct ?? 0) > 10) {
+        log(`💱 ${coin.symbol}: pricing from ${truth.source} — DexScreener was ${(truth.disagreePct ?? 0) > 0 ? '+' : ''}${(truth.disagreePct ?? 0).toFixed(1)}% off executable`);
+      }
+
+      if (supply > 0 && priceForRecord > 0) {
+        const derived = priceForRecord * supply;
+        // The old sanity band compared against DexScreener's own market cap, which
+        // is useless when DexScreener is the thing that is wrong. An executable
+        // quote needs no chaperone; only a derived-from-dex figure does.
+        const trusted = truth && truth.source === 'jupiter';
+        if (trusted || (derived > liveMarket.marketCap / 3 && derived < liveMarket.marketCap * 3)) {
+          adjustedMarket = { ...liveMarket, priceUsd: priceForRecord, marketCap: derived, fdv: derived };
         }
+      } else if (priceForRecord > 0 && priceForRecord !== liveMarket.priceUsd) {
+        adjustedMarket = { ...liveMarket, priceUsd: priceForRecord };
       }
     } catch { /* keep the venue's figure */ }
 

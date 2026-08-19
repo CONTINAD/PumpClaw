@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from 'fs';
+import { BIRDEYE_ON } from './price-oracle.js';
 import { CANDIDATES } from './filter-lab.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { join, dirname } from 'path';
@@ -5218,6 +5219,9 @@ export function startDashboard(port?: number): void {
             // until a request is actually made, so one is.
             probe: await jupiterProbe(),
           },
+          // Second price opinion. Absent is fine — it is a cross-check, not a
+          // dependency, and it rate-limits at roughly 1 req/sec.
+          birdeye: BIRDEYE_ON ? { enabled: true } : { enabled: false, note: 'set BIRDEYE_API_KEY in Railway to enable the cross-check' },
           tasks: { total: taskManager.all().length, real: real.length, paper: taskManager.all().length - real.length },
           liveTasks: real.map(t => ({
             name: t.name, enabled: t.enabled,
