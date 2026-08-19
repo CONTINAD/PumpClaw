@@ -471,7 +471,7 @@ function buildStrategyData(range: TimeRange = 'all') {
   const recent = [...calls].slice(-30).reverse().map(c => ({
     symbol: c.symbol,
     date: new Date(c.entryTime).toISOString().slice(5, 16).replace('T', ' '),
-    peak: +c.peakMultiplier.toFixed(2),
+    peak: +(Number.isFinite(c.peakMultiplier) ? c.peakMultiplier : 0).toFixed(2),
     rets: STRATEGIES.map(s => +s.fn(c.peakMultiplier).toFixed(2)),
   }));
 
@@ -1243,7 +1243,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
           '<td style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text2);font-size:11px">' + (p.taskName || 'main') + '</td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border)"><b>$' + p.symbol + '</b> <span style="color:var(--text3);font-size:11px">' + (p.remainingPct < 1 ? Math.round(p.remainingPct * 100) + '% left' : '') + '</span></td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border);color:' + col + ';font-weight:700">' + (cur === null ? '—' : cur.toFixed(2) + 'X') + '</td>' +
-          '<td style="padding:5px 8px;border-top:1px solid var(--border)">' + p.peakMultiplier.toFixed(2) + 'X</td>' +
+          '<td style="padding:5px 8px;border-top:1px solid var(--border)">' + (Number.isFinite(p.peakMultiplier) ? p.peakMultiplier.toFixed(2) : '—') + 'X</td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text2)">' + (stopMult === null ? '—' : stopMult.toFixed(2) + 'X') + '</td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border);color:' + (est === null ? 'var(--text2)' : est >= 0 ? '#10b981' : '#ef4444') + '">' + (est === null ? '—' : fmtSol(est)) + '</td>' +
           '<td style="padding:5px 8px;border-top:1px solid var(--border);color:var(--text3)">' + (age < 60 ? age + 'm' : Math.floor(age / 60) + 'h ' + (age % 60) + 'm') + '</td>' +
@@ -4072,7 +4072,7 @@ export function startDashboard(port?: number): void {
         const html = settingsShell(`
         <div class="card" style="max-width:none">
           <h3>$${symbol} — how every strategy handled it</h3>
-          <div class="kv">Called at <b>${fmtUsd(rec?.entryMC ?? entryMC)}</b> MC${rec ? ` · peaked <b style="color:#10b981">${rec.peakMultiplier.toFixed(2)}×</b> at ${fmtUsd(rec.peakMC)}` : ''}${callTime ? ` · ${new Date(callTime).toISOString().slice(5, 16).replace('T', ' ')}` : ''}</div>
+          <div class="kv">Called at <b>${fmtUsd(rec?.entryMC ?? entryMC)}</b> MC${rec ? ` · peaked <b style="color:#10b981">${Number.isFinite(rec.peakMultiplier) ? rec.peakMultiplier.toFixed(2) : '—'}×</b> at ${fmtUsd(rec.peakMC)}` : ''}${callTime ? ` · ${new Date(callTime).toISOString().slice(5, 16).replace('T', ' ')}` : ''}</div>
           <div class="kv"><b>${winners}</b> of ${closed.length} closed strategies made money on this coin${results.length - closed.length ? ` · ${results.length - closed.length} still open` : ''}</div>
           <div class="kv mono" style="font-size:11px;color:var(--text3);margin-top:6px">${mint}</div>
           <div style="margin-top:10px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
@@ -4155,7 +4155,7 @@ export function startDashboard(port?: number): void {
             <td><b>$${p.symbol.slice(0, 12)}</b><div style="font-size:10px;color:var(--text3)">${new Date(p.entryTime).toISOString().slice(5, 16).replace('T', ' ')}</div></td>
             <td class="mono" style="font-size:11px">${p.entryPrice.toPrecision(4)}<div style="font-size:10px;color:var(--text3)">${fmtUsd(p.entryMC)} MC</div></td>
             <td>${sells}</td>
-            <td class="mono">${p.peakMultiplier.toFixed(2)}×</td>
+            <td class="mono">${Number.isFinite(p.peakMultiplier) ? p.peakMultiplier.toFixed(2) : '—'}×</td>
             <td class="mono" style="font-weight:700;color:${pl === null ? 'var(--text2)' : pl >= 0 ? '#10b981' : '#ef4444'}">
               ${pl === null ? `${Math.round(p.remainingPct * 100)}% open` : (pl >= 0 ? '+' : '') + pl.toFixed(3) + ' ◎'}
               ${p.status === 'closed' ? `<div style="font-size:10px;color:var(--text3);font-weight:400">${ret.toFixed(2)}× returned</div>` : ''}
@@ -4320,13 +4320,19 @@ export function startDashboard(port?: number): void {
         const row = (x: { task: TradeTask; pos: RealPosition }) => {
           const p = x.pos;
           const pl = p.status === 'closed' ? (p.finalPnlSol ?? 0) : null;
-          const sells = p.exits.map(e => `${e.label} @ ${e.multiplierAtExit.toFixed(2)}× → ${e.solReceived.toFixed(4)} ◎`).join('<br>') || '—';
+          // A dash beats a blank page. getAllPositions() returns closed rows too,
+          // and records written before a field existed have it undefined — one such
+          // row was enough to take the whole Live page down with
+          // "Cannot read properties of null (reading 'toFixed')". A rendering page
+          // should degrade to a placeholder, never throw.
+          const num = (v: any, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : '—');
+          const sells = p.exits.map(e => `${e.label} @ ${num(e.multiplierAtExit, 2)}× → ${num(e.solReceived, 4)} ◎`).join('<br>') || '—';
           return `<tr>
             <td><b>$${p.symbol.slice(0, 12)}</b><div style="font-size:10px;color:var(--text3)">${new Date(p.entryTime).toISOString().slice(5, 16).replace('T', ' ')}</div></td>
             <td style="font-size:11px;color:var(--text2)">${x.task.name.slice(0, 20)}</td>
             <td class="mono">${p.entrySol} ◎<div style="font-size:10px;color:var(--text3)">${fmtUsd(p.entryMC)} MC</div></td>
             <td style="font-size:11px;color:var(--text2)">${sells}</td>
-            <td class="mono">${p.peakMultiplier.toFixed(2)}×</td>
+            <td class="mono">${num(p.peakMultiplier, 2)}×</td>
             <td class="mono" style="font-weight:700;color:${pl === null ? 'var(--text2)' : pl >= 0 ? '#10b981' : '#ef4444'}">
               ${pl === null ? Math.round(p.remainingPct * 100) + '% open' : (pl >= 0 ? '+' : '') + pl.toFixed(4) + ' ◎'}</td>
             <td><a href="/coin?mint=${p.mint}" style="color:#3b82f6;font-size:11px">detail</a></td></tr>`;
