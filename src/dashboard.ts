@@ -5250,6 +5250,7 @@ export function startDashboard(port?: number): void {
         // Round-trip cost. Protocol fee plus realised slippage, measured on our own
         // fills rather than assumed — a simulation that ignores it prints money.
         const FEE = q('fee', 3) / 100;
+        const sampled = /[?&]bars=close/.test(url);
 
         import('./candles.js').then(candleMod => {
         const paths = candleMod.loadPaths(600);
@@ -5273,7 +5274,14 @@ export function startDashboard(port?: number): void {
 
           let remaining = 1, proceeds = 0, high = 1, tpDone = false, exitReason = 'held to end';
           for (const c of p.candles) {
-            const hi = c.h / p.entryPrice, lo = c.l / p.entryPrice;
+            // bars=close simulates what the paper trader actually sees: a sampled
+            // price, never the intrabar extremes. Paper checks positions on a loop
+            // against DexScreener's smoothed aggregate, so both the running high and
+            // the trigger are sampled — which cannot miss a slow 40% drawdown but can
+            // easily miss a fast 8% one. That biases tight trails, and by how much is
+            // measurable rather than arguable.
+            const hi = sampled ? c.c / p.entryPrice : c.h / p.entryPrice;
+            const lo = sampled ? c.c / p.entryPrice : c.l / p.entryPrice;
             if (hi > high) high = hi;
             // Take-profit first: within a bar we cannot know the order, so credit the
             // target before the stop. This flatters the result and is stated as such.
@@ -5309,7 +5317,8 @@ export function startDashboard(port?: number): void {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           config: { start, entryPct: pct, minEntry, maxEntry, takeProfit: tp, tpSellPct: tpSell,
-                    trailPct: trail, hardStopPct: hardStop, feePct: FEE, windowHours: hours },
+                    trailPct: trail, hardStopPct: hardStop, feePct: FEE, windowHours: hours,
+                    bars: sampled ? 'close (what paper sees)' : 'high/low (what really happened)' },
           note: 'Sequential and non-overlapping: each entry is sized off the balance the previous trade left. '
               + 'Real calls overlap in time, so a live run would size differently and could not always deploy the '
               + 'full percentage. Within a single candle the take-profit is credited before the stop, which '
