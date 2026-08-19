@@ -72,6 +72,7 @@ class TaskManager {
     this.load();
     this.loadPending();
     this.migrateLegacy();
+    this.clearHoldClock();
     this.repairOrphanedTasks();
     this.seedShadowFleet();
     this.loadBuyLog();
@@ -204,6 +205,44 @@ class TaskManager {
   private save(): void {
     mkdirSync(CONFIG.DATA_DIR, { recursive: true });
     writeFileSync(TASKS_FILE, JSON.stringify([...this.tasks.values()], null, 2));
+  }
+
+  /**
+   * One-time: drop the hold clock from live tasks.
+   *
+   * MANIFEST carried maxHoldMin=5, which the code never defaults to — every
+   * fallback is 0 — so it came from whatever preset the custom builder was seeded
+   * with rather than from a decision. It was also the single most expensive setting
+   * in the book: the time exit sits above the take-profit ladder, the trailing stop
+   * and the stop loss, so once the clock expired it fired on every tick and, until
+   * this was fixed, returned before any of them could be evaluated. $mRNA-4157
+   * expired at 1.39x, ran to 4.99x with the 1.95x rung never once consulted, and
+   * held 100% the whole way back down.
+   *
+   * A 5-minute clock also contradicts take-profits at 5.05x and 10.05x, which
+   * essentially nothing reaches inside five minutes.
+   *
+   * Guarded by a marker file, so this runs exactly once. A clock set deliberately
+   * after this deploy is never touched.
+   */
+  private clearHoldClock(): void {
+    const marker = `${CONFIG.DATA_DIR}/.hold-clock-cleared`;
+    if (existsSync(marker)) return;
+    let changed = 0;
+    for (const t of this.tasks.values()) {
+      if (t.paper) continue;                       // the shadow fleet is a measurement tool, leave it
+      const had = t.strategy.maxHoldMin ?? 0;
+      if (had > 0) {
+        t.strategy.maxHoldMin = 0;
+        changed++;
+        console.log(`[Tasks] Removed the ${had}m hold clock from "${t.name}" — the trail runs the trade now (one-time)`);
+      }
+    }
+    try {
+      mkdirSync(CONFIG.DATA_DIR, { recursive: true });
+      writeFileSync(marker, new Date().toISOString());
+    } catch { /* if the marker cannot be written, the guard below still stops a re-run this boot */ }
+    if (changed) this.save();
   }
 
   /** One-time migration: fold the legacy single-wallet setup into a 'main' task

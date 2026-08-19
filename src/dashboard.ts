@@ -5095,7 +5095,19 @@ export function startDashboard(port?: number): void {
             });
           }
           const trackedMints = new Set(open.map(p => p.mint));
-          const orphans = holdings.filter(h => !trackedMints.has(h.mint)).map(h => ({ mint: h.mint, amount: h.uiAmount }));
+          // A reconciler that is always red reconciles nothing. This reported every
+          // non-position token as an untracked bag, so 0.19 USDC of dust pinned the
+          // verdict to MISMATCH permanently — and a genuinely stranded position would
+          // have arrived as one more line in a list that was already crying wolf.
+          // Quote assets are not memecoin bags, and true dust is not a position.
+          const NOT_A_BAG = new Set([
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',   // USDC
+            'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',   // USDT
+            'So11111111111111111111111111111111111111112',    // wSOL
+          ]);
+          const orphans = holdings
+            .filter(h => !trackedMints.has(h.mint) && !NOT_A_BAG.has(h.mint) && h.uiAmount > 0)
+            .map(h => ({ mint: h.mint, amount: h.uiAmount }));
           out.push({ task: t.name, wallet: kp.publicKey.toBase58(), sol, openPositions: open.length, checks, orphans });
         }
         const allOk = out.every(t => t.checks.every((c: any) => c.ok) && t.orphans.length === 0);
