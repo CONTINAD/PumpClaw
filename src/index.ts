@@ -259,8 +259,17 @@ function recordSkip(post: { mint: string; name: string; creator?: string }, reas
  * that and the coin has not had time to show its hand, older and it is settled.
  */
 async function skipOutcomeLoop() {
+  // Sleep-first meant the first grading pass came 60 minutes after boot, so a day
+  // of frequent deploys graded nothing at all: every restart reset the timer before
+  // it ever fired. 39 rows sat eligible and untouched while this looked like a
+  // patient loop rather than a stalled one.
+  //
+  // Two minutes in is safe because eligibility is already gated on age — nothing
+  // younger than 30 minutes is graded no matter how often this runs.
+  let first = true;
   while (true) {
-    await new Promise(r => setTimeout(r, 3600_000));
+    await new Promise(r => setTimeout(r, first ? 120_000 : 3600_000));
+    first = false;
     try {
       const now = Date.now();
       // Re-check across the window instead of once. One sample cannot express a
