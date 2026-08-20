@@ -1531,7 +1531,7 @@ ${d.callsWithPeaks.length === 0
         <div class="runner-rank">#${i + 1}</div>
         <div class="runner-sym">${trophy} $${esc(c.symbol)}</div>
         <div class="runner-name">${esc(c.name)}</div>
-        <div class="runner-peak ${peakClass}">${c.peakMultiplier.toFixed(1)}×</div>
+        <div class="runner-peak ${peakClass}">${n2(c.peakMultiplier, 1)}×</div>
         <div class="runner-mc">$${fmtK(c.entryMC)} → <strong>$${fmtK(c.peakMC)}</strong></div>
         <div class="runner-ms">
           ${c.milestones.length ? c.milestones.map(m => `<span class="ms">${m}×</span>`).join('') : '<span class="ms" style="background:rgba(122,135,158,0.1);color:var(--text3)">—</span>'}
@@ -1671,6 +1671,55 @@ function authOk(req: IncomingMessage): boolean {
   if (!expect) return false;
   const m = (req.headers.cookie ?? '').match(/dash_auth=([a-f0-9]{64})/);
   return !!m && m[1] === expect;
+}
+
+/**
+ * Print a stored number, or a dash.
+ *
+ * A record written before a field existed, or by a path that stored null, must not be
+ * able to take a page down. It already did twice: the Live page died on a null
+ * peakMultiplier, and /exits returned 500 for the same reason on multiplierAtExit.
+ * Both were one bad value in one row out of hundreds.
+ */
+function n2(v: any, d = 2, dash = '—'): string {
+  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : dash;
+}
+
+/**
+ * Replay results, computed once and reused.
+ *
+ * Both the strategy page and /api/shadow replay every preset against every captured
+ * path, under both intra-candle orderings. That is 2,400 strategies x 2 x 218 paths,
+ * and doing it per request took /shadow from 0.7s to 6.7s.
+ *
+ * Nothing about it needs to be live: paths are captured once per coin about 45
+ * minutes after the call, and a preset's definition is fixed at boot. So the answer
+ * only changes when a new path lands. Keyed on the path count with a ten-minute
+ * ceiling, which picks up new captures without ever serving a stale shape.
+ */
+interface CleanRow { avg: number; high: number; best: number; winPct: number; total: number; trades: number }
+let cleanCache: { at: number; paths: number; rows: Map<string, CleanRow> } | null = null;
+
+function cleanReplay(): Map<string, CleanRow> {
+  const paths = loadPaths(600);
+  if (cleanCache && cleanCache.paths === paths.length && Date.now() - cleanCache.at < 600_000) {
+    return cleanCache.rows;
+  }
+  const rows = new Map<string, CleanRow>();
+  for (const [key, preset] of Object.entries(STRATEGY_PRESETS)) {
+    try {
+      const base = preset.make() as unknown as BacktestCfg;
+      const lo = backtest({ ...base, intraOrder: 'low' }, paths);
+      if (lo.trades <= 0) continue;
+      const hi = backtest({ ...base, intraOrder: 'high' }, paths);
+      rows.set(key, {
+        avg: +lo.avg.toFixed(4), high: +hi.avg.toFixed(4), best: +lo.best.toFixed(2),
+        winPct: lo.winPct, total: +lo.total.toFixed(2), trades: lo.trades,
+      });
+    } catch { /* a preset the replay cannot express has no twin */ }
+  }
+  cleanCache = { at: Date.now(), paths: paths.length, rows };
+  return rows;
 }
 
 const SETTINGS_STYLE = `
@@ -4102,7 +4151,7 @@ export function startDashboard(port?: number): void {
             peak: pos.peakMultiplier, status: pos.status,
             ret: pos.entrySol > 0 ? pos.totalSolReturned / pos.entrySol : 0,
             pnl: pos.status === 'closed' ? (pos.finalPnlSol ?? 0) : null,
-            exits: pos.exits.map(e => `${e.label} @ ${e.multiplierAtExit.toFixed(2)}×`).join(' · ') || '—',
+            exits: pos.exits.map(e => `${e.label} @ ${n2(e.multiplierAtExit)}×`).join(' · ') || '—',
           });
         }
         results.sort((a, b) => (b.pnl ?? -99) - (a.pnl ?? -99));
@@ -4189,7 +4238,7 @@ export function startDashboard(port?: number): void {
         const rows = positions.slice(0, 60).map(p => {
           const ret = p.entrySol > 0 ? p.totalSolReturned / p.entrySol : 0;
           const sells = p.exits.map(e =>
-            `<div style="font-size:11px;color:var(--text2)">${e.label} — <b style="color:${e.multiplierAtExit >= 1 ? '#10b981' : '#ef4444'}">${e.multiplierAtExit.toFixed(2)}×</b> → ${e.solReceived.toFixed(3)} ◎</div>`
+            `<div style="font-size:11px;color:var(--text2)">${e.label} — <b style="color:${e.multiplierAtExit >= 1 ? '#10b981' : '#ef4444'}">${n2(e.multiplierAtExit)}×</b> → ${n2(e.solReceived, 3)} ◎</div>`
           ).join('') || '<div style="font-size:11px;color:var(--text3)">— still open —</div>';
           const pl = p.status === 'closed' ? (p.finalPnlSol ?? 0) : null;
           return `<tr>
@@ -4285,7 +4334,12 @@ export function startDashboard(port?: number): void {
                 : /Circuit/.test(l) ? 'Circuit breaker'
                 : /Panic|Emergency|Stop exit/.test(l) ? 'Forced exit'
                 : 'Other';
-              rows.push({ sym: p.symbol, reason: l, group, mult: x.multiplierAtExit, sol: x.solReceived, ts: x.timestamp, task: t.name });
+              // Coerce at the boundary: a null here becomes a dash on screen rather
+              // than an exception that loses the other 200 rows.
+              rows.push({ sym: p.symbol, reason: l, group,
+                mult: Number.isFinite(x.multiplierAtExit) ? x.multiplierAtExit : NaN,
+                sol: Number.isFinite(x.solReceived) ? x.solReceived : 0,
+                ts: x.timestamp, task: t.name });
             }
           }
         }
@@ -4296,8 +4350,9 @@ export function startDashboard(port?: number): void {
           groups.get(r.group)!.push(r);
         }
         const summary = [...groups.entries()].map(([g, rs]) => {
-          const avg = rs.reduce((a, r) => a + r.mult, 0) / rs.length;
-          const above = rs.filter(r => r.mult >= 1).length;
+          const ok = rs.filter(r => Number.isFinite(r.mult));
+          const avg = ok.length ? ok.reduce((a, r) => a + r.mult, 0) / ok.length : NaN;
+          const above = ok.filter(r => r.mult >= 1).length;
           // How much was on the table at the position's best, versus what the exit got.
           return { g, n: rs.length, avg, above, sol: rs.reduce((a, r) => a + r.sol, 0) };
         }).sort((a, b) => b.n - a.n);
@@ -4317,9 +4372,9 @@ export function startDashboard(port?: number): void {
             ${summary.map(x => `<tr>
               <td style="font-weight:700;white-space:nowrap">${x.g}</td>
               <td class="mono">${x.n}</td>
-              <td class="mono" style="color:${x.avg >= 1 ? '#10b981' : '#ef4444'};font-weight:700">${x.avg.toFixed(2)}×</td>
+              <td class="mono" style="color:${x.avg >= 1 ? '#10b981' : '#ef4444'};font-weight:700">${n2(x.avg)}×</td>
               <td class="mono" style="color:${x.above === x.n ? '#10b981' : x.above === 0 ? '#ef4444' : 'var(--text2)'}">${x.above} / ${x.n}</td>
-              <td class="mono">${x.sol.toFixed(3)} ◎</td>
+              <td class="mono">${n2(x.sol, 3)} ◎</td>
             </tr>`).join('')}
           </table></div>`}
         </div>
@@ -4333,8 +4388,8 @@ export function startDashboard(port?: number): void {
               return `<tr>
                 <td style="font-weight:700">$${r.sym}</td>
                 <td style="font-size:12px;color:var(--text2)">${r.reason.slice(0, 40)}</td>
-                <td class="mono" style="color:${r.mult >= 1 ? '#10b981' : '#ef4444'};font-weight:700">${r.mult.toFixed(2)}×</td>
-                <td class="mono">${r.sol.toFixed(4)}</td>
+                <td class="mono" style="color:${r.mult >= 1 ? '#10b981' : '#ef4444'};font-weight:700">${n2(r.mult)}×</td>
+                <td class="mono">${n2(r.sol, 4)}</td>
                 <td class="mono" style="color:var(--text3);font-size:11px">${mins < 60 ? mins + 'm' : mins < 1440 ? Math.floor(mins / 60) + 'h' : Math.floor(mins / 1440) + 'd'} ago</td>
               </tr>`;
             }).join('')}
@@ -5063,30 +5118,14 @@ export function startDashboard(port?: number): void {
         // candles.ts replays real minute OHLCV: a trail ratchets only on a high the
         // coin actually printed, and a dip fills at its limit, not at a gap's bottom.
         try {
-          const cPaths = loadPaths(600);
+          const twins = cleanReplay();
           for (const r of rows) {
-            const preset = STRATEGY_PRESETS[r.key];
-            if (!preset) continue;
-            try {
-              const base = preset.make() as unknown as BacktestCfg;
-              // Both intra-candle orderings. The deepest fall inside a single candle
-              // is a median 64% of that candle's high across these paths, so which
-              // half is assumed to happen first decides the result — and it does not
-              // bias every shape equally. One number here would be a claim minute
-              // candles cannot support.
-              const lo = backtest({ ...base, intraOrder: 'low' }, cPaths);
-              const hi = backtest({ ...base, intraOrder: 'high' }, cPaths);
-              if (lo.trades > 0) {
-                r.cleanAvg = +(lo.avg).toFixed(4);
-                r.cleanHigh = +(hi.avg).toFixed(4);
-                r.cleanBest = +(lo.best).toFixed(2);
-                r.cleanWin = lo.winPct;
-                r.cleanTotal = +(lo.total).toFixed(2);
-                r.cleanTrades = lo.trades;
-              }
-            } catch { /* a preset the replay cannot express keeps a null twin */ }
+            const c = twins.get(r.key);
+            if (!c) continue;
+            r.cleanAvg = c.avg; r.cleanHigh = c.high; r.cleanBest = c.best;
+            r.cleanWin = c.winPct; r.cleanTotal = c.total; r.cleanTrades = c.trades;
           }
-        } catch { /* no captured paths yet — the column simply stays empty */ }
+        } catch { /* no captured paths yet — the columns stay empty */ }
 
         const showAll = /[?&]all=1/.test(url);
 
@@ -5539,17 +5578,7 @@ export function startDashboard(port?: number): void {
         // ratchet on a candle high the coin actually printed, and a dip fills at its
         // limit rather than at the bottom of a gap. Same 218 coins, honest path.
         const paths = loadPaths(600);
-        const clean = new Map<string, { avg: number; robustAvg: number; median: number; winPct: number; trades: number }>();
-        for (const r of rows) {
-          const preset = STRATEGY_PRESETS[(r as any).key];
-          if (!preset) continue;
-          try {
-            const b = backtest(preset.make() as unknown as BacktestCfg, paths);
-            if (b.trades > 0) clean.set((r as any).key, {
-              avg: b.avg, robustAvg: b.robustAvg, median: b.median, winPct: b.winPct, trades: b.trades,
-            });
-          } catch { /* a preset the replay cannot express is left without a twin */ }
-        }
+        const clean = cleanReplay();
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
