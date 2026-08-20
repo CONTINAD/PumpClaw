@@ -1769,12 +1769,50 @@ button:hover{filter:brightness(1.1)}
 .warn{font-size:11px;color:var(--text3);margin-top:12px;line-height:1.5}
 .mono{font-family:'SF Mono',Menlo,monospace}`;
 
+/**
+ * Grouped navigation.
+ *
+ * Fifteen flat links in one row gave no clue which pages answer the same question,
+ * and several do: /filters grades the rules that are running while /filter-lab
+ * scores the ones that are not; /params, /sweep and /builder are three views of
+ * choosing a configuration. Grouping them by the question they answer — what is
+ * happening now, what did we call, what should we run, why did it decide that —
+ * makes the overlap legible instead of hiding it in a row of equals.
+ */
+const NAV_GROUPS: [string, [string, string][]][] = [
+  ['NOW', [['/live', 'Live'], ['/calendar', 'Calendar'], ['/tasks', 'Tasks'], ['/ledger', 'Ledger']]],
+  ['CALLS', [['/calls', 'Calls'], ['/exits', 'Exits'], ['/channels', 'Channels'], ['/features', 'Features']]],
+  ['STRATEGY', [['/shadow', 'Shadow'], ['/builder', 'Builder'], ['/sweep', 'Sweep'], ['/params', 'Params']]],
+  ['FILTERS', [['/filters', 'Live rules'], ['/filter-lab', 'Filter Lab'], ['/bundles', 'Bundles']]],
+];
+
+function navBar(self: string): string {
+  const link = (href: string, label: string) => {
+    const on = self === href || self.startsWith(href + '?');
+    return `<a href="${href}" style="text-decoration:none;font-size:12px;padding:3px 8px;border-radius:6px;`
+      + `color:${on ? 'var(--text)' : 'var(--text2)'};background:${on ? 'var(--bg3)' : 'transparent'}">${label}</a>`;
+  };
+  return `<nav style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">`
+    + NAV_GROUPS.map(([g, items]) =>
+        `<span style="display:flex;align-items:center;gap:2px">`
+        + `<span style="font-size:9px;letter-spacing:.12em;color:var(--text3);margin-right:4px">${g}</span>`
+        + items.map(([h, l]) => link(h, l)).join('') + `</span>`).join('')
+    + `<span style="display:flex;align-items:center;gap:2px;margin-left:4px">`
+    + link('/settings', 'Settings') + `<a href="/" style="text-decoration:none;font-size:12px;padding:3px 8px;color:var(--text2)">← Dashboard</a></span></nav>`;
+}
+
 function settingsShell(inner: string, self = '/settings'): string {
-  const title = self === '/builder' ? '🧪 Strategy Builder' : self === '/live' ? '◆ Live Trading' : self === '/shadow' ? '📄 Shadow Fleet' : self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Live Trading Settings';
-  const wide = self === '/builder' ? 'max-width:760px' : self === '/live' || self === '/shadow' ? 'max-width:1200px' : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
+  const title = self === '/builder' ? '🧪 Strategy Builder' : self === '/live' ? '◆ Live Trading'
+    : self === '/shadow' ? '📄 Shadow Fleet' : self === '/calendar' ? '📅 PnL Calendar'
+    : self === '/exits' ? '🚪 Exit analysis' : self.startsWith('/task') ? '🤖 Trading Tasks'
+    : '⚙️ Live Trading Settings';
+  const wide = self === '/builder' ? 'max-width:760px'
+    : self === '/live' || self === '/shadow' ? 'max-width:1200px'
+    : self === '/calendar' ? 'max-width:1000px'
+    : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>${title}</h1><div style="display:flex;gap:14px"><a href="/builder">Builder</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/filter-lab">Filter Lab</a><a href="/shadow">Shadow</a><a href="/bundles">Bundles</a><a href="/channels">Channels</a><a href="/ledger">Ledger</a><a href="/params">Params</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/settings">Settings</a><a href="/">← Dashboard</a></div></div>
+<div class="topbar" style="flex-wrap:wrap;gap:10px"><h1 style="margin-right:auto">${title}</h1>${navBar(self)}</div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -4040,6 +4078,119 @@ export function startDashboard(port?: number): void {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (pathname === '/calendar') {
+      // Daily realised PnL, one calendar per trader.
+      //
+      // A leaderboard says a strategy averages -0.09 per trade. It does not say that
+      // the damage came from three days, or that a month of grinding was undone in an
+      // afternoon. Shape over time is a different question from average per trade and
+      // the dashboard could not answer it.
+      try {
+        const tasks = taskManager.all();
+        const wantId = (url.match(/[?&]task=([a-z0-9]+)/) || [])[1];
+        const task = (wantId && tasks.find(t => t.id === wantId)) || tasks.find(t => !t.paper) || tasks[0];
+        if (!task) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(settingsShell('<div class="card"><h3>No tasks yet</h3></div>', '/calendar'));
+          return;
+        }
+        // Month is handled in UTC throughout: mixing a local calendar grid with UTC
+        // timestamps silently files trades under the wrong day near midnight.
+        const mm = (url.match(/[?&]month=(\d{4})-(\d{2})/) || []);
+        const now = new Date();
+        const year = mm[1] ? parseInt(mm[1]) : now.getUTCFullYear();
+        const month = mm[2] ? parseInt(mm[2]) - 1 : now.getUTCMonth();
+        const first = Date.UTC(year, month, 1);
+        const next = Date.UTC(year, month + 1, 1);
+
+        const positions = taskManager.traderFor(task).getAllPositions()
+          .filter(p => p.status === 'closed' && Number.isFinite(p.closedTime) && Number.isFinite(p.finalPnlSol));
+        const byDay = new Map<number, { pnl: number; n: number; wins: number }>();
+        for (const p of positions) {
+          const t = p.closedTime!;
+          if (t < first || t >= next) continue;
+          const d = new Date(t).getUTCDate();
+          const e = byDay.get(d) ?? { pnl: 0, n: 0, wins: 0 };
+          e.pnl += p.finalPnlSol!; e.n++; if (p.finalPnlSol! > 0) e.wins++;
+          byDay.set(d, e);
+        }
+        const days = [...byDay.values()];
+        const total = days.reduce((a, x) => a + x.pnl, 0);
+        const green = days.filter(x => x.pnl > 0);
+        const red = days.filter(x => x.pnl < 0);
+        const worst = Math.max(0.0001, ...days.map(x => Math.abs(x.pnl)));
+
+        // Monday-first grid, matching how a week is read.
+        const lead = (new Date(first).getUTCDay() + 6) % 7;
+        const dim = new Date(next - 86400000).getUTCDate();
+        const cells: string[] = [];
+        for (let i = 0; i < lead; i++) cells.push('<div></div>');
+        for (let d = 1; d <= dim; d++) {
+          const e = byDay.get(d);
+          const isFuture = Date.UTC(year, month, d) > Date.now();
+          if (!e) {
+            cells.push(`<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;min-height:74px;opacity:${isFuture ? 0.25 : 0.55}">
+              <div style="font-size:11px;color:var(--text3)">${d}</div>
+              <div style="font-size:13px;color:var(--text3);margin-top:14px;text-align:center">${isFuture ? '' : '—'}</div></div>`);
+            continue;
+          }
+          const up = e.pnl >= 0;
+          // Opacity carries magnitude, so a heavy day is visible without reading it.
+          const w = Math.min(0.34, 0.06 + 0.28 * (Math.abs(e.pnl) / worst));
+          cells.push(`<div title="${e.n} trade${e.n === 1 ? '' : 's'}, ${e.wins} green"
+            style="border:1px solid ${up ? 'rgba(16,185,129,.45)' : 'rgba(239,68,68,.45)'};border-radius:10px;padding:10px 12px;min-height:74px;
+                   background:${up ? `rgba(16,185,129,${w})` : `rgba(239,68,68,${w})`}">
+            <div style="font-size:11px;color:${up ? '#6ee7b7' : '#fca5a5'}">${d}</div>
+            <div style="font-size:17px;font-weight:700;margin-top:8px;color:${up ? '#10b981' : '#ef4444'};font-variant-numeric:tabular-nums">${up ? '+' : ''}${e.pnl.toFixed(3)}</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px">${e.wins}/${e.n} green</div>
+          </div>`);
+        }
+
+        const label = new Date(first).toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+        const prev = new Date(Date.UTC(year, month - 1, 1));
+        const nxt = new Date(Date.UTC(year, month + 1, 1));
+        const mk = (dt: Date) => `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+        const nav = (dt: Date, txt: string) => `<a href="/calendar?task=${task.id}&month=${mk(dt)}"
+          style="color:var(--text2);text-decoration:none;padding:4px 12px;border:1px solid var(--border);border-radius:8px">${txt}</a>`;
+
+        const inner = `
+        <div class="card" style="max-width:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+            <h3 style="margin:0">📅 PnL Calendar</h3>
+            <div style="display:flex;align-items:center;gap:10px">
+              ${nav(prev, '‹')}<div style="font-size:15px;font-weight:600;min-width:150px;text-align:center">${label}</div>${nav(nxt, '›')}
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 4px">
+            ${tasks.slice(0, 14).map(t => `<a href="/calendar?task=${t.id}&month=${mk(new Date(first))}"
+              style="font-size:11px;text-decoration:none;padding:4px 10px;border-radius:6px;border:1px solid ${t.id === task.id ? 'var(--border2)' : 'var(--border)'};background:${t.id === task.id ? 'var(--bg3)' : 'transparent'};color:${t.id === task.id ? 'var(--text)' : 'var(--text2)'}">${t.paper ? '📄 ' : '◆ '}${t.name.replace('📄 ', '')}</a>`).join('')}
+          </div>
+          <div style="font-size:34px;font-weight:800;margin:12px 0 4px;color:${total >= 0 ? '#10b981' : '#ef4444'};font-variant-numeric:tabular-nums">${total >= 0 ? '+' : ''}${total.toFixed(3)} ◎</div>
+          <div style="height:3px;border-radius:2px;overflow:hidden;display:flex;background:var(--bg3);margin-bottom:6px">
+            <div style="width:${green.length + red.length ? (100 * green.length) / (green.length + red.length) : 0}%;background:#10b981"></div>
+            <div style="flex:1;background:#ef4444"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:16px">
+            <span style="color:#10b981">${green.length} green / +${green.reduce((a, x) => a + x.pnl, 0).toFixed(3)} ◎</span>
+            <span style="color:var(--text3)">${positions.filter(p => p.closedTime! >= first && p.closedTime! < next).length} trades this month</span>
+            <span style="color:#ef4444">${red.length} red / ${red.reduce((a, x) => a + x.pnl, 0).toFixed(3)} ◎</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:6px">
+            ${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => `<div style="text-align:center;font-size:11px;color:var(--text3)">${d}</div>`).join('')}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${cells.join('')}</div>
+          <p style="font-size:11px;color:var(--text3);margin-top:14px;line-height:1.6">
+            Realised PnL only — a position is counted on the day it closed, in UTC. Open positions
+            appear on no day until they close. Shading carries the size of the day relative to the
+            heaviest one in the month, so a bad afternoon is visible without reading the numbers.
+          </p>
+        </div>`;
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(settingsShell(inner, '/calendar').replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · PnL Calendar</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(`<pre>Calendar error: ${err.message}</pre>`);
       }
     } else if (pathname === '/api/paths') {
       // Raw captured candle paths, so the replay engine can be audited from outside
