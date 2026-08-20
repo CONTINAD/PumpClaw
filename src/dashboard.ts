@@ -4393,58 +4393,98 @@ export function startDashboard(port?: number): void {
     } else if (pathname === '/filter-lab') {
       // Candidate filters that reject nothing.
       //
-      // /filters grades the rules already running, which can only ever tell you
-      // about decisions you have made. This is the other question: which rule
-      // SHOULD be running. Every candidate is scored against every coin we have an
-      // outcome for, and none of them can block a buy.
+      // /filters grades the rules already running, which can only tell you about
+      // decisions already made. This is the other question: which rule SHOULD be
+      // running. Every candidate is scored against every coin with an outcome, and
+      // none of them can block a buy.
       try {
-        const hm = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '168';
-        const qs = `hours=${hm}`;
+        const hm = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '24';
+        const WINDOWS: [string, string][] = [['1', '1h'], ['6', '6h'], ['12', '12h'], ['24', '24h'], ['48', '48h'], ['168', '7d'], ['all', 'All']];
         const inner = `
         <div class="card" style="max-width:none">
           <h3>🧪 Filter Lab — candidates that do nothing</h3>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin:6px 0 14px">
-            Thirty-one entry rules, none of them wired to anything. Each is scored against every
-            coin with a measured outcome — the ones we bought and the ones we rejected alike.
-            <b>Edge</b> is the EV of coins a rule would let through minus the EV of the ones it
-            would block, so positive means it is picking the better half. Candidates are evaluated
-            when this page loads rather than when a coin is scanned, which is why a rule added
-            later still gets the full history instead of starting at zero.
+            Entry rules wired to nothing, each scored against every coin with a measured outcome —
+            bought and rejected alike. <b>Edge</b> is the EV of coins a rule lets through minus the
+            EV of the ones it blocks, so positive is better. <b>Crash edge</b> is the share of
+            allowed coins that fell under 0.25x minus the same for blocked ones, so
+            <b>negative is better</b> — it exists because a manufactured chart reaches 2x as often
+            as a real coin and then goes to nothing, which peak-based EV cannot see. Candidates are
+            evaluated at page load, so a rule added today gets the whole history rather than n=0.
           </p>
-          <div style="display:flex;gap:8px;margin-bottom:12px">
-            ${['24', '48', '168', 'all'].map(h => `<a href="/filter-lab?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hm ? 'var(--border2)' : 'var(--border)'};background:${h === hm ? 'var(--bg3)' : 'transparent'};color:${h === hm ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h === '168' ? '7d' : h + 'h'}</a>`).join('')}
+          <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+            <span style="font-size:11px;color:var(--text3);align-self:center;margin-right:4px">WINDOW</span>
+            ${WINDOWS.map(([h, lbl]) => `<a href="/filter-lab?hours=${h}" style="padding:4px 11px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hm ? 'var(--border2)' : 'var(--border)'};background:${h === hm ? 'var(--bg3)' : 'transparent'};color:${h === hm ? 'var(--text)' : 'var(--text2)'}">${lbl}</a>`).join('')}
           </div>
+          <div id="groups" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap"></div>
           <div id="meta" style="font-size:12px;color:var(--text3);margin-bottom:10px">loading…</div>
           <div style="overflow-x:auto"><table style="width:100%;font-size:13px" id="tbl">
-            <tr style="text-align:left;color:var(--text3);font-size:11px">
-              <th>candidate</th><th>group</th><th>lets through</th><th>blocks</th>
-              <th>EV allowed</th><th>EV blocked</th><th>EDGE</th><th>2x allowed</th><th></th>
-            </tr>
+            <thead><tr style="text-align:left;color:var(--text3);font-size:11px">
+              <th data-s="name">candidate</th><th data-s="group">group</th>
+              <th data-s="nPass">allows</th><th data-s="nFail">blocks</th>
+              <th data-s="evPass">EV allowed</th><th data-s="edge">EDGE</th>
+              <th data-s="hit2Pass">2x allowed</th>
+              <th data-s="crashPass">crash allowed</th><th data-s="crashEdge">CRASH EDGE</th><th></th>
+            </tr></thead><tbody></tbody>
           </table></div>
         </div>
         <script>
         (async () => {
-          const d = await (await fetch('/api/filter-lab?${qs}')).json();
+          const d = await (await fetch('/api/filter-lab?hours=${hm}')).json();
           document.getElementById('meta').textContent =
-            d.observations + ' coins scored (' + d.taken + ' taken, ' + d.rejected + ' rejected) over ' + d.windowHours + (d.windowHours === 'all' ? '' : 'h');
+            d.observations + ' coins scored (' + d.taken + ' taken, ' + d.rejected + ' rejected) over '
+            + d.windowHours + (d.windowHours === 'all' ? '' : 'h') + ' · ' + d.withTrough + ' have a measured trough';
           const pct = v => (v * 100).toFixed(0) + '%';
-          const t = document.getElementById('tbl');
-          for (const f of d.filters) {
-            const c = f.edge > 0.15 ? '#10b981' : f.edge < -0.15 ? '#ef4444' : 'var(--text2)';
-            const tr = document.createElement('tr');
-            tr.style.opacity = f.usable ? '1' : '0.42';
-            tr.innerHTML =
-              '<td style="font-weight:600">' + f.name + '</td>' +
-              '<td style="color:var(--text3);font-size:11px">' + f.group + '</td>' +
-              '<td class="mono">' + f.nPass + '</td>' +
-              '<td class="mono">' + f.nFail + '</td>' +
-              '<td class="mono">' + pct(f.evPass) + '</td>' +
-              '<td class="mono" style="color:var(--text3)">' + pct(f.evFail) + '</td>' +
-              '<td class="mono" style="font-weight:700;color:' + c + '">' + (f.edge >= 0 ? '+' : '') + pct(f.edge) + '</td>' +
-              '<td class="mono" style="color:var(--text3)">' + f.hit2Pass.toFixed(0) + '%</td>' +
-              '<td style="font-size:11px;color:var(--text3)">' + (f.usable ? '' : 'too few either side') + '</td>';
-            t.appendChild(tr);
+          let group = 'all', sortKey = 'edge', asc = false;
+          const gwrap = document.getElementById('groups');
+          const chip = (label, val) => {
+            const a = document.createElement('a');
+            a.textContent = label; a.href = 'javascript:void 0';
+            a.style.cssText = 'padding:3px 10px;border-radius:6px;font-size:11px;text-decoration:none;border:1px solid var(--border);color:var(--text2)';
+            a.onclick = () => { group = val; draw(); };
+            a.dataset.g = val;
+            gwrap.appendChild(a);
+          };
+          chip('all groups', 'all');
+          for (const g of d.groups) chip(g, g);
+          for (const th of document.querySelectorAll('th[data-s]')) {
+            th.style.cursor = 'pointer';
+            th.onclick = () => { const k = th.dataset.s; asc = sortKey === k ? !asc : false; sortKey = k; draw(); };
           }
+          function draw() {
+            for (const a of gwrap.children) {
+              const on = a.dataset.g === group;
+              a.style.background = on ? 'var(--bg3)' : 'transparent';
+              a.style.color = on ? 'var(--text)' : 'var(--text2)';
+              a.style.borderColor = on ? 'var(--border2)' : 'var(--border)';
+            }
+            const rows = d.filters.filter(f => group === 'all' || f.group === group).slice().sort((x, y) => {
+              const a = x[sortKey], b = y[sortKey];
+              const c = typeof a === 'string' ? String(a).localeCompare(String(b)) : (a - b);
+              return asc ? c : -c;
+            });
+            const tb = document.querySelector('#tbl tbody');
+            tb.innerHTML = '';
+            for (const f of rows) {
+              const c = f.edge > 0.15 ? '#10b981' : f.edge < -0.15 ? '#ef4444' : 'var(--text2)';
+              const cc = f.crashEdge < -8 ? '#10b981' : f.crashEdge > 8 ? '#ef4444' : 'var(--text2)';
+              const tr = document.createElement('tr');
+              tr.style.opacity = f.usable ? '1' : '0.42';
+              tr.innerHTML =
+                '<td style="font-weight:600">' + f.name + '</td>' +
+                '<td style="color:var(--text3);font-size:11px">' + f.group + '</td>' +
+                '<td class="mono">' + f.nPass + '</td>' +
+                '<td class="mono">' + f.nFail + '</td>' +
+                '<td class="mono">' + pct(f.evPass) + '</td>' +
+                '<td class="mono" style="font-weight:700;color:' + c + '">' + (f.edge >= 0 ? '+' : '') + pct(f.edge) + '</td>' +
+                '<td class="mono" style="color:var(--text3)">' + f.hit2Pass.toFixed(0) + '%</td>' +
+                '<td class="mono" style="color:var(--text3)">' + f.crashPass.toFixed(0) + '%</td>' +
+                '<td class="mono" style="font-weight:700;color:' + cc + '">' + (f.crashEdge >= 0 ? '+' : '') + f.crashEdge.toFixed(0) + 'pt</td>' +
+                '<td style="font-size:11px;color:var(--text3)">' + (f.usable ? '' : 'too few either side') + '</td>';
+              tb.appendChild(tr);
+            }
+          }
+          draw();
         })();
         </script>`;
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -5714,10 +5754,18 @@ export function startDashboard(port?: number): void {
         const cut = hours ? Date.now() - hours * 3600_000 : 0;
 
         // One shape for both sides of the ledger: what we bought and what we passed on.
-        const obs: { name: string; taken: boolean; peak: number; snap: any }[] = [];
+        //
+        // The call side used to build a snapshot from market data only, which meant
+        // every holder-based candidate scored null on the half of the sample we
+        // actually traded — the coins whose outcomes we know best. Fresh-wallet share
+        // separates the manufactured charts at p=0.0004 and this page could not see it.
+        const obs: { name: string; taken: boolean; peak: number; low: number | null; snap: any }[] = [];
         for (const c of read('calls.json')) {
           if (!c.peakMultiplier || (c.entryTime ?? 0) < cut) continue;
-          obs.push({ name: c.symbol ?? c.name, taken: true, peak: c.peakMultiplier, snap: {
+          const h = c.entryHolders ?? {};
+          const dh = c.entryDeepHolders ?? {};
+          obs.push({ name: c.symbol ?? c.name, taken: true, peak: c.peakMultiplier,
+            low: typeof c.minMultiplier === 'number' ? c.minMultiplier : null, snap: {
             mc: c.entryMC ?? 0, liq: c.entryLiquidity ?? 0,
             vol5m: c.entryVolume5m ?? 0, vol1h: c.entryVolume1h ?? 0, vol24h: c.entryVolume24h ?? 0,
             buys5m: c.entryBuys5m ?? 0, sells5m: c.entrySells5m ?? 0,
@@ -5725,34 +5773,52 @@ export function startDashboard(port?: number): void {
             chg5m: c.entryPriceChange5m ?? 0, chg1h: c.entryPriceChange1h ?? 0, chg6h: c.entryPriceChange6h ?? 0,
             ageMin: c.entryAgeMin ?? 0, dexId: c.entryDexId,
             socials: typeof c.entrySocials === 'number' ? c.entrySocials : undefined,
+            freshWallets: h.freshWallets, veterans: h.veterans,
+            devHoldPct: h.devHoldPct, sameFunderPct: h.sameFunderPct,
+            holders: (h.freshWallets ?? 0) + (h.veterans ?? 0) || undefined,
+            hourUtc: new Date(c.entryTime ?? 0).getUTCHours(),
+            deepOwners: dh.owners, deepCluster: dh.largestCluster,
+            deepClusterPct: dh.clusterPct, deepIndependent: dh.independent, deepFunders: dh.funders,
           } });
         }
         for (const k of read('skips.json')) {
           if (k.peakMultiplier === undefined || (k.timestamp ?? 0) < cut) continue;
           if (!k.snap) continue;   // pre-dates snapshot capture; cannot be scored
-          obs.push({ name: k.name, taken: false, peak: k.peakMultiplier, snap: k.snap });
+          // Skips are not re-checked for a trough, so the last reading stands in for it.
+          obs.push({ name: k.name, taken: false, peak: k.peakMultiplier,
+            low: typeof k.lastMultiplier === 'number' ? k.lastMultiplier : null, snap: k.snap });
         }
 
         // Same proxy the strategy work uses: 45% trail off the peak, -25% floor, 3% costs.
         const ret = (peak: number) => (peak >= 1 ? Math.max(peak * 0.55, 0.75) : 0.75) - 1 - 0.03;
         const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
         const rate = (a: number[], t: number) => (a.length ? (100 * a.filter(x => x >= t).length) / a.length : 0);
+        const under = (a: number[], t: number) => (a.length ? (100 * a.filter(x => x < t).length) / a.length : 0);
 
         const rows = CANDIDATES.map(f => {
           const yes: number[] = [], no: number[] = [], yesPk: number[] = [], noPk: number[] = [];
+          const yesLo: number[] = [], noLo: number[] = [];
           for (const o of obs) {
             let v: boolean | null = null;
             try { v = f.pass(o.snap); } catch { v = null; }
             if (v === null) continue;
             (v ? yes : no).push(ret(o.peak));
             (v ? yesPk : noPk).push(o.peak);
+            if (o.low !== null) (v ? yesLo : noLo).push(o.low);
           }
           const evYes = mean(yes), evNo = mean(no);
+          // Peak-based EV is blind to the manufactured charts: they print a 2x as often
+          // as anything else and then go to nothing. The trough is what separates them.
+          const crashPass = under(yesLo, 0.25), crashFail = under(noLo, 0.25);
           return {
             key: f.key, name: f.name, group: f.group,
             nPass: yes.length, nFail: no.length,
             evPass: evYes, evFail: evNo, edge: evYes - evNo,
             hit2Pass: rate(yesPk, 2), hit2Fail: rate(noPk, 2),
+            nLow: yesLo.length + noLo.length,
+            crashPass, crashFail,
+            // Negative is good here: the rule lets through fewer coins that go to zero.
+            crashEdge: crashPass - crashFail,
             // A filter that passes everything, or nothing, has told you nothing.
             usable: yes.length >= 15 && no.length >= 15,
           };
@@ -5764,9 +5830,14 @@ export function startDashboard(port?: number): void {
           observations: obs.length,
           taken: obs.filter(o => o.taken).length,
           rejected: obs.filter(o => !o.taken).length,
+          withTrough: obs.filter(o => o.low !== null).length,
+          groups: [...new Set(CANDIDATES.map(c => c.group))].sort(),
           note: 'edge = EV of coins the filter would ALLOW minus EV of the ones it would BLOCK. '
               + 'Positive means the rule is picking the better half. Nothing here blocks a buy. '
-              + 'usable=false means one side has under 15 samples, which is not yet an opinion.',
+              + 'usable=false means one side has under 15 samples, which is not yet an opinion. '
+              + 'crashEdge = share of ALLOWED coins that fell under 0.25x minus the same for BLOCKED ones, '
+              + 'so NEGATIVE is good. It exists because a manufactured chart reaches 2x as often as a real '
+              + 'coin and then goes to nothing, which peak-based EV cannot see.',
           filters: rows,
         }, null, 2));
       } catch (err: any) {
