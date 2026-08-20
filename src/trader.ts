@@ -460,6 +460,12 @@ export class Trader {
     if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
 
     const mult = currentPrice / pos.entryPrice;
+    // The multiple an exit is RECORDED at, which is not always the one decisions are
+    // made on. `mult` is fixed from the feed price at the top of the tick; the stop
+    // checks further down may first reprice `currentPrice` to the executable quote.
+    // When that happens the two disagree, and the exit record has to describe the
+    // price the sell actually acted on — see the reassignment below the reprice.
+    let actedMult = mult;
     const newExits: RealExit[] = [];
     let stateChanged = false;
 
@@ -611,7 +617,7 @@ export class Trader {
           const exit: RealExit = {
             reason,
             label,
-            multiplierAtExit: mult,
+            multiplierAtExit: actedMult,
             pctSold: actualPct,
             tokensSold: finalSellAmount,
             solReceived,
@@ -841,6 +847,14 @@ export class Trader {
         } catch { /* feed price stands — never block the stop on a failed lookup */ }
       }
     }
+    // A stop that fires on the executable price must be recorded at the executable
+    // price. $FOMODESK exited its 45% trail — a level that sits at 0.80x — and the
+    // book wrote it down as 1.11x, because that was the stale DexScreener reading
+    // from the top of the tick. It returned 0.72x of the entry. Every consumer of
+    // multiplierAtExit (the Discord colour, the exits column, the win rate) then
+    // called a 28% loss an 11% win. Decisions still use `mult` and `currentPrice`
+    // exactly as before; only the number written into the record changes.
+    actedMult = pos.entryPrice > 0 ? currentPrice / pos.entryPrice : mult;
 
     // ── Stop checks ──
     if (pos.remainingPct >= 0.001) {
