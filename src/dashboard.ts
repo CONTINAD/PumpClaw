@@ -5406,11 +5406,42 @@ export function startDashboard(port?: number): void {
         // ?hours=all for full history, ?hours=N for any other window.
         const rows = shadowRows(url);
         const hv = (url.match(/[?&]hours=(\d+|all)/) || [])[1] ?? '24';
+
+        // Every fleet number carries its candle-replay twin, because the fleet's
+        // own figures were manufactured and cannot be read alone.
+        //
+        // The fleet trades on live ticks. When the feed gaps, one tick sets a peak
+        // the coin never climbed to, and the trailing stop books a fill under it. It
+        // produced "8% trail best, 45% worst, monotonic across twelve widths" — and
+        // the tell was that 35 strategies at widths from 8% to 20% all recorded the
+        // IDENTICAL 6.87x best peak. A gradual climb cannot do that: an 8% trail is
+        // forced out on the first 8% pullback, long before a 20% trail, so they must
+        // record different peaks. Identical peaks mean a single tick.
+        //
+        // The replay in candles.ts has neither failure mode — a trail can only
+        // ratchet on a candle high the coin actually printed, and a dip fills at its
+        // limit rather than at the bottom of a gap. Same 218 coins, honest path.
+        const paths = loadPaths(600);
+        const clean = new Map<string, { avg: number; robustAvg: number; median: number; winPct: number; trades: number }>();
+        for (const r of rows) {
+          const preset = STRATEGY_PRESETS[(r as any).key];
+          if (!preset) continue;
+          try {
+            const b = backtest(preset.make() as unknown as BacktestCfg, paths);
+            if (b.trades > 0) clean.set((r as any).key, {
+              avg: b.avg, robustAvg: b.robustAvg, median: b.median, winPct: b.winPct, trades: b.trades,
+            });
+          } catch { /* a preset the replay cannot express is left without a twin */ }
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           window: hv === 'all' ? 'all time' : `last ${hv}h`,
-          note: '1 SOL per trade, 2% fill haircut, live prices',
-          strategies: rows,
+          note: '1 SOL per trade, 2% fill haircut, live prices. `clean` is the same strategy replayed '
+              + 'against real minute candles, which is the number to trust: the live-tick figures are '
+              + 'inflated by feed gaps that invent peaks, and the inflation is larger the tighter the trail.',
+          candlePaths: paths.length,
+          strategies: rows.map(r => ({ ...r, clean: clean.get((r as any).key) ?? null })),
         }, null, 2));
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
