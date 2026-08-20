@@ -1323,6 +1323,53 @@ for (const st of [15, 20, 25, 35, 50]) {
   });
 }
 
+// ── K. Dip entry with a real ladder (36) ────────────────────
+// The candle replay puts deep-dip entries with a MODEST fixed target at the top of
+// the board — "Dip −50% → 1.5X" scores +0.17 with the fall assumed first and +0.26
+// with the spike first, positive under both, which almost nothing else manages.
+// What has never been tested is that entry with a LADDER instead of one target: the
+// dip basis should make a second and third rung reachable that an instant fill
+// cannot get to.
+for (const dip of [25, 35, 50]) {
+  for (const [key, label, tps] of [
+    ['a', '60%@1.3X + 40%@2X', [[1.3, 0.60] as [number, number], [2.0, 0.40] as [number, number]]],
+    ['b', '50%@1.5X + 30%@2.5X', [[1.5, 0.50] as [number, number], [2.5, 0.30] as [number, number]]],
+    ['c', '40%@1.4X + 40%@2X + 20%@4X', [[1.4, 0.40] as [number, number], [2.0, 0.40] as [number, number], [4.0, 0.20] as [number, number]]],
+    ['d', '70%@1.5X + 30% free ride', [[1.5, 0.70] as [number, number]]],
+  ] as [string, string, [number, number][]][]) {
+    for (const tr of [30, 45]) {
+      GRID10.push({
+        key: `gK${dip}${key}t${tr}`,
+        name: `Dip −${dip}% → ${label}, trail ${tr}%`,
+        desc: `A dip entry with a ladder rather than a single target. The lower basis should put a second and third rung within reach that an instant fill never gets to; whether that beats simply taking 1.5X and leaving is the question.`,
+        dip: dip / 100, win: 30, tps, trail: tr / 100, stop: 0.75,
+      });
+    }
+  }
+}
+
+// ── L. The shape the replay actually likes (15) ─────────────
+// Deep dip, modest fixed target, wide or absent stop. Swept properly, since one
+// configuration scoring well is a hint and a swept family is a finding.
+for (const dip of [30, 40, 50, 55]) {
+  for (const tgt of [1.4, 1.5, 1.8]) {
+    GRID10.push({
+      key: `gL${dip}t${String(tgt).replace('.', '')}`,
+      name: `Dip −${dip}% → ${tgt}X, stop −75%`,
+      desc: `The family the candle replay ranks highest: wait for a deep pullback, take a modest fixed target, and give it room underneath rather than a tight stop. Sweeps depth against target to find where it stops working.`,
+      dip: dip / 100, win: 30, tps: [[tgt, 1.0]], stop: 0.25,
+    });
+  }
+}
+for (const dip of [40, 50, 55]) {
+  GRID10.push({
+    key: `gLn${dip}`,
+    name: `Dip −${dip}% → 1.5X, no stop`,
+    desc: `The same idea with no stop at all — the dip basis is the risk control. Tests whether a stop underneath a −${dip}% entry adds anything or just books losses the coin would have recovered.`,
+    dip: dip / 100, win: 30, tps: [[1.5, 1.0]], stop: 0.02,
+  });
+}
+
 GRID.push(...GRID10);
 
 

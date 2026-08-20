@@ -5040,8 +5040,11 @@ export function startDashboard(port?: number): void {
             avg: closed.length ? +(pnl / closed.length).toFixed(4) : 0,
             best: +best.toFixed(2),
             cleanAvg: null as number | null,
+            cleanHigh: null as number | null,
             cleanBest: null as number | null,
             cleanWin: null as number | null,
+            cleanTotal: null as number | null,
+            cleanTrades: null as number | null,
           };
         }).sort((a, b) => b.avg - a.avg);
 
@@ -5065,11 +5068,21 @@ export function startDashboard(port?: number): void {
             const preset = STRATEGY_PRESETS[r.key];
             if (!preset) continue;
             try {
-              const b = backtest(preset.make() as unknown as BacktestCfg, cPaths);
-              if (b.trades > 0) {
-                r.cleanAvg = +(b.avg).toFixed(4);
-                r.cleanBest = +(b.best).toFixed(2);
-                r.cleanWin = b.winPct;
+              const base = preset.make() as unknown as BacktestCfg;
+              // Both intra-candle orderings. The deepest fall inside a single candle
+              // is a median 64% of that candle's high across these paths, so which
+              // half is assumed to happen first decides the result — and it does not
+              // bias every shape equally. One number here would be a claim minute
+              // candles cannot support.
+              const lo = backtest({ ...base, intraOrder: 'low' }, cPaths);
+              const hi = backtest({ ...base, intraOrder: 'high' }, cPaths);
+              if (lo.trades > 0) {
+                r.cleanAvg = +(lo.avg).toFixed(4);
+                r.cleanHigh = +(hi.avg).toFixed(4);
+                r.cleanBest = +(lo.best).toFixed(2);
+                r.cleanWin = lo.winPct;
+                r.cleanTotal = +(lo.total).toFixed(2);
+                r.cleanTrades = lo.trades;
               }
             } catch { /* a preset the replay cannot express keeps a null twin */ }
           }
@@ -5127,6 +5140,8 @@ export function startDashboard(port?: number): void {
           pnl: r => r.pnl,
           best: r => r.best,
           cleanavg: r => (r.cleanAvg ?? -99),
+          cleanhigh: r => (r.cleanHigh ?? -99),
+          cleantotal: r => (r.cleanTotal ?? -9999),
           cleanbest: r => (r.cleanBest ?? -99),
         };
         const fSort = SORTS[qp('sort')] ? qp('sort') : 'cleanavg';
@@ -5190,18 +5205,22 @@ export function startDashboard(port?: number): void {
           <td class="mono">${r.trades}${r.open ? ` <span style="color:${r.open > r.trades ? '#f59e0b' : '#10b981'}" title="${r.open} still open. When these outnumber the closed trades, the closed ones are mostly winners — losers without a stop never close.">+${r.open}</span>` : ''}</td>
           <td class="mono">${r.winPct}%</td>
           <td class="mono" style="color:${r.cleanAvg === null ? 'var(--text3)' : r.cleanAvg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.cleanAvg === null ? '—' : (r.cleanAvg >= 0 ? '+' : '') + r.cleanAvg.toFixed(3)}</td>
+          <td class="mono" style="color:${r.cleanHigh === null ? 'var(--text3)' : (r.cleanAvg !== null && r.cleanAvg >= 0 && r.cleanHigh >= 0) ? '#10b981' : 'var(--text2)'};font-size:12px" title="Same strategy assuming the spike happens before the fall inside each candle. Truth is between this and the REAL avg column; both positive means the result does not depend on the assumption.">${r.cleanHigh === null ? '—' : (r.cleanHigh >= 0 ? '+' : '') + r.cleanHigh.toFixed(3)}</td>
+          <td class="mono" style="color:${(r.cleanTotal ?? 0) >= 0 ? '#10b981' : '#ef4444'};font-weight:600" title="Total SOL across every replayed trade, 1 SOL per trade">${r.cleanTotal === null ? '—' : (r.cleanTotal >= 0 ? '+' : '') + r.cleanTotal.toFixed(1)}</td>
           <td class="mono" style="color:var(--text3)">${r.cleanBest === null ? '—' : r.cleanBest.toFixed(1) + 'x'}</td>
           <td class="mono" style="color:var(--text3);font-size:11px" title="Live-tick figure. Inflated by feed gaps that invent peaks; the inflation is larger the tighter the trail.">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
-          <td class="mono" style="color:var(--text3);font-size:11px" title="Best single trade the live fleet recorded. Repeated identical values across different trail widths are the signature of a one-tick spike, not a real move.">${r.best.toFixed(1)}x</td>
+          <td class="mono" style="color:var(--text3);font-size:11px" title="Live-tick total SOL.">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(1)}</td>
           <td><a href="/builder?from=${r.key}" title="Open this strategy in the builder to edit or clone it" style="color:#3b82f6;text-decoration:none;font-size:11px;white-space:nowrap">copy →</a></td>
         </tr>`;
         const head = `<tr>${th('#')}${th('Strategy', 'name')}${th('Entry', 'entry', 'Sort by dip depth — instant first')}`
           + `${th('Target', 'target', 'Sort by the highest take-profit')}${th('Stop', 'stop', 'Sort by stop width')}${th('Extra')}`
           + `${th('Trades', 'trades')}${th('Win', 'win', 'Sort by win rate')}`
-          + `${th('REAL avg', 'cleanavg', 'Replayed against real minute candles — the number to trust')}`
+          + `${th('REAL avg', 'cleanavg', 'Real candles, assuming the fall comes first inside each candle — the floor')}`
+          + `${th('if spike 1st', 'cleanhigh', 'Same strategy assuming the spike comes first — the ceiling. Both positive = the result does not depend on the assumption.')}`
+          + `${th('REAL total', 'cleantotal', 'Total SOL across every replayed trade, 1 SOL each')}`
           + `${th('REAL best', 'cleanbest', 'Best single trade on real candles')}`
           + `${th('fleet avg', 'avg', 'Live-tick figure. Inflated by feed gaps that invent peaks.')}`
-          + `${th('fleet best', 'best', 'Live-tick best trade. Identical values across trail widths mean a one-tick spike.')}<th></th></tr>`;
+          + `${th('fleet SOL', 'pnl', 'Live-tick total.')}<th></th></tr>`;
 
         const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
         const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
@@ -5249,7 +5268,7 @@ export function startDashboard(port?: number): void {
         <div class="card" style="max-width:none">
           <h3>📄 Shadow fleet — ${rows.length} strategies · ${hours === 'all' ? 'all time' : `last ${hours}h`} · 1 SOL/trade</h3>
           <div style="display:flex;gap:6px;margin-bottom:10px">
-            ${['6', '12', '24', '48', 'all'].map(h => `<a href="/shadow?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hours ? 'var(--border2)' : 'var(--border)'};background:${h === hours ? 'var(--bg3)' : 'transparent'};color:${h === hours ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h + 'h'}</a>`).join('')}
+            ${['1', '3', '6', '12', '24', '48', '168', 'all'].map(h => `<a href="/shadow?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hours ? 'var(--border2)' : 'var(--border)'};background:${h === hours ? 'var(--bg3)' : 'transparent'};color:${h === hours ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h + 'h'}</a>`).join('')}
           </div>
           <p style="font-size:12px;color:var(--text2);line-height:1.6">
             Sorted by <b>${({ name: 'name', entry: 'dip depth', target: 'top target', stop: 'stop width', trades: 'trade count', win: 'win rate', avg: 'average PnL per closed trade', pnl: 'total PnL', best: 'best single trade' } as Record<string, string>)[fSort]}</b>,
@@ -5888,12 +5907,12 @@ export function startDashboard(port?: number): void {
         // every holder-based candidate scored null on the half of the sample we
         // actually traded — the coins whose outcomes we know best. Fresh-wallet share
         // separates the manufactured charts at p=0.0004 and this page could not see it.
-        const obs: { name: string; taken: boolean; peak: number; low: number | null; snap: any }[] = [];
+        const obs: { name: string; mint?: string; taken: boolean; peak: number; low: number | null; snap: any }[] = [];
         for (const c of read('calls.json')) {
           if (!c.peakMultiplier || (c.entryTime ?? 0) < cut) continue;
           const h = c.entryHolders ?? {};
           const dh = c.entryDeepHolders ?? {};
-          obs.push({ name: c.symbol ?? c.name, taken: true, peak: c.peakMultiplier,
+          obs.push({ name: c.symbol ?? c.name, mint: c.mint, taken: true, peak: c.peakMultiplier,
             low: typeof c.minMultiplier === 'number' ? c.minMultiplier : null, snap: {
             mc: c.entryMC ?? 0, liq: c.entryLiquidity ?? 0,
             vol5m: c.entryVolume5m ?? 0, vol1h: c.entryVolume1h ?? 0, vol24h: c.entryVolume24h ?? 0,
@@ -5914,12 +5933,41 @@ export function startDashboard(port?: number): void {
           if (k.peakMultiplier === undefined || (k.timestamp ?? 0) < cut) continue;
           if (!k.snap) continue;   // pre-dates snapshot capture; cannot be scored
           // Skips are not re-checked for a trough, so the last reading stands in for it.
-          obs.push({ name: k.name, taken: false, peak: k.peakMultiplier,
+          obs.push({ name: k.name, mint: k.mint, taken: false, peak: k.peakMultiplier,
             low: typeof k.lastMultiplier === 'number' ? k.lastMultiplier : null, snap: k.snap });
         }
 
-        // Same proxy the strategy work uses: 45% trail off the peak, -25% floor, 3% costs.
-        const ret = (peak: number) => (peak >= 1 ? Math.max(peak * 0.55, 0.75) : 0.75) - 1 - 0.03;
+        // EV per coin, from its real minute path where one was captured.
+        //
+        // This used a peak proxy — 45% trail off the recorded peak with a -25% floor —
+        // which is exactly the model the candle replay discredited. A peak is not a
+        // price anyone could sell at: across the captured paths the deepest fall
+        // inside a single candle is a median 64% of that candle's own high, so a peak
+        // and a fill are different things. Every edge number on this page was built
+        // on that proxy.
+        //
+        // Coins with a captured path now use the path. The rest keep the proxy,
+        // because a filter scored on nothing is worse than one scored roughly, and
+        // `pathBacked` says how many of each went into the answer.
+        const cPaths = loadPaths(600);
+        const pathBy = new Map(cPaths.map(x => [x.mint, x]));
+        const PROXY = (peak: number) => (peak >= 1 ? Math.max(peak * 0.55, 0.75) : 0.75) - 1 - 0.03;
+        const REPLAY: BacktestCfg = {
+          entryMode: 'instant', dipPct: 0.2, dipWindowMin: 30,
+          tps: [{ mult: 1.55, sellPct: 0.10 }, { mult: 1.95, sellPct: 0.40 },
+                { mult: 5.05, sellPct: 0.20 }, { mult: 10.05, sellPct: 0.20 }],
+          trailingDrop: 0.45, trailingFrom: 'entry', stopLossPct: 0.75,
+          breakEvenAfterTp1: true, maxHoldMin: 0, intraOrder: 'low',
+        };
+        const realRet = new Map<string, number>();
+        for (const cp of cPaths) {
+          try {
+            const b = backtest(REPLAY, [cp]);
+            if (b.trades > 0) realRet.set(cp.mint, b.avg);
+          } catch { /* leave it to the proxy */ }
+        }
+        const ret = (peak: number, mint?: string) =>
+          (mint && realRet.has(mint) ? realRet.get(mint)! : PROXY(peak));
         const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
         const rate = (a: number[], t: number) => (a.length ? (100 * a.filter(x => x >= t).length) / a.length : 0);
         const under = (a: number[], t: number) => (a.length ? (100 * a.filter(x => x < t).length) / a.length : 0);
@@ -5931,7 +5979,7 @@ export function startDashboard(port?: number): void {
             let v: boolean | null = null;
             try { v = f.pass(o.snap); } catch { v = null; }
             if (v === null) continue;
-            (v ? yes : no).push(ret(o.peak));
+            (v ? yes : no).push(ret(o.peak, o.mint));
             (v ? yesPk : noPk).push(o.peak);
             if (o.low !== null) (v ? yesLo : noLo).push(o.low);
           }
@@ -5960,6 +6008,7 @@ export function startDashboard(port?: number): void {
           taken: obs.filter(o => o.taken).length,
           rejected: obs.filter(o => !o.taken).length,
           withTrough: obs.filter(o => o.low !== null).length,
+          pathBacked: obs.filter(o => o.mint && realRet.has(o.mint)).length,
           groups: [...new Set(CANDIDATES.map(c => c.group))].sort(),
           note: 'edge = EV of coins the filter would ALLOW minus EV of the ones it would BLOCK. '
               + 'Positive means the rule is picking the better half. Nothing here blocks a buy. '
