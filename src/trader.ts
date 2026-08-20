@@ -15,6 +15,14 @@ import { CONFIG as CFG } from './config.js';
 
 // ── Types ────────────────────────────────────────────────────
 
+/**
+ * How far the executable quote must sit ABOVE the watched price before it is allowed
+ * to correct it near a stop. Matches pool-price.ts's DRIFT_LIMIT: the point at which
+ * that module declares its own reserve arithmetic untrustworthy and drops the watch.
+ * Below this the conservative rule stands and the lower price wins.
+ */
+const EXEC_OVERRIDE_GAP = 0.12;
+
 export interface RealExit {
   reason: string;  // 'tp1'..'tpN' | 'trailing_stop' | 'stop_loss' | 'be_stop' | 'profit_protect'
   label: string;
@@ -841,6 +849,31 @@ export class Trader {
             if (jup.priceUsd < currentPrice) {
               console.log(`[Trader] $${pos.symbol} near stop — feed ${currentPrice.toExponential(3)}, ` +
                 `executable ${jup.priceUsd.toExponential(3)}; acting on the executable price`);
+              currentPrice = jup.priceUsd;
+            } else if (jup.priceUsd > currentPrice * (1 + EXEC_OVERRIDE_GAP)) {
+              // The watched price can read far BELOW the market, and then a stop is
+              // not a stop — it is a sale at a price nobody is offering.
+              //
+              // $LION: the trail line sat at 1.045x, the engine saw 0.977x and sold
+              // 90% of the position. The swap returned 1.730x, because that was the
+              // real market. It went on to 4.04x. The bug is not that it exited too
+              // early in hindsight; it is that it exited on a number the exit itself
+              // immediately disproved.
+              //
+              // This is not the veto the branch above warns about. That one fired on
+              // small disagreements, where the feed is merely smoothed and the stop is
+              // probably real. This needs a gap wider than the tolerance pool-price.ts
+              // sets for its own arithmetic (DRIFT_LIMIT, 12%) — past that the pool
+              // module would drop its own reading as untrustworthy, and the reserve
+              // error it documents is ALWAYS downward, which is exactly the direction
+              // that manufactures phantom stops.
+              //
+              // And the quote is not an opinion. It is the route the sell would take:
+              // if it says 1.73x, the sell fills near 1.73x. A price the position can
+              // actually transact at outranks one it cannot.
+              console.log(`[Trader] $${pos.symbol} near stop — watched ${currentPrice.toExponential(3)} but ` +
+                `executable ${jup.priceUsd.toExponential(3)} (${((jup.priceUsd / currentPrice - 1) * 100).toFixed(1)}% ` +
+                `higher); the stop level is judged against the price a sell would fill at`);
               currentPrice = jup.priceUsd;
             }
           }
