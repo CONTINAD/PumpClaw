@@ -560,22 +560,26 @@ export class Trader {
       const actualPct = Math.min(pctOfOriginal, pos.remainingPct);
 
       if (this.paper) {
-        // Fill at the TRIGGER level (never better than what the observed price
-        // offers), minus a flat 2% haircut. Using the trigger keeps strategies
-        // comparable instead of collapsing them onto whatever print the feed
-        // happened to show. Gap risk beyond the trigger is deliberately not
-        // modelled — real fills on a collapsing coin are worse than this.
-        let effMult = mult;
-        if (fillMult !== undefined) {
-          effMult = fillMult;
-          // Gap penalty: if the observed price is already well below the trigger, the
-          // market was falling fast and a real fill lands worse than the trigger.
-          // Charge slippage proportional to the gap, capped at 20%.
-          if (mult < fillMult && fillMult > 0) {
-            const gap = (fillMult - mult) / fillMult;
-            effMult = fillMult * (1 - Math.min(0.2, gap * 0.5));
-          }
-        }
+        // You cannot sell above the price the market is showing.
+        //
+        // This filled at the TRIGGER level with a gap penalty capped at 20%, which
+        // meant a trigger derived from one bad tick still paid out 80% of it. The
+        // sweep that produced "8% trail is best, 45% worst, perfectly monotonic" was
+        // built on exactly that: 35 strategies at trail widths from 8% to 20% all
+        // recorded the identical 6.87x best peak. A gradual climb cannot do that —
+        // an 8% trail is forced out long before a 20% trail and they would record
+        // different peaks. Identical peaks mean the move arrived in ONE tick, so no
+        // width had a pullback to exit on, and the tighter the trail the higher its
+        // stop sat under the fake peak. The monotonic result was manufactured by the
+        // arithmetic, not found in the market.
+        //
+        // Taking the lower of trigger and observed price fixes it at the root: a fake
+        // peak sets a fake trigger, but the next tick's observed price is real, so
+        // the fill is real. Measured against 44 real single-exit fills this is also
+        // simply more accurate — the median landed 1.4% below its trigger, and the
+        // one that gapped ($WISH) landed 42.5% below, which the old cap could not
+        // express at all.
+        const effMult = fillMult !== undefined ? Math.min(fillMult, mult) : mult;
         const solReceived = pos.entrySol * actualPct * effMult * 0.98;
         const exit: RealExit = {
           reason, label, multiplierAtExit: effMult, pctSold: actualPct,
