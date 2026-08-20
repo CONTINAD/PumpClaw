@@ -1722,6 +1722,30 @@ function cleanReplay(): Map<string, CleanRow> {
   return rows;
 }
 
+/**
+ * Build the replay before anyone asks for it.
+ *
+ * The memo made a warm /shadow 946ms, but left whoever arrived first waiting 15
+ * seconds while 2,400 presets replayed. A cache that only fills on a cache miss
+ * just moves the wait onto a person instead of removing it.
+ *
+ * Runs a few seconds after boot so it never competes with the scanner coming up,
+ * then every ten minutes, which also picks up newly captured paths.
+ */
+export function warmCleanReplay(): void {
+  const run = () => {
+    const t0 = Date.now();
+    try {
+      const n = cleanReplay().size;
+      console.log(`[Dashboard] replay warmed: ${n} strategies in ${Date.now() - t0}ms`);
+    } catch (err: any) {
+      console.log(`[Dashboard] replay warm failed: ${err?.message ?? err}`);
+    }
+  };
+  setTimeout(run, 8_000).unref?.();
+  setInterval(run, 600_000).unref?.();
+}
+
 const SETTINGS_STYLE = `
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#06080d;--bg1:#0a0e17;--bg2:#0f1420;--bg3:#151b28;--border:#1a2035;--border2:#242e44;--text:#c8d3e6;--text2:#7a879e;--text3:#4a5570;--green:#10b981;--red:#ef4444}

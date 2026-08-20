@@ -18,7 +18,7 @@ import { checkBundle } from './bundle-check.js';
 import { checkSmartWallets } from './wallet-filter.js';
 import { checkSocials } from './socials.js';
 import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
-import { startDashboard } from './dashboard.js';
+import { startDashboard, warmCleanReplay } from './dashboard.js';
 import { registerSlashCommands } from './interactions.js';
 import { sourceRegistry, extractMints, classifySignal, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { capturePath, hasPath } from './candles.js';
@@ -1784,6 +1784,9 @@ async function main() {
 
   // Start dashboard HTTP server FIRST so Railway health check passes
   startDashboard();
+  // Build the strategy replay in the background rather than making the first
+  // visitor wait 15 seconds for it.
+  warmCleanReplay();
 
   maybeSendMonthReport().catch(err => log(`⚠ Month report failed: ${err.message}`));
   registerSlashCommands().catch(() => {});
