@@ -1748,26 +1748,62 @@ export function warmCleanReplay(): void {
 
 const SETTINGS_STYLE = `
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#06080d;--bg1:#0a0e17;--bg2:#0f1420;--bg3:#151b28;--border:#1a2035;--border2:#242e44;--text:#c8d3e6;--text2:#7a879e;--text3:#4a5570;--green:#10b981;--red:#ef4444}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px}
-.topbar{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--bg1)}
-.topbar h1{font-size:17px}.topbar a{color:var(--text2);text-decoration:none;font-size:13px}
-.wrap{max-width:640px;margin:0 auto;padding:24px 22px}
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;margin:16px 0}
-.card h3{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:14px}
-label{display:block;font-size:12px;color:var(--text2);margin:14px 0 4px}
-input,select{width:100%;padding:9px 12px;background:var(--bg1);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:14px}
-input:focus,select:focus{outline:none;border-color:#3b82f6}
-button{margin-top:18px;width:100%;padding:11px;background:#10b981;color:#04110b;font-weight:700;border:0;border-radius:8px;font-size:14px;cursor:pointer}
-button:hover{filter:brightness(1.1)}
-.toggle-row{display:flex;align-items:center;gap:10px;margin:14px 0 4px}
-.toggle-row input{width:auto;transform:scale(1.3)}
-.msg{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
-.msg.ok{background:#10b98122;border:1px solid #10b98155;color:#6ee7b7}
-.msg.err{background:#ef444422;border:1px solid #ef444455;color:#fca5a5}
-.kv{font-size:12px;color:var(--text2);margin:4px 0}.kv b{color:var(--text)}
-.warn{font-size:11px;color:var(--text3);margin-top:12px;line-height:1.5}
-.mono{font-family:'SF Mono',Menlo,monospace}`;
+:root{
+  --bg:#06080d;--bg1:#0a0e17;--bg2:#0f1420;--bg3:#151b28;
+  --border:#1a2035;--border2:#242e44;
+  --text:#c8d3e6;--text2:#7a879e;--text3:#4a5570;
+  --green:#10b981;--red:#ef4444;--amber:#f59e0b;
+  --mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.55}
+
+/* Header stays put. These pages run to hundreds of rows and losing the nav on the
+   way down means scrolling back up to go anywhere. */
+.topbar{position:sticky;top:0;z-index:20;display:flex;justify-content:space-between;align-items:center;
+  padding:11px 20px;border-bottom:1px solid var(--border);background:rgba(10,14,23,.94);backdrop-filter:blur(8px)}
+.topbar h1{font-size:16px;font-weight:650;letter-spacing:-.01em;white-space:nowrap}
+.topbar a{color:var(--text2);text-decoration:none;font-size:13px}
+.topbar a:hover{color:var(--text)}
+
+.wrap{max-width:640px;margin:0 auto;padding:22px 20px 64px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;margin:16px 0}
+.card h3{font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.09em;margin-bottom:14px;font-weight:650}
+.card > p:first-of-type{margin-top:-4px}
+
+/* Digits line up in columns, which is most of what makes a dense table readable. */
+.mono,table td.mono,table th{font-family:var(--mono);font-variant-numeric:tabular-nums}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--text3);font-weight:600;
+   text-align:right;padding:7px 10px;border-bottom:1px solid var(--border2);white-space:nowrap;
+   position:sticky;top:44px;background:var(--bg2);z-index:5}
+th:first-child{text-align:left}
+td{padding:7px 10px;text-align:right;border-top:1px solid var(--border);white-space:nowrap}
+td:first-child{text-align:left}
+tbody tr:hover td,table tr:hover td{background:rgba(255,255,255,.022)}
+
+label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px}
+input,select,textarea{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:7px;
+  padding:7px 10px;font-size:13px;font-family:inherit}
+input:focus,select:focus,textarea:focus,button:focus-visible,a:focus-visible{outline:2px solid #3b82f6;outline-offset:1px}
+button{cursor:pointer;font-family:inherit}
+code{font-family:var(--mono);font-size:.88em;background:var(--bg3);border:1px solid var(--border);
+  padding:1px 5px;border-radius:4px}
+.kv{font-size:12px;color:var(--text2);margin:3px 0}
+a{color:#3b82f6}
+
+/* Any wide block scrolls inside itself so the page never scrolls sideways. */
+.scroll,div[style*="overflow-x:auto"]{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+@media (max-width:760px){
+  .wrap{padding:16px 12px 48px}
+  .card{padding:15px;border-radius:10px}
+  .topbar{padding:10px 12px}
+  th,td{padding:6px 7px}
+  table{font-size:12px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+`;
 
 /**
  * Grouped navigation.
@@ -4783,8 +4819,8 @@ export function startDashboard(port?: number): void {
         </script>`;
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PumpClaw Filter Lab</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar"><h1>🧪 Filter Lab</h1><div style="display:flex;gap:14px"><a href="/filters">Filters</a><a href="/filter-lab">Filter Lab</a><a href="/shadow">Shadow</a><a href="/params">Params</a><a href="/">← Dashboard</a></div></div>
+<title>PumpClaw · Filter Lab</title><style>${SETTINGS_STYLE}</style></head><body>
+<div class="topbar" style="flex-wrap:wrap;gap:10px"><h1 style="margin-right:auto">🧪 Filter Lab</h1>${navBar('/filter-lab')}</div>
 <div class="wrap" style="max-width:1200px">${inner}</div></body></html>`);
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
