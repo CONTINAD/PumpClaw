@@ -4998,8 +4998,41 @@ export function startDashboard(port?: number): void {
             pnl: +pnl.toFixed(3),
             avg: closed.length ? +(pnl / closed.length).toFixed(4) : 0,
             best: +best.toFixed(2),
+            cleanAvg: null as number | null,
+            cleanBest: null as number | null,
+            cleanWin: null as number | null,
           };
         }).sort((a, b) => b.avg - a.avg);
+
+        // The fleet's own numbers are not safe to read on their own, so the replay
+        // travels next to every one of them.
+        //
+        // The fleet trades live ticks. When the feed gaps, one tick sets a peak the
+        // coin never climbed to and the trailing stop books a fill beneath it. The
+        // tell was in the peaks: 35 strategies at trail widths from 8% to 20% all
+        // recorded the IDENTICAL 6.87x best trade. A gradual climb cannot do that —
+        // an 8% trail is forced out on the first 8% pullback, long before a 20% trail
+        // — so identical peaks mean a single tick that no width had a pullback to
+        // exit on. The tighter the trail, the higher its stop sat under the fake peak,
+        // which is precisely how "8% best, 45% worst" got manufactured.
+        //
+        // candles.ts replays real minute OHLCV: a trail ratchets only on a high the
+        // coin actually printed, and a dip fills at its limit, not at a gap's bottom.
+        try {
+          const cPaths = loadPaths(600);
+          for (const r of rows) {
+            const preset = STRATEGY_PRESETS[r.key];
+            if (!preset) continue;
+            try {
+              const b = backtest(preset.make() as unknown as BacktestCfg, cPaths);
+              if (b.trades > 0) {
+                r.cleanAvg = +(b.avg).toFixed(4);
+                r.cleanBest = +(b.best).toFixed(2);
+                r.cleanWin = b.winPct;
+              }
+            } catch { /* a preset the replay cannot express keeps a null twin */ }
+          }
+        } catch { /* no captured paths yet — the column simply stays empty */ }
 
         const showAll = /[?&]all=1/.test(url);
 
@@ -5052,8 +5085,10 @@ export function startDashboard(port?: number): void {
           avg: r => r.avg,
           pnl: r => r.pnl,
           best: r => r.best,
+          cleanavg: r => (r.cleanAvg ?? -99),
+          cleanbest: r => (r.cleanBest ?? -99),
         };
-        const fSort = SORTS[qp('sort')] ? qp('sort') : 'avg';
+        const fSort = SORTS[qp('sort')] ? qp('sort') : 'cleanavg';
         const fDir = qp('dir') === 'asc' ? 'asc' : 'desc';
         const keyFn = SORTS[fSort];
         const sorted = [...filtered].sort((a, b) => {
@@ -5113,15 +5148,19 @@ export function startDashboard(port?: number): void {
           <td style="font-size:11px;color:var(--text3);white-space:nowrap">${r.trailPct ? `trail ${r.trailPct}%` : ''}${r.holdMin && r.targets.length ? ` ${r.holdMin}m cap` : ''}</td>
           <td class="mono">${r.trades}${r.open ? ` <span style="color:${r.open > r.trades ? '#f59e0b' : '#10b981'}" title="${r.open} still open. When these outnumber the closed trades, the closed ones are mostly winners — losers without a stop never close.">+${r.open}</span>` : ''}</td>
           <td class="mono">${r.winPct}%</td>
-          <td class="mono" style="color:${r.avg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
-          <td class="mono" style="color:${r.pnl >= 0 ? '#10b981' : '#ef4444'}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}</td>
-          <td class="mono" style="color:var(--text2)">${r.best.toFixed(1)}x</td>
+          <td class="mono" style="color:${r.cleanAvg === null ? 'var(--text3)' : r.cleanAvg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.cleanAvg === null ? '—' : (r.cleanAvg >= 0 ? '+' : '') + r.cleanAvg.toFixed(3)}</td>
+          <td class="mono" style="color:var(--text3)">${r.cleanBest === null ? '—' : r.cleanBest.toFixed(1) + 'x'}</td>
+          <td class="mono" style="color:var(--text3);font-size:11px" title="Live-tick figure. Inflated by feed gaps that invent peaks; the inflation is larger the tighter the trail.">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
+          <td class="mono" style="color:var(--text3);font-size:11px" title="Best single trade the live fleet recorded. Repeated identical values across different trail widths are the signature of a one-tick spike, not a real move.">${r.best.toFixed(1)}x</td>
           <td><a href="/builder?from=${r.key}" title="Open this strategy in the builder to edit or clone it" style="color:#3b82f6;text-decoration:none;font-size:11px;white-space:nowrap">copy →</a></td>
         </tr>`;
         const head = `<tr>${th('#')}${th('Strategy', 'name')}${th('Entry', 'entry', 'Sort by dip depth — instant first')}`
           + `${th('Target', 'target', 'Sort by the highest take-profit')}${th('Stop', 'stop', 'Sort by stop width')}${th('Extra')}`
-          + `${th('Trades', 'trades')}${th('Win', 'win', 'Sort by win rate')}${th('Avg/trade', 'avg', 'Sort by average PnL per trade')}`
-          + `${th('Total', 'pnl', 'Sort by total PnL — highest or lowest')}${th('Best', 'best', 'Sort by best single trade')}<th></th></tr>`;
+          + `${th('Trades', 'trades')}${th('Win', 'win', 'Sort by win rate')}`
+          + `${th('REAL avg', 'cleanavg', 'Replayed against real minute candles — the number to trust')}`
+          + `${th('REAL best', 'cleanbest', 'Best single trade on real candles')}`
+          + `${th('fleet avg', 'avg', 'Live-tick figure. Inflated by feed gaps that invent peaks.')}`
+          + `${th('fleet best', 'best', 'Live-tick best trade. Identical values across trail widths mean a one-tick spike.')}<th></th></tr>`;
 
         const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
         const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
@@ -5131,6 +5170,24 @@ export function startDashboard(port?: number): void {
           return n ? rs.reduce((s, r) => s + r.pnl, 0) / n : 0;
         };
         const html = settingsShell(`
+        <div class="card" style="max-width:none;border-color:#7c2d12;background:linear-gradient(180deg,#1c0f0a,var(--bg2))">
+          <h3 style="color:#fb923c">⚠ Read the REAL columns, not the fleet ones</h3>
+          <p style="font-size:13px;color:var(--text2);line-height:1.7;margin:6px 0 0">
+            The shadow fleet trades on live ticks. When the price feed gaps, a single tick sets a
+            peak the coin never climbed to, and the trailing stop then books a fill just beneath it.
+            The giveaway was in the peaks: <b>35 strategies at trail widths from 8% to 20% all
+            recorded the identical 6.87×  best trade</b>, and 45 more at 15–30% recorded 10.15×.
+            A gradual climb cannot do that — an 8% trail is forced out on the first 8% pullback,
+            long before a 20% trail — so identical peaks mean one tick that no width had a pullback
+            to exit on. The tighter the trail, the higher its stop sat under that invented peak,
+            which is exactly how “8% best, 45% worst” was manufactured.
+            <br><br>
+            <b>REAL avg</b> and <b>REAL best</b> replay the same strategy against captured minute
+            OHLCV: a trail can only ratchet on a high the coin actually printed, and a dip fills at
+            its limit instead of at the bottom of a gap. Sorting defaults to REAL avg. The fleet
+            columns are kept only so the gap between them stays visible.
+          </p>
+        </div>
         <div class="card" style="max-width:none;border-color:#1e5c3a;background:linear-gradient(180deg,#0d1f16,var(--bg2))">
           <h3 style="color:#9be826">🏆 What's working ${hours === 'all' ? '(all time)' : `(last ${hours}h)`}</h3>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:12px">
