@@ -3968,6 +3968,47 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+    } else if (pathname === '/api/paths') {
+      // Raw captured candle paths, so the replay engine can be audited from outside
+      // rather than taken on trust. Everything on the strategy pages now rests on
+      // these, and a backtest nobody can check is just a different kind of guess.
+      try {
+        const paths = loadPaths(600);
+        const one = (url.match(/[?&]mint=([A-Za-z0-9]+)/) || [])[1];
+        if (one) {
+          const p = paths.find(x => x.mint === one);
+          res.writeHead(p ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(p ?? { error: 'no captured path for that mint' }));
+          return;
+        }
+        // Summary only by default — 218 full paths is several MB.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          count: paths.length,
+          note: 'Add ?mint=<mint> for one full path. intraDrawdown is the deepest '
+              + 'single-candle fall from that candle\u2019s own high, which is the move a '
+              + 'minute-resolution replay cannot see happen.',
+          paths: paths.map(p => {
+            let worst = 0, worstTs = 0;
+            for (const c of p.candles) {
+              if (c.h > 0) {
+                const d = (c.h - c.l) / c.h;
+                if (d > worst) { worst = d; worstTs = c.ts; }
+              }
+            }
+            const peak = p.candles.reduce((m, c) => Math.max(m, c.h), 0);
+            return {
+              mint: p.mint, symbol: p.symbol, callTs: p.callTs,
+              entryPrice: p.entryPrice, candles: p.candles.length,
+              peakMult: p.entryPrice > 0 ? +(peak / p.entryPrice).toFixed(3) : 0,
+              intraDrawdown: +worst.toFixed(4), intraAtMin: worstTs ? Math.round((worstTs - p.callTs) / 60000) : null,
+            };
+          }),
+        }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (pathname === '/api/backtest') {
       // Backtest an arbitrary config against every captured real price path
       let body = '';
