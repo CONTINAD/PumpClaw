@@ -193,6 +193,29 @@ export const CANDIDATES: Candidate[] = [
   { key: 'cmbC', name: 'dead band clear + real liquidity', group: 'combo', pass: s => { const x = r(s.sells1h, s.buys1h); return x === null ? null : !(x > 0.85 && x <= 0.95) && s.liq > 0; } },
   { key: 'cmbD', name: 'dead band clear + evening + churn cap', group: 'combo', pass: s => { const x = r(s.sells1h, s.buys1h), c = r(s.vol1h, s.mc); if (x === null || c === null || s.hourUtc == null) return null; return !(x > 0.85 && x <= 0.95) && c <= 2.9 && s.hourUtc >= 18; } },
   { key: 'cmbE', name: 'sell/buy >= 0.95 + liq $10-20K', group: 'combo', pass: s => { const x = r(s.sells1h, s.buys1h); if (x === null || s.liq <= 0) return null; return x >= 0.95 && s.liq >= 10_000 && s.liq <= 20_000; } },
+// ── The fake-chart tell ──
+  // Alex flagged $QUASI and $MLM as manufactured charts. Both had the same holder
+  // profile: 100% and 90% fresh wallets, 0 and 2 veterans. Across 210 calls with a
+  // real holder read, a fresh share at or above 90% crashes below 0.25x **90% of the
+  // time** against 57% for everything else (p=0.0045) — and 90% go under 0.15x, so
+  // they do not fade, they go to nothing.
+  //
+  // What makes this worth a rule rather than a note: their hit-2x rate is 50%,
+  // exactly the base rate. The pump prints. It is a real-looking chart that cannot
+  // be sold into, which is precisely why peakMultiplier cannot see the problem and
+  // why every filter keyed to upside misses it.
+  //
+  // Note the shape is a cliff, not a slope. The 15-70% fresh band is the BEST part
+  // of the sample (54-63% hit-2x, the lowest crash rates). Only the near-total
+  // absence of experienced holders is toxic, which is why the existing 'fresh
+  // wallets under 25%' candidate is pointed at the wrong end of it.
+  { key: 'fake90', name: 'fresh-wallet share under 90%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.90 : null; } },
+  { key: 'fake80', name: 'fresh-wallet share under 80%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.80 : null; } },
+  { key: 'vet3', name: 'at least 3 veteran holders', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.veterans ?? 0) >= 3 : null; } },
+  { key: 'vet5', name: 'at least 5 veteran holders', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.veterans ?? 0) >= 5 : null; } },
+  { key: 'freshBand', name: 'fresh share between 15% and 70%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (t <= 0) return null; const f = (s.freshWallets ?? 0) / t; return f >= 0.15 && f <= 0.70; } },
+  { key: 'fakeVert', name: 'not (90% fresh AND 5m over +300%)', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (t <= 0 || s.chg5m == null) return null; return !((s.freshWallets ?? 0) / t >= 0.90 && s.chg5m > 300); } },
+  { key: 'fakeAll', name: 'not (90% fresh AND $0 liq)', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (t <= 0) return null; return !((s.freshWallets ?? 0) / t >= 0.90 && s.liq <= 0); } },
 ];
 
 export function snapshotFrom(m: any, extra: Partial<Snapshot> = {}): Snapshot {
