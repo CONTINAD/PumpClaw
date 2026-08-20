@@ -76,6 +76,12 @@ export const CONFIG = {
   ] as const,
 
   // Bundle detection
+  /** How far below its own target a dip order may still fill.
+   *  0.30 = a −25% dip order fills between 0.75x and 0.525x of the call price and is
+   *  cancelled below that. Without a floor the order filled at any price at all, which
+   *  meant every dip task in the fleet bought the bottom of $QUASI's 94% rug and booked
+   *  the bounce as a 16x. Only affects entryMode 'dip'; MANIFEST buys instantly. */
+  DIP_MAX_OVERSHOOT: 0.30,
   BUNDLE_CHECK_ENABLED: true,
   BUNDLE_TOP_HOLDERS: 20,           // top holders checked (getTokenLargestAccounts caps at 20)
   BUNDLE_TIME_WINDOW_SEC: 300,      // 5 min narrow window for clustering

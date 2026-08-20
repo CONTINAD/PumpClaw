@@ -127,6 +127,27 @@ class TaskManager {
       }
       if (price > p.target) { keep.push(p); continue; }
 
+      // A dip order had an upper bound and no lower one, so it filled at whatever
+      // the price happened to be the moment it dropped through the target. On a coin
+      // that gapped, that is the bottom of a rug rather than a pullback.
+      //
+      // $QUASI was called at $31,389 MC, fell 94% inside fifteen minutes, and every
+      // dip task in the fleet filled at $1,844 MC. From that basis the dead-cat
+      // bounce back toward the call price reads as a 16.4x, and the same single coin
+      // then appears as a 40.94x "best trade" in twelve different dip strategies —
+      // carrying 55% to 98% of each one's entire reported profit.
+      //
+      // The thesis behind a dip entry is "a healthy coin pulled back". Past a point
+      // that thesis is simply false and the order should die with it, so a fill more
+      // than DIP_MAX_OVERSHOOT below its own target is treated as a rug in progress
+      // and the order is cancelled rather than filled.
+      if (price < p.target * (1 - CONFIG.DIP_MAX_OVERSHOOT)) {
+        console.log(`[Tasks] Dip order CANCELLED: $${p.symbol} gapped to ` +
+          `${(price / p.callPrice).toFixed(3)}x of the call, far below its ${(p.target / p.callPrice).toFixed(2)}x target — ` +
+          `that is a rug, not a dip`);
+        continue;
+      }
+
       const task = this.tasks.get(p.taskId);
       if (!task || !task.enabled) continue;
       try {
