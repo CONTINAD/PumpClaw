@@ -23,6 +23,14 @@ import { CONFIG as CFG } from './config.js';
  */
 const EXEC_OVERRIDE_GAP = 0.12;
 
+/**
+ * The most a single tick may raise a position's price before it is treated as a feed
+ * artefact rather than a move. The codebase already uses a 0.25x–4x band to sanity
+ * check one price source against another (`plausible` in index.ts); this is the same
+ * discipline applied across time on one source.
+ */
+const PRICE_JUMP_LIMIT = 4;
+
 export interface RealExit {
   reason: string;  // 'tp1'..'tpN' | 'trailing_stop' | 'stop_loss' | 'be_stop' | 'profit_protect'
   label: string;
@@ -70,6 +78,9 @@ export interface RealPosition {
   trailingActive: boolean;
   trailingHighPrice: number;
   trailingStopPrice: number;
+  /** Last price accepted as real, used to spot one-tick jumps that the market did
+   *  not make. Undefined on positions opened before this existed. */
+  lastGoodPrice: number;
 
   // Once a stop condition fires, this stays true until the position is flat — the
   // panic seller keeps hammering regardless of what price feeds say afterwards.
@@ -203,6 +214,7 @@ export class Trader {
         peakMultiplier: 1,
         trailingActive: strat0.trailingFrom === 'entry',
         trailingHighPrice: strat0.trailingFrom === 'entry' ? currentPrice : 0,
+        lastGoodPrice: currentPrice,
         trailingStopPrice: strat0.trailingFrom === 'entry' ? currentPrice * (1 - strat0.trailingDrop) : 0,
         status: 'open',
       };
@@ -419,6 +431,7 @@ export class Trader {
       // initial stop = entry × (1 − drop), ratchets up with every new ATH
       trailingActive: strat.trailingFrom === 'entry',
       trailingHighPrice: strat.trailingFrom === 'entry' ? fillPrice : 0,
+      lastGoodPrice: fillPrice,
       trailingStopPrice: strat.trailingFrom === 'entry' ? fillPrice * (1 - strat.trailingDrop) : 0,
       status: 'open',
     };
@@ -480,7 +493,8 @@ export class Trader {
     const strat = this.getStrategy();
 
     // Track peak multiplier
-    if (mult > (pos.peakMultiplier ?? 1)) {
+    if (mult > (pos.peakMultiplier ?? 1)
+        && !(pos.lastGoodPrice > 0 && currentPrice > pos.lastGoodPrice * PRICE_JUMP_LIMIT)) {
       pos.peakMultiplier = mult;
       stateChanged = true;
     }
@@ -499,7 +513,28 @@ export class Trader {
     // and the stop said 0.77x, about the same position, at the same instant.
     //
     // State must be current before it is acted on, so it is updated first.
-    if (pos.trailingActive && currentPrice > pos.trailingHighPrice) {
+    //
+    // But a new high is only a new high if the market actually got there. The feed
+    // caches, and on a coin that has just gapped it will hand back the pre-gap price
+    // for a while. Accepting that as an ATH invents a peak the position was never in.
+    //
+    // $QUASI: a dip task filled at 0.058x of the call, the feed then returned the
+    // pre-crash price, and the position ratcheted to 16.43x — a move the coin never
+    // made after that fill. Its 15/30/60-minute readings were 0.058x, 0.057x, 0.056x.
+    // The paper book paid out 11.59 SOL on 1 SOL for it.
+    //
+    // The guard is deliberately one-directional. Refusing to RAISE a high can only
+    // ever cost a little trailing room; refusing to lower a price would suppress a
+    // real crash, which is the one thing an exit engine must never do. A downward
+    // move of any size is still acted on in full, immediately.
+    const jumped = pos.lastGoodPrice > 0 && currentPrice > pos.lastGoodPrice * PRICE_JUMP_LIMIT;
+    if (jumped) {
+      console.log(`[Trader:${this.taskId}] $${pos.symbol}: ignoring ${(currentPrice / pos.lastGoodPrice).toFixed(1)}x ` +
+        `one-tick jump as a new high (${pos.lastGoodPrice.toExponential(3)} → ${currentPrice.toExponential(3)}) — feed artefact, not a move`);
+    } else {
+      pos.lastGoodPrice = currentPrice;
+    }
+    if (pos.trailingActive && !jumped && currentPrice > pos.trailingHighPrice) {
       pos.trailingHighPrice = currentPrice;
       stateChanged = true;
     }
