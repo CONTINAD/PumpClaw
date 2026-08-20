@@ -4106,13 +4106,27 @@ export function startDashboard(port?: number): void {
 
         const positions = taskManager.traderFor(task).getAllPositions()
           .filter(p => p.status === 'closed' && Number.isFinite(p.closedTime) && Number.isFinite(p.finalPnlSol));
+        // Derive the day's PnL from the primitives — what went in, what came back —
+        // rather than trusting the stored finalPnlSol.
+        //
+        // They disagree. Summed over the same 61 positions the stored field gives
+        // -4.029 SOL while entrySol and the recorded exits give -2.593. Something
+        // writes finalPnlSol at a moment when totalSolReturned is not final, and
+        // until that is understood the primitives are the number with a chain of
+        // custody. The gap is surfaced below rather than quietly resolved in favour
+        // of whichever looks better.
         const byDay = new Map<number, { pnl: number; n: number; wins: number }>();
+        let storedSum = 0, derivedSum = 0, disagree = 0;
         for (const p of positions) {
           const t = p.closedTime!;
           if (t < first || t >= next) continue;
+          const derived = (p.totalSolReturned ?? 0) - (p.entrySol ?? 0);
+          const stored = p.finalPnlSol ?? 0;
+          storedSum += stored; derivedSum += derived;
+          if (Math.abs(stored - derived) > 0.0005) disagree++;
           const d = new Date(t).getUTCDate();
           const e = byDay.get(d) ?? { pnl: 0, n: 0, wins: 0 };
-          e.pnl += p.finalPnlSol!; e.n++; if (p.finalPnlSol! > 0) e.wins++;
+          e.pnl += derived; e.n++; if (derived > 0) e.wins++;
           byDay.set(d, e);
         }
         const days = [...byDay.values()];
@@ -4181,10 +4195,19 @@ export function startDashboard(port?: number): void {
           </div>
           <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${cells.join('')}</div>
           <p style="font-size:11px;color:var(--text3);margin-top:14px;line-height:1.6">
-            Realised PnL only — a position is counted on the day it closed, in UTC. Open positions
-            appear on no day until they close. Shading carries the size of the day relative to the
-            heaviest one in the month, so a bad afternoon is visible without reading the numbers.
+            Realised PnL only — a position is counted on the day it closed, in UTC, and computed as
+            SOL returned minus SOL spent. Open positions appear on no day until they close. Shading
+            carries the size of the day against the heaviest one in the month, so a bad afternoon is
+            visible without reading the numbers.
           </p>
+          ${disagree === 0 ? '' : `<div style="margin-top:10px;padding:10px 12px;border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;font-size:11px;color:var(--text2);line-height:1.6">
+            <b style="color:#f59e0b">Accounting disagreement on ${disagree} of ${byDay.size ? [...byDay.values()].reduce((a, x) => a + x.n, 0) : 0} positions.</b>
+            The stored <code>finalPnlSol</code> totals <b>${storedSum.toFixed(3)} ◎</b> while entry size
+            and the recorded exits total <b>${derivedSum.toFixed(3)} ◎</b> — a gap of
+            <b>${(storedSum - derivedSum).toFixed(3)} ◎</b>. The grid above uses the second, because it can
+            be traced back to individual buys and sells. Three close paths in trader.ts end a position
+            without recording an exit at all, which is the most likely source.
+          </div>`}
         </div>`;
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(settingsShell(inner, '/calendar').replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · PnL Calendar</title>'));
