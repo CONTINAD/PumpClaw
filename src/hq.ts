@@ -236,10 +236,11 @@ function kpi(cls, lbl, val, sub, edge) {
 }
 
 async function paint() {
-  let data, shadow, live, skipped;
+  let data, shadow, live, skipped, feed;
   try {
-    [data, shadow, live, skipped] = await Promise.all([
-      j('/api/data?range=24h'), j('/api/shadow?hours=24'), j('/api/live'), j('/api/skipped').catch(() => ({}))
+    [data, shadow, live, skipped, feed] = await Promise.all([
+      j('/api/data?range=24h'), j('/api/shadow?hours=24'), j('/api/live'),
+      j('/api/skipped').catch(() => ({})), j('/api/feed?real=1').catch(() => ({ events: [] }))
     ]);
   } catch (e) {
     $('hb').className = 'dot dead'; $('hbtxt').textContent = 'offline'; return;
@@ -256,27 +257,56 @@ async function paint() {
   const totalCalls = data.overview.totalCalls || 0;
   const ms = data.milestoneCounts || {};
   const hit2 = ms['2'] || 0;
-  const strat = (shadow.strategies || []).filter(s => s.trades >= 5).sort((a,b) => b.avgPerTrade - a.avgPerTrade);
+  // Rank on the candle replay, never on the fleet's own average.
+  //
+  // This headline read "Best strategy +0.75 · Dip −30% → trail 10%". Replayed against
+  // real minute candles that strategy is roughly zero: the fleet trades live ticks, and
+  // when the feed gaps one tick invents a peak the coin never reached, which the
+  // trailing stop then books a fill beneath. Putting that number at the top of the page
+  // is how a measurement error becomes a decision.
+  const withClean = (shadow.strategies || []).filter(s => s.clean && s.clean.trades >= 20);
+  const strat = (withClean.length ? withClean : (shadow.strategies || []).filter(s => s.trades >= 5))
+    .slice().sort((a,b) => ((b.clean ? b.clean.avg : b.avgPerTrade) - (a.clean ? a.clean.avg : a.avgPerTrade)));
   const best = strat[0];
-  const fleetPnl = (shadow.strategies || []).reduce((s,x) => s + x.pnlSol, 0);
-  const fleetTrades = (shadow.strategies || []).reduce((s,x) => s + x.trades, 0);
+  const bestVal = best ? (best.clean ? best.clean.avg : best.avgPerTrade) : 0;
+
   const openReal = (live.open || []).filter(p => !p.taskName.startsWith('📄'));
+  const openPaper = (live.open || []).length - openReal.length;
   const bal = live.balance;
+
+  // Real realised PnL over the window, from the buys and sells that actually happened.
+  const ev = (feed && feed.events) || [];
+  const cut24 = Date.now() - 24*3600*1000;
+  let realIn = 0, realOut = 0, realTrades = 0;
+  const posMap = {};
+  for (const e of ev) {
+    if (e.ts < cut24) continue;
+    const m = posMap[e.mint] || (posMap[e.mint] = { i: 0, o: 0 });
+    if (e.kind === 'buy') m.i += e.sol; else m.o += e.sol;
+  }
+  for (const k in posMap) {
+    if (posMap[k].o > 0) { realIn += posMap[k].i; realOut += posMap[k].o; realTrades++; }
+  }
+  const realPnl = realOut - realIn;
 
   $('kpis').innerHTML =
     kpi('neutral', 'Calls · 24h', totalCalls, hit2 + ' hit 2× · ' + (ms['5']||0) + ' hit 5× · ' + (ms['10']||0) + ' hit 10×', 'var(--ice)') +
     kpi(totalCalls ? 'ok' : 'neutral', 'Hit rate 2×', totalCalls ? Math.round(hit2/totalCalls*100) + '%' : '—', 'of calls doubled from entry', 'var(--phos)') +
-    kpi(best && best.avgPerTrade > 0.03 ? 'ok' : best && best.avgPerTrade > 0 ? 'neutral' : 'bad',
-        'Best strategy', best ? fmtSol(best.avgPerTrade) : '—',
-        best ? best.strategy + ' · ' + best.trades + ' trades' : 'no data yet', 'var(--phos)') +
-    kpi(fleetPnl >= 0 ? 'ok' : 'bad', 'Fleet PnL · 24h', fmtSol(fleetPnl) + ' ◎',
-        fleetTrades + ' paper trades across ' + (shadow.strategies||[]).length + ' strategies', 'var(--violet)') +
+    kpi(realPnl >= 0 ? 'ok' : 'bad', 'Real PnL · 24h', fmtSol(realPnl) + ' ◎',
+        realTrades + ' closed trade' + (realTrades === 1 ? '' : 's') + ' · ' + realIn.toFixed(2) + ' ◎ deployed', 'var(--amber)') +
     kpi(openReal.length ? 'info' : 'neutral', 'Wallet', (bal === null || bal === undefined ? '—' : bal.toFixed(3)) + ' ◎',
-        openReal.length ? openReal.length + ' position(s) open' : 'no live positions', 'var(--amber)');
+        openReal.length ? openReal.length + ' live position(s) open' : 'no live positions', 'var(--amber)') +
+    kpi(bestVal > 0.03 ? 'ok' : bestVal > 0 ? 'neutral' : 'bad',
+        'Best strategy (real candles)', best ? fmtSol(bestVal) : '—',
+        best ? best.strategy.slice(0, 34) + (best.clean ? ' · replayed' : ' · fleet only') : 'no data yet', 'var(--phos)');
 
   // ── live positions (price-enriched) ──
-  const open = live.open || [];
-  $('postag').textContent = open.length + ' open';
+  // Real money first. This panel is titled Live Positions and was showing 873 rows,
+  // every one of them paper, while the wallet held nothing — the one number a glance
+  // at this page should never get wrong.
+  const open = (live.open || []).slice().sort((a, b) =>
+    (a.taskName.startsWith('📄') ? 1 : 0) - (b.taskName.startsWith('📄') ? 1 : 0));
+  $('postag').textContent = openReal.length + ' live' + (openPaper ? ' · ' + openPaper + ' paper' : '');
   if (!open.length) {
     $('positions').innerHTML = '<div class="empty">no open positions — next qualifying call opens one</div>';
   } else {
@@ -292,7 +322,7 @@ async function paint() {
     } catch (e) {}
     $('positions').innerHTML = '<table><thead><tr><th>Task</th><th>Coin</th><th class="num">Now</th>' +
       '<th class="num">Peak</th><th class="num">Stop</th><th class="num">Age</th></tr></thead><tbody>' +
-      open.slice(0, 14).map(p => {
+      open.slice(0, openReal.length ? Math.max(6, openReal.length) : 10).map(p => {
         const cur = px[p.mint] ? px[p.mint].p / p.entryPrice : null;
         const stop = p.trailingStopPrice > 0 ? p.trailingStopPrice / p.entryPrice : null;
         const paper = p.taskName.startsWith('📄');
@@ -300,7 +330,7 @@ async function paint() {
           '<span class="dimc">' + p.taskName.replace('📄 ','').slice(0,22) + '</span></td>' +
           '<td class="sym">$' + p.symbol.slice(0,10) + '</td>' +
           '<td class="num ' + (cur === null ? 'dimc' : cur >= 1 ? 'up' : 'down') + '">' + (cur === null ? '—' : cur.toFixed(2) + '×') + '</td>' +
-          '<td class="num warnc">' + p.peakMultiplier.toFixed(2) + '×</td>' +
+          '<td class="num warnc">' + (Number.isFinite(p.peakMultiplier) ? p.peakMultiplier.toFixed(2) : '—') + '×</td>' +
           '<td class="num dimc">' + (stop === null ? '—' : stop.toFixed(2) + '×') + '</td>' +
           '<td class="num dimc">' + ago(p.entryTime) + '</td></tr>';
       }).join('') + '</tbody></table>';
@@ -327,14 +357,15 @@ async function paint() {
 
   // ── strategy leaderboard ──
   const top = strat.slice(0, 9);
-  const amax = Math.max(0.001, ...top.map(s => Math.abs(s.avgPerTrade)));
+  const cv = s2 => (s2.clean ? s2.clean.avg : s2.avgPerTrade);
+  const amax = Math.max(0.001, ...top.map(s2 => Math.abs(cv(s2))));
   $('strats').innerHTML = !top.length ? '<div class="empty">not enough closed trades yet</div>' :
     '<table><thead><tr><th></th><th>Strategy</th><th>Entry</th><th>Target</th><th>Stop</th><th class="num">n</th>' +
-    '<th class="num">Win</th><th class="num">Avg/trade</th><th>Confidence</th></tr></thead><tbody>' +
+    '<th class="num">Win</th><th class="num">REAL avg</th><th class="num">fleet</th><th>Confidence</th></tr></thead><tbody>' +
     top.map((s,i) => {
       const dip = s.strategy.startsWith('Dip');
-      const good = s.avgPerTrade >= 0.03;
-      const w = Math.abs(s.avgPerTrade) / amax * 100;
+      const good = cv(s) >= 0.03;
+      const w = Math.abs(cv(s)) / amax * 100;
       return '<tr><td class="rank">' + (i+1) + '</td>' +
         '<td class="sym" style="font-size:12px;white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis"><a href="/strategy?key=' + (s.key||'') + '" title="' + s.strategy + '" style="color:var(--txt);text-decoration:none;border-bottom:1px dotted var(--line2)">' + s.strategy.replace(/^Dip −\d+% → /,'').replace(/^Instant → /,'').slice(0,30) + '</a></td>' +
         '<td><span class="chip ' + (dip ? 'dip' : 'inst') + '">' + (dip ? s.strategy.match(/−\\d+%/) || 'dip' : 'instant') + '</span></td>' +
@@ -344,8 +375,9 @@ async function paint() {
         '<td class="num dimc" style="white-space:nowrap">' + (s.stopPct == null ? '—' : '−' + s.stopPct + '%') + '</td>' +
         '<td class="num dimc">' + s.trades + '</td>' +
         '<td class="num ' + (s.winPct >= 60 ? 'up' : 'dimc') + '">' + s.winPct + '%</td>' +
-        '<td class="num"><span class="bar"><i style="width:' + w + '%;background:' + (good ? 'var(--phos)' : s.avgPerTrade >= 0 ? 'var(--amber)' : 'var(--blood)') + '"></i>' +
-        '<span class="' + (good ? 'up' : s.avgPerTrade >= 0 ? 'warnc' : 'down') + '">' + fmtSol(s.avgPerTrade) + '</span></span></td>' +
+        '<td class="num"><span class="bar"><i style="width:' + w + '%;background:' + (good ? 'var(--phos)' : cv(s) >= 0 ? 'var(--amber)' : 'var(--blood)') + '"></i>' +
+        '<span class="' + (good ? 'up' : cv(s) >= 0 ? 'warnc' : 'down') + '">' + fmtSol(cv(s)) + '</span></span></td>' +
+        '<td class="num dimc" title="What the live-tick fleet claimed for the same strategy. Where this is far above the replay, feed gaps invented peaks the coin never reached.">' + fmtSol(s.avgPerTrade) + '</td>' +
         '<td><span class="chip ' + (s.verdict === 'tail-driven' ? 'tail' : (s.verdict || 'thin')) + '" title="robust avg ' +
         (s.robustAvg !== undefined ? s.robustAvg.toFixed(3) : '?') + ' · t=' + (s.tStat ?? '?') + '">' + (s.verdict || 'thin') + '</span></td></tr>';
     }).join('') + '</tbody></table>';
@@ -363,7 +395,7 @@ async function paint() {
       '<div class="n">per trade · ' + instG.n + ' trades</div></div>';
   const edge = dipG.avg - instG.avg;
   $('entrynote').innerHTML = dipG.n < 20 || instG.n < 20 ? 'Gathering data — both groups need 20+ trades to compare.' :
-    'Waiting for the pullback is worth <b class="' + (edge >= 0 ? 'up' : 'down') + '">' + fmtSol(edge) + ' SOL per trade</b>. ' +
+    'Fleet figures, which overstate dip entries badly — a dip order used to fill at the bottom of a rug, so the bounce read as profit. On real candles the gap is far smaller. Treat as a direction, not a size. Waiting for the pullback is worth <b class="' + (edge >= 0 ? 'up' : 'down') + '">' + fmtSol(edge) + ' SOL per trade</b>. ' +
     'Every call in the sample dipped ≥20% below the call price within 30 minutes.';
 
   // ── skip reasons ──
