@@ -1765,7 +1765,8 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI'
    way down means scrolling back up to go anywhere. */
 .topbar{position:sticky;top:0;z-index:20;display:flex;justify-content:space-between;align-items:center;
   padding:11px 20px;border-bottom:1px solid var(--border);background:rgba(10,14,23,.94);backdrop-filter:blur(8px)}
-.topbar h1{font-size:16px;font-weight:650;letter-spacing:-.01em;white-space:nowrap}
+.topbar h1{font-size:15px;font-weight:650;letter-spacing:-.01em;white-space:nowrap}
+.topbar nav::-webkit-scrollbar{display:none}
 .topbar a{color:var(--text2);text-decoration:none;font-size:13px}
 .topbar a:hover{color:var(--text)}
 
@@ -1826,18 +1827,25 @@ const NAV_GROUPS: [string, [string, string][]][] = [
 ];
 
 function navBar(self: string): string {
+  // One line, always.
+  //
+  // The grouped version wrapped onto two or three rows on anything narrower than a
+  // desktop, and because the header is sticky those rows then ate the top of every
+  // page permanently. Grouping is worth keeping — it says which pages answer the
+  // same question — but not at the cost of the viewport. So: nowrap, and the strip
+  // scrolls sideways if it has to. Group labels are separators rather than headings,
+  // which costs a lot less width.
   const link = (href: string, label: string) => {
     const on = self === href || self.startsWith(href + '?');
-    return `<a href="${href}" style="text-decoration:none;font-size:12px;padding:3px 8px;border-radius:6px;`
+    return `<a href="${href}" style="text-decoration:none;font-size:12px;padding:3px 7px;border-radius:6px;`
       + `color:${on ? 'var(--text)' : 'var(--text2)'};background:${on ? 'var(--bg3)' : 'transparent'}">${label}</a>`;
   };
-  return `<nav style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">`
-    + NAV_GROUPS.map(([g, items]) =>
-        `<span style="display:flex;align-items:center;gap:2px">`
-        + `<span style="font-size:9px;letter-spacing:.12em;color:var(--text3);margin-right:4px">${g}</span>`
-        + items.map(([h, l]) => link(h, l)).join('') + `</span>`).join('')
-    + `<span style="display:flex;align-items:center;gap:2px;margin-left:4px">`
-    + link('/settings', 'Settings') + `<a href="/" style="text-decoration:none;font-size:12px;padding:3px 8px;color:var(--text2)">← Dashboard</a></span></nav>`;
+  const sep = `<span style="color:var(--text3);opacity:.4;padding:0 3px">·</span>`;
+  return `<nav style="display:flex;gap:1px;align-items:center;overflow-x:auto;white-space:nowrap;`
+    + `scrollbar-width:none;-ms-overflow-style:none;max-width:100%">`
+    + NAV_GROUPS.map(([, items]) => items.map(([h, l]) => link(h, l)).join('')).join(sep)
+    + sep + link('/settings', 'Settings')
+    + `<a href="/" style="text-decoration:none;font-size:12px;padding:3px 7px;color:var(--text2)">Home</a></nav>`;
 }
 
 function settingsShell(inner: string, self = '/settings'): string {
@@ -1851,7 +1859,7 @@ function settingsShell(inner: string, self = '/settings'): string {
     : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar" style="flex-wrap:wrap;gap:10px"><h1 style="margin-right:auto">${title}</h1>${navBar(self)}</div>
+<div class="topbar" style="gap:14px"><h1 style="flex:0 0 auto">${title}</h1>${navBar(self)}</div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
 
@@ -4832,7 +4840,7 @@ export function startDashboard(port?: number): void {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PumpClaw · Filter Lab</title><style>${SETTINGS_STYLE}</style></head><body>
-<div class="topbar" style="flex-wrap:wrap;gap:10px"><h1 style="margin-right:auto">🧪 Filter Lab</h1>${navBar('/filter-lab')}</div>
+<div class="topbar" style="gap:14px"><h1 style="flex:0 0 auto">🧪 Filter Lab</h1>${navBar('/filter-lab')}</div>
 <div class="wrap" style="max-width:1200px">${inner}</div></body></html>`);
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -5866,12 +5874,25 @@ export function startDashboard(port?: number): void {
         const open = taskManager.all().filter(t => t.paper)
           .flatMap(t => taskManager.traderFor(t).getOpenPositions());
         const mints = [...new Set(open.map(p => p.mint))];
+        // Price everything in parallel batches rather than one after another.
+        //
+        // 873 open positions is ~29 batches of 30. Serially, with a 250ms gap, that is
+        // upwards of twenty seconds before the button says anything — long enough to
+        // look hung and be given up on, which is exactly what happened. Four at a time
+        // brings it under six, and DexScreener is comfortable with that.
         const px = new Map<string, number>();
-        for (let i = 0; i < mints.length; i += 30) {
-          const md = await fetchBatchMarketData(mints.slice(i, i + 30));
-          for (const [m, v] of md) if (v.priceUsd > 0) px.set(m, v.priceUsd);
-          await new Promise(r => setTimeout(r, 250));
-        }
+        const batches: string[][] = [];
+        for (let i = 0; i < mints.length; i += 30) batches.push(mints.slice(i, i + 30));
+        const LANES = 4;
+        await Promise.all(Array.from({ length: LANES }, async (_, lane) => {
+          for (let i = lane; i < batches.length; i += LANES) {
+            try {
+              const md = await fetchBatchMarketData(batches[i]);
+              for (const [m, v] of md) if (v.priceUsd > 0) px.set(m, v.priceUsd);
+            } catch { /* an unpriceable batch stays open and is reported as such */ }
+            await new Promise(r => setTimeout(r, 120));
+          }
+        }));
         const out = await taskManager.closeAllPaper(m => px.get(m));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
