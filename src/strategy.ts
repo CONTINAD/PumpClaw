@@ -1216,6 +1216,113 @@ for (const hold of [1, 2, 3]) {
   }
 }
 
+// ── E. Bank early, trail wide (24) ──────────────────────────
+// A wide trail cannot profit on its own: it exits at peak x (1 - trail), so a 45%
+// trail needs a 1.82x peak just to break even and the median call peaks at 1.65x.
+// Every pure-trail setting at 30% or wider is negative across the fleet.
+//
+// The way a wide trail earns its keep is to stop being the thing that books the
+// profit. Sell most of the position into the first real move, then let a loose
+// trail carry a small remainder as a free option on the coins that keep going.
+// This sweeps how much to bank and how early, at trails that stay 30% or wider.
+for (const [tn, tp] of [['125', 1.25], ['14', 1.4], ['16', 1.6], ['18', 1.8]] as [string, number][]) {
+  for (const sell of [40, 60, 80]) {
+    for (const tr of [30, 45]) {
+      GRID10.push({
+        key: `gE${tn}s${sell}t${tr}`,
+        name: `${sell}% @ ${tp}X → trail ${tr}%`,
+        desc: `Books ${sell}% of the position at ${tp}X and lets the rest ride a ${tr}% trail. Tests whether a wide trail is workable once it is no longer responsible for booking the gain.`,
+        tps: [[tp, sell / 100]], trail: tr / 100, stop: 0.75,
+      });
+    }
+  }
+}
+
+// ── F. Two-stage ladders, wide trail (8) ────────────────────
+// The live ladder puts its first rung at 1.55x and only 10% of the position on it,
+// so 90% is still exposed when the coin turns. These move the weight forward.
+for (const [key, label, tps] of [
+  ['a', '40% @ 1.3X + 30% @ 2X', [[1.3, 0.40] as [number, number], [2.0, 0.30] as [number, number]]],
+  ['b', '50% @ 1.4X + 25% @ 2.5X', [[1.4, 0.50] as [number, number], [2.5, 0.25] as [number, number]]],
+  ['c', '30% @ 1.25X + 40% @ 1.8X', [[1.25, 0.30] as [number, number], [1.8, 0.40] as [number, number]]],
+  ['d', '50% @ 1.5X + 25% @ 3X', [[1.5, 0.50] as [number, number], [3.0, 0.25] as [number, number]]],
+] as [string, string, [number, number][]][]) {
+  for (const tr of [30, 45]) {
+    GRID10.push({
+      key: `gF${key}t${tr}`,
+      name: `${label} → trail ${tr}%`,
+      desc: `Weight moved to the front of the ladder so the trail only ever manages a remainder. The live ladder risks 90% of the position past its first rung.`,
+      tps, trail: tr / 100, stop: 0.75,
+    });
+  }
+}
+
+// ── G. Break-even after the first rung (8) ──────────────────
+// Once the first TP has landed the position is playing with house money, and a stop
+// pulled up to entry converts every survivor into at-worst-flat. Costs some winners
+// that dip and recover; the question is whether it costs more than it saves.
+for (const [tn, tp] of [['13', 1.3], ['15', 1.5]] as [string, number][]) {
+  for (const sell of [40, 60]) {
+    for (const tr of [30, 45]) {
+      GRID10.push({
+        key: `gG${tn}s${sell}t${tr}`,
+        name: `${sell}% @ ${tp}X, BE stop → trail ${tr}%`,
+        desc: `Sells ${sell}% at ${tp}X and pulls the stop to entry. The remainder can then only end flat or up, at the cost of being shaken out by a normal retrace.`,
+        tps: [[tp, sell / 100]], trail: tr / 100, stop: 0.75, be: true,
+      });
+    }
+  }
+}
+
+// ── H. Clock plus a wide trail (6) ──────────────────────────
+// 99% of these coins peak inside five minutes and the median is at 0.54x by minute
+// fifteen. A clock is a blunt instrument but it is pointed at a real fact.
+for (const hold of [3, 5, 10]) {
+  for (const tr of [30, 45]) {
+    GRID10.push({
+      key: `gH${hold}t${tr}`,
+      name: `60% @ 1.4X → trail ${tr}%, ${hold}m clock`,
+      desc: `Banks 60% at 1.4X, trails the rest, and closes anything still open after ${hold} minutes. Built on the measurement that the top is almost always inside the first five.`,
+      tps: [[1.4, 0.60]], trail: tr / 100, stop: 0.75, hold,
+    });
+  }
+}
+
+// ── I. Dip entry with an early bank (6) ─────────────────────
+// Every dip-entry family in the fleet beats every instant-entry family, and the
+// decay curve says why: the median coin is at 0.85x five minutes after the call, so
+// an instant fill is close to the worst price available in its life.
+for (const dip of [20, 30]) {
+  for (const tr of [30, 45]) {
+    GRID10.push({
+      key: `gI${dip}t${tr}`,
+      name: `Dip −${dip}% → 50% @ 1.3X + trail ${tr}%`,
+      desc: `Waits for a −${dip}% dip, banks half at 1.3X from that lower basis, trails the rest at ${tr}%. Fills on roughly two thirds of calls; the rest cost nothing.`,
+      dip: dip / 100, win: 30, tps: [[1.3, 0.50]], trail: tr / 100, stop: 0.75,
+    });
+  }
+}
+for (const dip of [20, 30]) {
+  GRID10.push({
+    key: `gI${dip}x`,
+    name: `Dip −${dip}% → 70% @ 1.5X + trail 30%`,
+    desc: `The same entry with more banked and later. Tests whether the dip basis buys enough room to wait for a bigger first rung.`,
+    dip: dip / 100, win: 30, tps: [[1.5, 0.70]], trail: 0.30, stop: 0.75,
+  });
+}
+
+// ── J. Stop width under an early-bank ladder (5) ────────────
+// Stop width has never been swept while a front-loaded ladder was running. A tight
+// stop should be cheaper here, because the ladder has already taken risk off.
+for (const st of [15, 20, 25, 35, 50]) {
+  GRID10.push({
+    key: `gJs${st}`,
+    name: `60% @ 1.4X → trail 30%, stop −${st}%`,
+    desc: `Holds the ladder and the trail fixed and moves only the stop, so the stop's contribution can be read on its own.`,
+    tps: [[1.4, 0.60]], trail: 0.30, stop: (100 - st) / 100,
+  });
+}
+
 GRID.push(...GRID10);
 
 
