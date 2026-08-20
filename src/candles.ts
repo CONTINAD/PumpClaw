@@ -88,6 +88,23 @@ export interface BacktestCfg {
   stopLossPct: number;
   breakEvenAfterTp1: boolean;
   maxHoldMin: number;
+  /** Which half of a candle is assumed to happen first.
+   *
+   *  This is not a detail. Across the 218 captured paths the deepest fall inside a
+   *  single candle is a median of 64% from that candle's own high, and 95% of coins
+   *  have at least one candle that falls more than 45%. At that range the assumption
+   *  decides the result, so both must be reported.
+   *
+   *  'low'  — the fall comes first. Stops fire against the old level, the trail never
+   *           ratchets on the spike, and take-profits inside the candle are missed.
+   *           The floor of what a strategy could have made.
+   *  'high' — the spike comes first. Take-profits fill, the trail ratchets to the
+   *           candle high, and only then does the fall test the raised stop.
+   *           The ceiling.
+   *
+   *  Truth is somewhere between. A single number from either one is a claim the data
+   *  cannot support. */
+  intraOrder?: 'low' | 'high';
 }
 
 export interface BacktestResult {
@@ -124,26 +141,47 @@ export function backtest(cfg: BacktestCfg, paths: CoinPath[], horizonMin = 180):
     let trailArmed = cfg.trailingFrom === 'entry';
     const hits = cfg.tps.map(() => false);
 
+    const highFirst = cfg.intraOrder === 'high';
     for (let i = idx; i < c.length && i - idx < horizonMin; i++) {
       const k = c[i];
-      // low first — stops fire before targets within a candle
-      if (remaining > 0 && stop > 0 && k.l <= stop) {
-        proceeds += remaining * stop; remaining = 0;
-        exitLabel = trailArmed && stop > entry ? 'trailing stop' : 'stop loss';
-        break;
-      }
-      for (let j = 0; j < cfg.tps.length; j++) {
-        if (!hits[j] && k.h >= entry * cfg.tps[j].mult) {
-          const sell = Math.min(cfg.tps[j].sellPct, remaining);
-          proceeds += sell * entry * cfg.tps[j].mult;
-          remaining -= sell; hits[j] = true;
-          exitLabel = `TP ${cfg.tps[j].mult}×`;
-          if (cfg.breakEvenAfterTp1 && j === 0) stop = Math.max(stop, entry);
+      const takeStop = (): boolean => {
+        if (remaining > 0 && stop > 0 && k.l <= stop) {
+          proceeds += remaining * stop; remaining = 0;
+          exitLabel = trailArmed && stop > entry ? 'trailing stop' : 'stop loss';
+          return true;
         }
+        return false;
+      };
+      const takeTps = () => {
+        for (let j = 0; j < cfg.tps.length; j++) {
+          if (!hits[j] && k.h >= entry * cfg.tps[j].mult) {
+            const sell = Math.min(cfg.tps[j].sellPct, remaining);
+            proceeds += sell * entry * cfg.tps[j].mult;
+            remaining -= sell; hits[j] = true;
+            exitLabel = `TP ${cfg.tps[j].mult}×`;
+            if (cfg.breakEvenAfterTp1 && j === 0) stop = Math.max(stop, entry);
+          }
+        }
+      };
+      const ratchet = () => {
+        if (k.h > high) high = k.h;
+        if (!trailArmed && cfg.trailingFrom === 'afterLastTp' && cfg.tps.length && hits.every(Boolean)) trailArmed = true;
+        if (trailArmed && cfg.trailingDrop < 0.89) stop = Math.max(stop, high * (1 - cfg.trailingDrop));
+      };
+
+      if (highFirst) {
+        // Spike first: targets fill and the trail ratchets to this candle's high,
+        // then the fall tests the level it was just raised to.
+        takeTps();
+        ratchet();
+        if (takeStop()) break;
+      } else {
+        // Fall first: the stop is tested against the level it already had, so the
+        // spike in the same candle never counted for anything.
+        if (takeStop()) break;
+        takeTps();
+        ratchet();
       }
-      if (k.h > high) high = k.h;
-      if (!trailArmed && cfg.trailingFrom === 'afterLastTp' && cfg.tps.length && hits.every(Boolean)) trailArmed = true;
-      if (trailArmed && cfg.trailingDrop < 0.89) stop = Math.max(stop, high * (1 - cfg.trailingDrop));
       if (remaining <= 1e-9) break;
       if (cfg.maxHoldMin && (i - idx) >= cfg.maxHoldMin) {
         proceeds += remaining * k.c; remaining = 0; exitLabel = `${cfg.maxHoldMin}m clock`;
