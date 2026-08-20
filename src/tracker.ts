@@ -77,6 +77,26 @@ export interface CallRecord {
     exchangeFundedPct?: number;
   };
 
+  /** The holder set past the twentieth wallet, via Helius DAS. The bundle check is
+   *  capped at 20 by `getTokenLargestAccounts`, so it cannot see a funder cluster
+   *  larger than that — this records what the deeper read found. Measurement only:
+   *  nothing here has a vote in whether the coin was bought. */
+  entryDeepHolders?: {
+    accounts?: number;
+    owners?: number;
+    traced?: number;
+    fresh?: number;
+    veterans?: number;
+    largestCluster?: number;
+    clusterPct?: number;
+    clusterFunder?: string | null;
+    independent?: number;
+    funders?: number;
+    failed?: number;
+    coverage?: number;
+    ms?: number;
+  };
+
   /** Outcome shape, filled in as the coin plays out. A peak alone cannot tell you
    *  whether it was reachable — these say how fast it moved and how much pain came
    *  first, which is what decides whether any entry could have captured it. */

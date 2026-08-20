@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { truePrice } from './price-oracle.js';
 import { snapshotFrom } from './filter-lab.js';
+import { deepHolderScan } from './deep-holders.js';
 import { join } from 'path';
 import { CONFIG } from './config.js';
 import { scrapeAllChannels } from './telegram.js';
@@ -647,6 +648,21 @@ async function fastScanCycle() {
         adjustedMarket = { ...liveMarket, priceUsd: priceForRecord };
       }
     } catch { /* keep the venue's figure */ }
+
+    // The deep holder read runs alongside the alert rather than in front of it. It is
+    // measurement — it must never add latency to a buy or be able to stop one — so it
+    // back-fills the record whenever it finishes, the same shape as the smart-wallet
+    // check above. 100 wallets costs ~2.4s against a coin already three minutes old.
+    deepHolderScan(coin.mint).then(d => {
+      if (!d) return;
+      const rec = tracker.getByMint(coin.mint);
+      if (rec) rec.entryDeepHolders = d;
+      if (d.largestCluster >= 5) {
+        log(`🕸 DEEP HOLDERS $${coin.symbol}: ${d.owners} owners, largest funder cluster ` +
+            `${d.largestCluster}/${d.traced} (${d.clusterPct}%) from ${String(d.clusterFunder).slice(0, 8)}… ` +
+            `· ${d.independent} independent · coverage ${d.coverage}%`);
+      }
+    }).catch(() => {});
 
     const paperTrade = paperTrader.openTrade(
       coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,

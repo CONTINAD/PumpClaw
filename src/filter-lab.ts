@@ -39,6 +39,18 @@ export interface Snapshot {
   /** UTC hour the coin was observed. Time-of-day showed a 14-point spread across
    *  303 calls and nothing in the system could express a rule about it. */
   hourUtc?: number;
+
+  // ── From the DAS holder read, which is not capped at 20 wallets ──
+  /** Distinct owner wallets holding the mint. */
+  deepOwners?: number;
+  /** Largest group of traced wallets sharing one funding wallet. */
+  deepCluster?: number;
+  /** That cluster as a share of traced wallets. */
+  deepClusterPct?: number;
+  /** Traced wallets in no cluster at all. */
+  deepIndependent?: number;
+  /** Distinct funders — a farm has few, an organic holder set has many. */
+  deepFunders?: number;
 }
 
 export interface Candidate {
@@ -216,6 +228,26 @@ export const CANDIDATES: Candidate[] = [
   { key: 'freshBand', name: 'fresh share between 15% and 70%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (t <= 0) return null; const f = (s.freshWallets ?? 0) / t; return f >= 0.15 && f <= 0.70; } },
   { key: 'fakeVert', name: 'not (90% fresh AND 5m over +300%)', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (t <= 0 || s.chg5m == null) return null; return !((s.freshWallets ?? 0) / t >= 0.90 && s.chg5m > 300); } },
   { key: 'fakeAll', name: 'not (90% fresh AND $0 liq)', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (t <= 0) return null; return !((s.freshWallets ?? 0) / t >= 0.90 && s.liq <= 0); } },
+// ── Depth past the twentieth wallet ──
+  // These read the DAS holder scan, which has no 20-cap, so for the first time a rule
+  // can say something about cluster sizes larger than the sample the bundle check can
+  // hold. Every one of these is unmeasurable with getTokenLargestAccounts.
+  //
+  // Note these can only be scored on calls made after the DAS scan shipped. Testing
+  // them against older coins is meaningless: those launches are dead and their holders
+  // have long since sold, so today's holder set says nothing about call time.
+  { key: 'dpOwn40', name: 'at least 40 owner wallets', group: 'depth', pass: s => (s.deepOwners != null ? s.deepOwners >= 40 : null) },
+  { key: 'dpOwn80', name: 'at least 80 owner wallets', group: 'depth', pass: s => (s.deepOwners != null ? s.deepOwners >= 80 : null) },
+  { key: 'dpOwn150', name: 'at least 150 owner wallets', group: 'depth', pass: s => (s.deepOwners != null ? s.deepOwners >= 150 : null) },
+  { key: 'dpClu5', name: 'no funder cluster of 5+', group: 'depth', pass: s => (s.deepCluster != null ? s.deepCluster < 5 : null) },
+  { key: 'dpClu10', name: 'no funder cluster of 10+', group: 'depth', pass: s => (s.deepCluster != null ? s.deepCluster < 10 : null) },
+  { key: 'dpClu20', name: 'no funder cluster of 20+', group: 'depth', pass: s => (s.deepCluster != null ? s.deepCluster < 20 : null) },
+  { key: 'dpCluPct', name: 'largest cluster under 25% of holders', group: 'depth', pass: s => (s.deepClusterPct != null ? s.deepClusterPct < 25 : null) },
+  { key: 'dpCluPct50', name: 'largest cluster under 50% of holders', group: 'depth', pass: s => (s.deepClusterPct != null ? s.deepClusterPct < 50 : null) },
+  { key: 'dpInd20', name: 'at least 20 independent holders', group: 'depth', pass: s => (s.deepIndependent != null ? s.deepIndependent >= 20 : null) },
+  { key: 'dpInd50', name: 'at least 50 independent holders', group: 'depth', pass: s => (s.deepIndependent != null ? s.deepIndependent >= 50 : null) },
+  { key: 'dpFund10', name: 'at least 10 distinct funders', group: 'depth', pass: s => (s.deepFunders != null ? s.deepFunders >= 10 : null) },
+  { key: 'dpFundRatio', name: 'funders at least half of traced holders', group: 'depth', pass: s => { if (s.deepFunders == null || s.deepIndependent == null || s.deepCluster == null) return null; const t = s.deepIndependent + s.deepCluster; return t > 0 ? s.deepFunders / t >= 0.5 : null; } },
 ];
 
 export function snapshotFrom(m: any, extra: Partial<Snapshot> = {}): Snapshot {

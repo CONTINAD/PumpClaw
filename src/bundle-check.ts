@@ -60,7 +60,7 @@ function cacheSet(wallet: string, time: number): void {
 const RPC_ENDPOINTS = [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean);
 let rpcEndpointIdx = 0;
 
-async function rpc(method: string, params: any[]): Promise<any> {
+export async function rpc(method: string, params: any[] | Record<string, any>): Promise<any> {
   let lastErr: Error | null = null;
   for (let i = 0; i < Math.max(RPC_ENDPOINTS.length, 1); i++) {
     const idx = (rpcEndpointIdx + i) % RPC_ENDPOINTS.length;
@@ -119,7 +119,7 @@ async function resolveOwnerWallets(tokenAccounts: string[]): Promise<string[]> {
  */
 const MAX_SIG_LIMIT = 300; // bundle wallets are almost always brand-new
 
-interface WalletInfo {
+export interface WalletInfo {
   fundingTime: number | null;
   funder: string | null;      // who sent the first SOL tx to this wallet
   /** Slot of that first transaction. Seconds are too coarse to separate wallets
@@ -136,7 +136,7 @@ interface WalletInfo {
 // Cache stores both funding time and funder source
 const walletInfoCache = new Map<string, WalletInfo>();
 
-async function getWalletInfo(wallet: string): Promise<WalletInfo> {
+export async function getWalletInfo(wallet: string): Promise<WalletInfo> {
   const cached = walletInfoCache.get(wallet);
   if (cached) return cached;
 
