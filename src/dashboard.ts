@@ -1211,7 +1211,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
   const fmtSol = n => (n >= 0 ? '+' : '') + n.toFixed(3) + ' SOL';
   async function tick() {
     try {
-      const live = await (await fetch('/api/live')).json();
+      const live = await (await fetch('/api/live?real=1')).json();
       const st = document.getElementById('lt-status');
       const body = document.getElementById('lt-body');
       st.textContent = (live.tradeEnabled ? 'LIVE MODE ON' : 'live mode OFF') +
@@ -1222,7 +1222,10 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
           (live.tradeEnabled && live.enabledCount > 0 ? ' — ' + live.enabledCount + ' task(s) armed for the next call.' : ' — no tasks running (Tasks page).') + '</span>';
         return;
       }
-      const mints = live.open.map(p => p.mint).join(',');
+      // DexScreener's batch endpoint accepts 30 addresses. It was being handed one
+      // per open position — 8,136 of them, a 360KB URL — so the request failed and
+      // every price cell silently rendered a dash.
+      const mints = live.open.slice(0, 30).map(p => p.mint).join(',');
       let prices = {};
       try {
         const dex = await (await fetch('https://api.dexscreener.com/latest/dex/tokens/' + mints)).json();
@@ -1233,7 +1236,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
       } catch (e) {}
       let rows = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
         '<tr>' + ['Task', 'Coin', 'Now', 'Peak', 'Stop at', 'Est. PnL', 'Age'].map(h => '<th style="color:var(--text3);text-align:left;padding:4px 8px;font-size:11px;text-transform:uppercase">' + h + '</th>').join('') + '</tr>';
-      for (const p of live.open) {
+      for (const p of live.open.slice(0, 30)) {
         const cur = prices[p.mint] ? prices[p.mint].price / p.entryPrice : null;
         const stopMult = p.trailingStopPrice > 0 ? p.trailingStopPrice / p.entryPrice : null;
         const est = cur !== null ? (p.totalSolReturned + p.entrySol * p.remainingPct * cur - p.entrySol) : null;
@@ -3847,7 +3850,16 @@ export function startDashboard(port?: number): void {
 
     if (pathname === '/api/live') {
       (async () => {
-        const open = taskManager.openPositions().map(({ task, pos: p }) => ({
+        // ?real=1 drops the shadow fleet's open positions.
+        //
+        // The full list is every open position across 2,400 paper tasks — 8,136 of
+        // them, 574KB. The dashboard's Live Trading panel renders real money only,
+        // so it was downloading and drawing eight thousand rows it then had nothing
+        // to say about, every ten seconds. The default is unchanged for anything
+        // that genuinely wants the fleet.
+        const realOnly = /[?&]real=1/.test(url);
+        const src = taskManager.openPositions().filter(({ task }) => !realOnly || !task.paper);
+        const open = src.map(({ task, pos: p }) => ({
           taskId: task.id, taskName: task.name,
           mint: p.mint, symbol: p.symbol, entrySol: p.entrySol, entryPrice: p.entryPrice,
           entryMC: p.entryMC, entryTime: p.entryTime, remainingPct: p.remainingPct,
