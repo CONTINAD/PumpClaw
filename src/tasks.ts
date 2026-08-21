@@ -654,10 +654,11 @@ class TaskManager {
           postCallout(
             tasks[i].name, mint,
             `Bought $${symbol} at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC.`,
+            false, this.keypairFor(tasks[i]),
           ).then(r => {
             if (r.ok) console.log(`[Callout] ${tasks[i].name} called $${symbol} — ${r.calloutId}`);
             else if (r.error) console.log(`[Callout] ${tasks[i].name} $${symbol} failed: ${r.error}`);
-            // A "skipped" is the normal state before cookies are set; not worth a line.
+            // A "skipped" is the normal state while CALLOUT_ENABLED is off.
           }).catch(() => {});
         }
       } else if (r.status === 'rejected') {

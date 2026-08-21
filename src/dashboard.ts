@@ -4234,7 +4234,8 @@ export function startDashboard(port?: number): void {
       const want = tm ? decodeURIComponent(tm[1]) : null;
       const targets = want ? tasks.filter(t => t.name === want) : tasks;
       Promise.all(targets.map(t =>
-        postCallout(t.name, mm[1], `Bought $${mm[1].slice(0, 6)} — auto-called by ${t.name}.`, true)
+        postCallout(t.name, mm[1], `Bought $${mm[1].slice(0, 6)} — auto-called by ${t.name}.`,
+                    true, taskManager.keypairFor(t))
           .then(r => ({ task: t.name, ...r }))))
         .then(out => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
