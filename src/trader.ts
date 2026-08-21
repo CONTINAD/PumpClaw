@@ -916,8 +916,18 @@ export class Trader {
           // Ignore an absurd quote; a broken reading must not trigger a sale either.
           if (jup && jup.priceUsd > 0 && jup.priceUsd > currentPrice / 5 && jup.priceUsd < currentPrice * 5) {
             if (jup.priceUsd < currentPrice) {
-              console.log(`[Trader] $${pos.symbol} near stop — feed ${currentPrice.toExponential(3)}, ` +
-                `executable ${jup.priceUsd.toExponential(3)}; acting on the executable price`);
+              // Same throttle, same map as the opposite branch below. The two are
+              // mutually exclusive — one fires when the executable price is under the
+              // feed, the other when it is over — so a single per-mint timer gives one
+              // divergence note a minute per position whichever way it is leaning,
+              // which is what a reader wants. $KIRK produced eleven of these in the
+              // seconds around one stop.
+              const lastLog = this.lastStalePriceLog.get(mint) ?? 0;
+              if (Date.now() - lastLog > 60_000) {
+                this.lastStalePriceLog.set(mint, Date.now());
+                console.log(`[Trader] $${pos.symbol} near stop — feed ${currentPrice.toExponential(3)}, ` +
+                  `executable ${jup.priceUsd.toExponential(3)}; acting on the executable price`);
+              }
               currentPrice = jup.priceUsd;
             } else if (jup.priceUsd > currentPrice * (1 + EXEC_OVERRIDE_GAP)) {
               // The watched price can read far BELOW the market, and then a stop is
