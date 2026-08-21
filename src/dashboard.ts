@@ -1767,6 +1767,8 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI'
   padding:11px 20px;border-bottom:1px solid var(--border);background:rgba(10,14,23,.94);backdrop-filter:blur(8px)}
 .topbar h1{font-size:15px;font-weight:650;letter-spacing:-.01em;white-space:nowrap}
 .topbar nav::-webkit-scrollbar{display:none}
+.topbar summary::-webkit-details-marker{display:none}
+.topbar summary:hover{color:var(--text)}
 .topbar a{color:var(--text2);text-decoration:none;font-size:13px}
 .topbar a:hover{color:var(--text)}
 
@@ -1778,12 +1780,18 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI'
 /* Digits line up in columns, which is most of what makes a dense table readable. */
 .mono,table td.mono,table th{font-family:var(--mono);font-variant-numeric:tabular-nums}
 table{border-collapse:collapse;width:100%;font-size:13px}
+/* Not sticky. Inside a card these floated over the first data row instead of above
+   it — a header that hides the row it labels is worse than one that scrolls away. */
 th{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--text3);font-weight:600;
-   text-align:right;padding:7px 10px;border-bottom:1px solid var(--border2);white-space:nowrap;
-   position:sticky;top:44px;background:var(--bg2);z-index:5}
+   text-align:right;padding:7px 10px;border-bottom:1px solid var(--border2);background:var(--bg2)}
 th:first-child{text-align:left}
-td{padding:7px 10px;text-align:right;border-top:1px solid var(--border);white-space:nowrap}
+/* Cells hold two and three lines — coin over date, size over market cap, a stack of
+   three exits. A blanket nowrap forced those onto one line, blew the table past its
+   container and clipped the result, which is why Live looked like it was missing
+   rows it was actually rendering. Numbers stay on one line; prose is free to wrap. */
+td{padding:7px 10px;text-align:right;border-top:1px solid var(--border);vertical-align:top}
 td:first-child{text-align:left}
+td.mono,td.num,th{white-space:nowrap}
 tbody tr:hover td,table tr:hover td{background:rgba(255,255,255,.022)}
 
 label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px}
@@ -1819,33 +1827,46 @@ a{color:#3b82f6}
  * happening now, what did we call, what should we run, why did it decide that —
  * makes the overlap legible instead of hiding it in a row of equals.
  */
-const NAV_GROUPS: [string, [string, string][]][] = [
-  ['NOW', [['/live', 'Live'], ['/calendar', 'Calendar'], ['/tasks', 'Tasks'], ['/ledger', 'Ledger']]],
-  ['CALLS', [['/calls', 'Calls'], ['/exits', 'Exits'], ['/channels', 'Channels'], ['/features', 'Features']]],
-  ['STRATEGY', [['/shadow', 'Shadow'], ['/builder', 'Builder'], ['/sweep', 'Sweep'], ['/params', 'Params']]],
-  ['FILTERS', [['/filters', 'Live rules'], ['/filter-lab', 'Filter Lab'], ['/bundles', 'Bundles']]],
+/**
+ * Six links, and everything else behind a disclosure.
+ *
+ * Grouping seventeen links did not make them fewer. Opening any page produced a
+ * strip of twenty things across the top, which is a list, not navigation. These six
+ * are the ones worth a permanent slot; the rest are reachable in one click and stop
+ * competing for attention. Native <details>, so it costs no JavaScript.
+ */
+const NAV_PRIMARY: [string, string][] = [
+  ['/', 'Home'], ['/live', 'Live'], ['/calendar', 'Calendar'],
+  ['/calls', 'Calls'], ['/shadow', 'Strategies'], ['/filter-lab', 'Filters'],
+];
+const NAV_MORE: [string, [string, string][]][] = [
+  ['Real money', [['/exits', 'Exits'], ['/ledger', 'Ledger'], ['/tasks', 'Tasks']]],
+  ['Calls', [['/channels', 'Channels'], ['/features', 'Features'], ['/bundles', 'Bundles']]],
+  ['Strategy', [['/builder', 'Builder'], ['/sweep', 'Sweep'], ['/params', 'Params']]],
+  ['Filters', [['/filters', 'Live rules']]],
+  ['', [['/settings', 'Settings']]],
 ];
 
 function navBar(self: string): string {
-  // One line, always.
-  //
-  // The grouped version wrapped onto two or three rows on anything narrower than a
-  // desktop, and because the header is sticky those rows then ate the top of every
-  // page permanently. Grouping is worth keeping — it says which pages answer the
-  // same question — but not at the cost of the viewport. So: nowrap, and the strip
-  // scrolls sideways if it has to. Group labels are separators rather than headings,
-  // which costs a lot less width.
-  const link = (href: string, label: string) => {
-    const on = self === href || self.startsWith(href + '?');
-    return `<a href="${href}" style="text-decoration:none;font-size:12px;padding:3px 7px;border-radius:6px;`
-      + `color:${on ? 'var(--text)' : 'var(--text2)'};background:${on ? 'var(--bg3)' : 'transparent'}">${label}</a>`;
-  };
-  const sep = `<span style="color:var(--text3);opacity:.4;padding:0 3px">·</span>`;
-  return `<nav style="display:flex;gap:1px;align-items:center;overflow-x:auto;white-space:nowrap;`
-    + `scrollbar-width:none;-ms-overflow-style:none;max-width:100%">`
-    + NAV_GROUPS.map(([, items]) => items.map(([h, l]) => link(h, l)).join('')).join(sep)
-    + sep + link('/settings', 'Settings')
-    + `<a href="/" style="text-decoration:none;font-size:12px;padding:3px 7px;color:var(--text2)">Home</a></nav>`;
+  const on = (href: string) => self === href || self.startsWith(href + '?');
+  const link = (href: string, label: string, small = false) =>
+    `<a href="${href}" style="text-decoration:none;font-size:${small ? 12 : 13}px;padding:4px 9px;border-radius:6px;`
+    + `white-space:nowrap;color:${on(href) ? 'var(--text)' : 'var(--text2)'};`
+    + `background:${on(href) ? 'var(--bg3)' : 'transparent'}">${label}</a>`;
+
+  const more = NAV_MORE.map(([g, items]) =>
+    `<div style="padding:6px 4px">`
+    + (g ? `<div style="font-size:9px;letter-spacing:.12em;color:var(--text3);padding:0 9px 3px">${g.toUpperCase()}</div>` : '')
+    + items.map(([h, l]) => `<div>${link(h, l, true)}</div>`).join('')
+    + `</div>`).join('<div style="height:1px;background:var(--border)"></div>');
+
+  return `<nav style="display:flex;gap:2px;align-items:center;position:relative">`
+    + NAV_PRIMARY.map(([h, l]) => link(h, l)).join('')
+    + `<details style="position:relative">`
+    + `<summary style="list-style:none;cursor:pointer;font-size:13px;padding:4px 9px;border-radius:6px;color:var(--text2)">More ▾</summary>`
+    + `<div style="position:absolute;right:0;top:100%;margin-top:6px;background:var(--bg2);border:1px solid var(--border2);`
+    + `border-radius:10px;min-width:150px;box-shadow:0 12px 32px rgba(0,0,0,.5);z-index:60">${more}</div>`
+    + `</details></nav>`;
 }
 
 function settingsShell(inner: string, self = '/settings'): string {
