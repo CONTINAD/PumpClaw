@@ -29,6 +29,14 @@ import { CONFIG } from './config.js';
 import type { Keypair } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+import type { PerformanceTracker } from './tracker.js';
+
+/** The call records, handed over at boot. The tracker is constructed in index.ts
+ *  rather than exported as a singleton, and a social post is not a good enough
+ *  reason to change that on a live trading path — so it is registered here instead.
+ *  Unset, every thesis simply falls back to its no-facts form. */
+let calls: PerformanceTracker | null = null;
+export function useCallRecords(t: PerformanceTracker): void { calls = t; }
 
 const BASE = 'https://frontend-api-v3.pump.fun';
 const MAX_THESIS = 2000;          // CALLOUT_REPLY_MAX_LENGTH in their bundle
@@ -99,61 +107,138 @@ async function call(path: string, cookie: string, init?: RequestInit): Promise<R
 
 /* ── Voices ────────────────────────────────────────────────────────────────────
  *
- * Three wallets often buy the same coin within seconds of each other. Posting the
- * same sentence three times reads as one operator with three accounts, which is what
- * it is, and is the sort of thing a callout leaderboard is likely to discount.
+ * Rewritten after reading the callout board on a coin with 78k holders. Two things
+ * were obvious there and wrong here:
  *
- * So each task gets its own register and a set of lines to rotate through. Every one
- * of them says only what actually happened — the coin, the market cap it was bought
- * at, and how that task enters. No invented conviction, no analysis the bot did not
- * do. Varied phrasing about a real trade, not a fabricated thesis.
+ *   1. pump.fun already renders Position / Net PNL / Spent / Avg entry underneath
+ *      every callout. Leading with "bought at $14.2K" was posting a worse copy of
+ *      a card the reader is already looking at. Nobody who does well there does it.
+ *   2. The callouts that get read are a REASON, not a receipt — either a real
+ *      observation, or three words. Never a restated statistic.
+ *
+ * So the thesis now spends its space on the one thing these wallets know that the
+ * rest of that board does not: the holder graph was walked before the buy. Sixty
+ * wallets traced, funding clusters resolved, fresh-versus-veteran split measured.
+ * Real, checkable, and unique to this bot.
+ *
+ * The old rule still holds and is now easier to keep — every clause is emitted only
+ * if the number behind it was actually measured. No invented conviction, no
+ * analysis that did not run. A coin whose scan came back thin gets the short form,
+ * which is also what half that board posts anyway.
  */
-type Voice = (sym: string, mc: string) => string[];
+interface Facts {
+  holders?: number;      // distinct owner wallets seen
+  traced?: number;       // wallets whose funding history was actually walked
+  freshPct?: number;     // share of traced wallets that are newly funded
+  cluster?: number;      // largest set of traced wallets sharing one funder
+  funders?: number;      // distinct funders across the traced set
+  independent?: number;  // traced wallets in no cluster at all
+  devPct?: number;       // largest non-pool wallet's share of supply
+  dipPct?: number;       // how far under the call this task fills
+}
 
-const VOICES: Record<string, Voice> = {
-  // Terse, the way someone types when they are watching a chart, not writing.
-  MANIFEST: (s, mc) => [
-    `in on $${s} at ${mc}`,
-    `$${s} — ${mc} entry. filters came back clean`,
-    `took $${s} here, ${mc}`,
-    `$${s} at ${mc}. holder check passed, that's enough for a starter`,
-    `entry on $${s} — ${mc} mc`,
+/** Read back what the scan measured before this coin was bought. Everything here is
+ *  optional by construction: the deep read resolves a second or two after the call
+ *  record is written, so on the fastest buys some of it is legitimately not there
+ *  yet, and a missing number must never become an invented one. */
+function factsFor(mint: string, dipPct?: number): Facts {
+  const f: Facts = {};
+  if (dipPct) f.dipPct = Math.round(dipPct * 100);
+  try {
+    const rec = calls?.getByMint(mint);
+    if (!rec) return f;
+    const d = rec.entryDeepHolders;
+    const h = rec.entryHolders;
+    if (d?.owners) f.holders = d.owners;
+    if (d?.traced && d.traced >= 10) {
+      f.traced = d.traced;
+      if (typeof d.largestCluster === 'number') f.cluster = d.largestCluster;
+      if (d.funders) f.funders = d.funders;
+      if (typeof d.independent === 'number') f.independent = d.independent;
+      if (typeof d.fresh === 'number') f.freshPct = Math.round(d.fresh / d.traced * 100);
+    } else if (h?.graphChecked && h.graphChecked >= 10) {
+      f.traced = h.graphChecked;
+      if (typeof h.freshWallets === 'number') {
+        f.freshPct = Math.round(h.freshWallets / h.graphChecked * 100);
+      }
+    }
+    if (typeof h?.devHoldPct === 'number' && h.devHoldPct > 0) f.devPct = Math.round(h.devHoldPct);
+  } catch { /* the thesis is decoration; never let reading it matter */ }
+  return f;
+}
+
+/** A candidate line. Returns null when the facts it would cite were not measured,
+ *  which is what keeps the bot from ever writing a number it does not have. */
+type Cand = (s: string, f: Facts) => string | null;
+
+const VOICES: Record<string, Cand[]> = {
+  // The analyst. This is the wallet with something to say that nobody else on the
+  // board is saying, so it says it plainly and does not pad.
+  MANIFEST: [
+    (s, f) => f.traced && f.cluster !== undefined
+      ? `walked the holder graph on $${s} before buying. ${f.traced} wallets traced, the biggest shared funder covers ${f.cluster} of them. farms don't look like that.` : null,
+    (s, f) => f.holders && f.funders && f.traced
+      ? `$${s} has ${f.holders} holders and ${f.funders} separate funders across the ${f.traced} i traced. that spread is the whole reason i took it.` : null,
+    (s, f) => f.freshPct !== undefined && f.traced
+      ? `${f.freshPct}% of the ${f.traced} wallets i traced on $${s} are freshly funded. under my cutoff so it cleared — most of what i scan now doesn't.` : null,
+    (s, f) => f.independent !== undefined && f.traced
+      ? `${f.independent} of ${f.traced} traced holders on $${s} aren't linked to any other wallet in the set. i check this on every call and it's rarer than it should be.` : null,
+    (s, f) => f.devPct !== undefined
+      ? `dev holds ${f.devPct}% of $${s}. ran the funding graph over the holders too, nothing clustered. starter position.` : null,
+    s => `$${s} cleared every gate i run before entry — bundle, funding graph, fresh wallet share. taking a starter here.`,
   ],
-  // Momentum framing: this one buys the call itself, no waiting.
-  INSTANT: (s, mc) => [
-    `bought $${s} on the call — ${mc}`,
-    `$${s} at ${mc}, straight in. not waiting on a pullback for this one`,
-    `taking $${s} here at ${mc} rather than trying to time a dip`,
-    `$${s} — ${mc}. in at the call price, laddering out on the way up`,
-    `market bought $${s} at ${mc}`,
+  // Momentum. Buys the call itself and does not pretend to have done homework it
+  // skipped. Shortest of the three on purpose; that board is full of three-word posts.
+  INSTANT: [
+    s => `no waiting on a pullback for $${s}. in on the call.`,
+    (s, f) => f.holders
+      ? `$${s} already ${f.holders} holders this early. not trying to time a better entry on that.` : null,
+    s => `bought $${s} on sight. either works in the next ten minutes or it doesn't.`,
+    s => `in on $${s}. laddering out on the way up, not marrying it.`,
+    (s, f) => f.traced && f.cluster !== undefined && f.cluster <= 3
+      ? `$${s} — holder graph came back clean, so no reason to sit on my hands. straight in.` : null,
+    s => `took $${s} at the call price. on these, chasing beats missing.`,
   ],
-  // Patience framing: this one only fills 20% under the call.
-  DIP: (s, mc) => [
-    `waited for the pullback on $${s} — filled at ${mc}`,
-    `$${s} at ${mc}, 20% under where it was called. better basis`,
-    `let $${s} come to me. ${mc} entry`,
-    `$${s} — ${mc}. only takes it if it dips, and it did`,
-    `filled the dip on $${s} at ${mc}`,
+  // Patience. Only ever fills under the call, so it has an actual entry story that
+  // the position card cannot tell on its own.
+  DIP: [
+    (s, f) => f.dipPct
+      ? `wasn't chasing $${s} at the call. waited for ${f.dipPct}% off and it came back.` : null,
+    (s, f) => f.dipPct
+      ? `$${s} retraced ${f.dipPct}% before i touched it. much better basis than buying the first candle.` : null,
+    s => `let $${s} come to me instead of buying the top wick. filled on the way back down.`,
+    (s, f) => f.dipPct && f.holders
+      ? `sat out the first push on $${s} and bought ${f.dipPct}% lower with ${f.holders} holders already in it.` : null,
+    (s, f) => f.dipPct && f.traced
+      ? `$${s} passed the ${f.traced}-wallet holder scan, but i still don't pay call price. filled ${f.dipPct}% under.` : null,
+    s => `only take these on a pullback. $${s} gave one.`,
   ],
 };
 
-function voiceFor(taskName: string): Voice {
+function voiceFor(taskName: string): Cand[] {
   const n = taskName.toUpperCase();
   if (n.startsWith('DIP')) return VOICES.DIP;
   if (n.startsWith('INSTANT')) return VOICES.INSTANT;
   return VOICES.MANIFEST;
 }
 
-/** Pick a line. Rotates per task so consecutive buys from one wallet do not repeat,
- *  and the three wallets do not land on matching phrasing for the same coin. */
+/** Pick a line. Rotates per task so one wallet doesn't repeat itself across buys and
+ *  the three wallets don't land on matching phrasing for the same coin. Candidates
+ *  whose facts are missing are skipped, and the last entry in every voice needs no
+ *  facts at all, so there is always something to say. */
 const voiceCursor = new Map<string, number>();
-export function calloutThesis(taskName: string, symbol: string, mc: number): string {
-  const cap = mc >= 1_000_000 ? `$${(mc / 1e6).toFixed(1)}M`
-    : mc >= 1000 ? `$${(mc / 1000).toFixed(1)}K` : `$${Math.round(mc)}`;
-  const lines = voiceFor(taskName)(symbol, cap);
-  const i = (voiceCursor.get(taskName) ?? Math.floor(Math.random() * lines.length)) % lines.length;
-  voiceCursor.set(taskName, i + 1);
-  return lines[i];
+export function calloutThesis(
+  taskName: string, symbol: string, mint: string, dipPct?: number,
+): string {
+  const f = factsFor(mint, dipPct);
+  const cands = voiceFor(taskName);
+  const start = voiceCursor.get(taskName) ?? Math.floor(Math.random() * cands.length);
+  for (let n = 0; n < cands.length; n++) {
+    const i = (start + n) % cands.length;
+    const line = cands[i](symbol, f);
+    if (line) { voiceCursor.set(taskName, i + 1); return line; }
+  }
+  return `in on $${symbol}.`;
 }
 
 /** Their API answers "You're replying too fast" — one per wallet per minute. */

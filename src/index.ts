@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { truePrice } from './price-oracle.js';
 import { snapshotFrom } from './filter-lab.js';
 import { deepHolderScan } from './deep-holders.js';
+import { useCallRecords } from './pump-callout.js';
 import { join } from 'path';
 import { CONFIG } from './config.js';
 import { scrapeAllChannels } from './telegram.js';
@@ -63,6 +64,8 @@ const _lbTs = loadLbTimestamps();
 // ── State ───────────────────────────────────────────────────
 
 const tracker = new PerformanceTracker();
+// Let callout theses cite what the pre-buy scan actually measured.
+useCallRecords(tracker);
 const paperTrader = new PaperTrader();
 // Share the live instances with the dashboard — it must mutate these, not copies.
 registerRuntime(tracker, paperTrader);

@@ -652,7 +652,8 @@ class TaskManager {
           // postCallout never throws — the buy has already settled and nothing about
           // a social post may be allowed to touch the position from here.
           postCallout(
-            tasks[i].name, mint, calloutThesis(tasks[i].name, symbol, mc),
+            tasks[i].name, mint,
+            calloutThesis(tasks[i].name, symbol, mint, tasks[i].strategy.dipPct),
             false, this.keypairFor(tasks[i]),
           ).then(r => {
             if (r.ok) console.log(`[Callout] ${tasks[i].name} called $${symbol} — ${r.calloutId}`);
