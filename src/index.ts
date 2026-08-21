@@ -528,24 +528,6 @@ async function fastScanCycle() {
     }
     recordBundleObs(post, bundle, true, undefined, market.marketCap, market.priceUsd);
 
-    // Smart wallet check: informational, never blocking.
-    //
-    // It queries all 186 tracked wallets and has returned zero hits across 100
-    // calls, while costing 0.6-0.9s of the decision. Awaiting it delayed every
-    // call for a signal that has never once fired. It now runs in the background
-    // and back-fills the record if it does find something, so the call is not
-    // held up by a check that only ever adds colour.
-    let smartHolders = 0;
-    checkSmartWallets(post.mint).then(r => {
-      smartHolders = r.holders;
-      if (r.holders > 0) {
-        log(`💎 SMART HOLDERS — ${r.holders} tracked wallet(s) holding $${post.name}`);
-        const rec = tracker.getByMint(post.mint);
-        if (rec) rec.entrySmartHolders = r.holders;
-      }
-    }).catch(() => {});
-    const smartCheck = { holders: smartHolders };
-
     // Fee floor — a migrated coin that hasn't generated real fees hasn't been
     // genuinely traded. Scales with market cap: bigger claimed cap demands more
     // proof of activity behind it.
@@ -649,21 +631,6 @@ async function fastScanCycle() {
       }
     } catch { /* keep the venue's figure */ }
 
-    // The deep holder read runs alongside the alert rather than in front of it. It is
-    // measurement — it must never add latency to a buy or be able to stop one — so it
-    // back-fills the record whenever it finishes, the same shape as the smart-wallet
-    // check above. 100 wallets costs ~2.4s against a coin already three minutes old.
-    deepHolderScan(coin.mint).then(d => {
-      if (!d) return;
-      const rec = tracker.getByMint(coin.mint);
-      if (rec) rec.entryDeepHolders = d;
-      if (d.largestCluster >= 5) {
-        log(`🕸 DEEP HOLDERS $${coin.symbol}: ${d.owners} owners, largest funder cluster ` +
-            `${d.largestCluster}/${d.traced} (${d.clusterPct}%) from ${String(d.clusterFunder).slice(0, 8)}… ` +
-            `· ${d.independent} independent · coverage ${d.coverage}%`);
-      }
-    }).catch(() => {});
-
     const paperTrade = paperTrader.openTrade(
       coin.mint, coin.symbol, coin.name, adjustedMarket.priceUsd, adjustedMarket.marketCap,
     );
@@ -671,7 +638,6 @@ async function fastScanCycle() {
     // Mark as called BEFORE sending alerts — prevents duplicate sends if Discord is slow/down
     // Pass rich features (bundle/smart holders) so we can correlate them with outcomes later.
     tracker.add(coin, adjustedMarket, 'pending', {
-      smartHolders: smartCheck.holders,
       bundleSafe: bundle.safe,
       holders: bundle.metrics,
       socials: await checkSocials(coin.mint).then(x => x.known ? x.count : undefined).catch(() => undefined),
@@ -683,6 +649,55 @@ async function fastScanCycle() {
     alertCount++;
 
     recentCallTimes.push(Date.now());
+    // The deep holder read runs alongside the alert rather than in front of it. It is
+    // measurement — it must never add latency to a buy or be able to stop one — so it
+    // back-fills the record whenever it finishes. 100 wallets costs ~2.4s against a
+    // coin already three minutes old.
+    //
+    // It has to start AFTER tracker.add. It used to start before, and add() builds a
+    // brand-new record and set()s it over the old one, so the two raced: finish first
+    // and add() overwrote the field, finish last and there was no record to write to.
+    // The scan takes 2.4s and the alert path in between awaits checkSocials, so the
+    // second case was the usual one — the read landed on 6 of 188 calls and the whole
+    // depth group of the filter lab has been scoring against a sample of six.
+    // Smart wallet check: informational, never blocking. It queries all 186 tracked
+    // wallets and has returned zero hits across 100 calls while costing 0.6-0.9s of
+    // the decision, so it stays in the background.
+    //
+    // It was reading its own result before that result existed:
+    //
+    //     let smartHolders = 0;
+    //     checkSmartWallets(mint).then(r => { smartHolders = r.holders; ... });
+    //     const smartCheck = { holders: smartHolders };   // runs now, always 0
+    //
+    // The snapshot was taken synchronously on the line after the promise was
+    // created, so entrySmartHolders was hard-wired to 0 on all 303 records — not
+    // rarely wrong, always wrong. And the .then() that wrote to the record ran
+    // before tracker.add(), which then replaced the record wholesale. Both halves
+    // are gone: it runs after the record exists, and writes to it directly.
+    checkSmartWallets(coin.mint).then(r => {
+      const rec = tracker.getByMint(coin.mint);
+      if (!rec) return;
+      rec.entrySmartHolders = r.holders;
+      tracker.persist();
+      if (r.holders > 0) {
+        log(`💎 SMART HOLDERS — ${r.holders} tracked wallet(s) holding $${coin.symbol}`);
+      }
+    }).catch(() => {});
+
+    deepHolderScan(coin.mint).then(d => {
+      if (!d) return;
+      const rec = tracker.getByMint(coin.mint);
+      if (!rec) return;
+      rec.entryDeepHolders = d;
+      tracker.persist();          // a field set in memory is not a field that survives a redeploy
+      if (d.largestCluster >= 5) {
+        log(`🕸 DEEP HOLDERS $${coin.symbol}: ${d.owners} owners, largest funder cluster ` +
+            `${d.largestCluster}/${d.traced} (${d.clusterPct}%) from ${String(d.clusterFunder).slice(0, 8)}… ` +
+            `· ${d.independent} independent · coverage ${d.coverage}%`);
+      }
+    }).catch(() => {});
+
     const discordMsgId = await sendAlert(coin, adjustedMarket);
     if (discordMsgId) {
       tracker.setDiscordMsgId(coin.mint, discordMsgId);

@@ -60,15 +60,25 @@ function cacheSet(wallet: string, time: number): void {
 const RPC_ENDPOINTS = [CONFIG.HELIUS_RPC, ...CONFIG.RPC_FALLBACKS].filter(Boolean);
 let rpcEndpointIdx = 0;
 
+/** No single RPC call may take longer than this. Long enough for a slow archival
+ *  read, short enough that a dead endpoint fails over rather than hangs. */
+const RPC_TIMEOUT_MS = 12_000;
+
 export async function rpc(method: string, params: any[] | Record<string, any>): Promise<any> {
   let lastErr: Error | null = null;
   for (let i = 0; i < Math.max(RPC_ENDPOINTS.length, 1); i++) {
     const idx = (rpcEndpointIdx + i) % RPC_ENDPOINTS.length;
     try {
+      // Every RPC in this file was unguarded. A socket that accepts and then never
+      // answers is not an error — it is a wait with no end, and checkBundle is awaited
+      // in front of every call, so one black-holed connection stalls the whole call
+      // loop silently and indefinitely. A ceiling turns that into a failover: the
+      // catch below moves to the next endpoint.
       const res = await fetch(RPC_ENDPOINTS[idx], {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
       });
       // Non-JSON bodies ("max usage reached", HTML error pages) must surface readably
       const text = await res.text();
