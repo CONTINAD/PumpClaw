@@ -19,7 +19,7 @@ import { getSolPrice, fetchBatchMarketData } from './dexscreener.js';
 import { jupiterGetPrice, JUP_PAID, jupiterProbe } from './jupiter.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
-import { loadPaths, backtest, type BacktestCfg } from './candles.js';
+import { loadPaths, backtest, captureQueueStats, type BacktestCfg } from './candles.js';
 import type { CallRecord } from './tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -3581,6 +3581,28 @@ async function handleTasksPost(req: IncomingMessage, res: ServerResponse, pathna
   }
 }
 
+/* Capture went dead for 54 hours and every dashboard number that replays a real
+ * price path went stale with it. A file count cannot show that — 218 files looks
+ * identical whether the last one landed a minute ago or three days ago. The age of
+ * the newest file is the number that would have shown it, so it is reported here
+ * and read by the watch loop. */
+function captureHealth(): { files: number; newestAgeH: number | null; givenUp: number; waiting: number; stale: boolean } {
+  const { givenUp, waiting } = captureQueueStats();
+  let files = 0, newest = 0;
+  try {
+    const dir = join(CONFIG.DATA_DIR, 'candles');
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.json') || f.startsWith('_')) continue;
+      files++;
+      const st = statSync(join(dir, f));
+      if (st.mtimeMs > newest) newest = st.mtimeMs;
+    }
+  } catch { /* no directory yet */ }
+  const ageH = newest ? (Date.now() - newest) / 3600_000 : null;
+  return { files, newestAgeH: ageH === null ? null : +ageH.toFixed(1),
+           givenUp, waiting, stale: ageH !== null && ageH > 6 };
+}
+
 function parseRange(url: string): TimeRange {
   const match = url.match(/[?&]range=([^&]+)/);
   const val = match?.[1] ?? 'all';
@@ -5797,7 +5819,7 @@ export function startDashboard(port?: number): void {
               .map(p => ({ symbol: p.symbol, target: p.target, callPrice: p.callPrice,
                 expiresInMin: Math.max(0, Math.round((p.expiresAt - Date.now()) / 60000)) })),
           })),
-          positionFiles, candleFiles,
+          positionFiles, candleFiles, candleCapture: captureHealth(),
           files: info,
         }, null, 2));
       } catch (err: any) {

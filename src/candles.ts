@@ -20,13 +20,73 @@ export interface CoinPath { mint: string; symbol: string; callTs: number; entryP
 
 function pathFile(mint: string): string { return join(DIR, `${mint}.json`); }
 
+/* ── Failure memory ──────────────────────────────────────────────────────────
+ *
+ * A capture that fails leaves no file, and "no file" is the only thing the
+ * scheduler used to look at, so a coin that can never be captured asked to be
+ * retried on every cycle for the whole seven days it stayed eligible. Most calls
+ * end at zero liquidity — no pool, no candles, no possible success — so the six
+ * oldest eligible coins were almost always six permanent failures, and they held
+ * the only six slots there are. Capture stopped for 54 hours and nothing said so:
+ * the loop was busy the entire time, just busy with the same dead coins.
+ *
+ * So misses are remembered. Four attempts spread over about eight hours is plenty
+ * for a pool that is merely slow to index, and it caps a hopeless coin at four
+ * attempts instead of two thousand. */
+
+const MISS_FILE = join(DIR, '_misses.json');
+const BACKOFF_MS = [0, 30 * 60_000, 2 * 3600_000, 6 * 3600_000];
+const KEEP_MISS_MS = 8 * 24 * 3600_000;
+
+interface Miss { n: number; last: number }
+let misses: Record<string, Miss> | null = null;
+
+function loadMisses(): Record<string, Miss> {
+  if (misses) return misses;
+  try { misses = JSON.parse(readFileSync(MISS_FILE, 'utf-8')); } catch { misses = {}; }
+  return misses!;
+}
+
+function saveMisses(): void {
+  const m = loadMisses();
+  const cut = Date.now() - KEEP_MISS_MS;
+  for (const k of Object.keys(m)) if (m[k].last < cut) delete m[k];
+  try {
+    mkdirSync(DIR, { recursive: true });
+    writeFileSync(MISS_FILE, JSON.stringify(m));
+  } catch { /* the volume is not worth crashing the loop over */ }
+}
+
+/** True when this mint has run out of attempts, or its next one is not due yet. */
+export function captureCoolingOff(mint: string): boolean {
+  const m = loadMisses()[mint];
+  if (!m) return false;
+  if (m.n >= BACKOFF_MS.length) return true;
+  return Date.now() - m.last < BACKOFF_MS[m.n];
+}
+
+function noteMiss(mint: string): void {
+  const m = loadMisses();
+  m[mint] = { n: (m[mint]?.n ?? 0) + 1, last: Date.now() };
+  saveMisses();
+}
+
+/** Coins still worth attempting, and coins written off. For the health endpoint. */
+export function captureQueueStats(): { givenUp: number; waiting: number } {
+  const m = loadMisses();
+  let givenUp = 0, waiting = 0;
+  for (const k of Object.keys(m)) (m[k].n >= BACKOFF_MS.length ? givenUp++ : waiting++);
+  return { givenUp, waiting };
+}
+
 export function hasPath(mint: string): boolean {
   try { return existsSync(pathFile(mint)); } catch { return false; }
 }
 
 export function loadPaths(limit = 400): CoinPath[] {
   try {
-    const files = readdirSync(DIR).filter(f => f.endsWith('.json'));
+    // '_misses.json' lives here too and is not a price path.
+    const files = readdirSync(DIR).filter(f => f.endsWith('.json') && !f.startsWith('_'));
     const out: CoinPath[] = [];
     for (const f of files.slice(-limit)) {
       try {
@@ -41,6 +101,12 @@ export function loadPaths(limit = 400): CoinPath[] {
 /** Fetch and store the minute path for one called coin. Returns true if stored. */
 export async function capturePath(mint: string, symbol: string, callTs: number): Promise<boolean> {
   if (hasPath(mint)) return false;
+  const ok = await tryCapture(mint, symbol, callTs);
+  if (!ok) noteMiss(mint);
+  return ok;
+}
+
+async function tryCapture(mint: string, symbol: string, callTs: number): Promise<boolean> {
   try {
     const dsRes = await fetch(`${CONFIG.DEXSCREENER_API}/latest/dex/tokens/${mint}`, {
       headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10_000),

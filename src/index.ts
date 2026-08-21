@@ -21,7 +21,7 @@ import { jupiterQuoteSol, jupiterGetPrice } from './jupiter.js';
 import { startDashboard, warmCleanReplay } from './dashboard.js';
 import { registerSlashCommands } from './interactions.js';
 import { sourceRegistry, extractMints, classifySignal, PUMPCLAW_SOURCE_ID } from './call-sources.js';
-import { capturePath, hasPath } from './candles.js';
+import { capturePath, hasPath, captureCoolingOff } from './candles.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
 import type { PumpFunCoin } from './pumpfun.js';
 
@@ -1233,10 +1233,16 @@ async function candleCaptureLoop() {
   while (true) {
     await new Promise(r => setTimeout(r, 5 * 60_000));
     try {
+      // Newest first. getActiveCalls() hands back insertion order, so the old code
+      // always worked the oldest end of the window — which is exactly where coins
+      // are most likely to be dead and least likely to be capturable. A coin 46
+      // minutes past its call still has a pool; the same coin six days later
+      // usually does not.
       const ready = tracker.getActiveCalls().filter(c => {
         const age = Date.now() - c.entryTime;
-        return age > 45 * 60_000 && age < 7 * 24 * 3600_000 && !hasPath(c.mint);
-      }).slice(0, 6);
+        return age > 45 * 60_000 && age < 7 * 24 * 3600_000
+          && !hasPath(c.mint) && !captureCoolingOff(c.mint);
+      }).sort((a, b) => b.entryTime - a.entryTime).slice(0, 6);
       for (const c of ready) {
         const ok = await capturePath(c.mint, c.symbol, c.entryTime);
         if (ok) log(`🕯 Captured price path for $${c.symbol}`);
