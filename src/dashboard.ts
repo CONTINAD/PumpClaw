@@ -1870,16 +1870,40 @@ function navBar(self: string): string {
 }
 
 function settingsShell(inner: string, self = '/settings'): string {
-  const title = self === '/builder' ? '🧪 Strategy Builder' : self === '/live' ? '◆ Live Trading'
-    : self === '/shadow' ? '📄 Shadow Fleet' : self === '/calendar' ? '📅 PnL Calendar'
-    : self === '/exits' ? '🚪 Exit analysis' : self.startsWith('/task') ? '🤖 Trading Tasks'
-    : '⚙️ Live Trading Settings';
+  // Every page says what it is.
+  //
+  // The map covered six routes and everything else fell through to "Live Trading
+  // Settings" — so Calls, Channels, Features, Ledger, Params, Sweep, Bundles and
+  // Live rules all announced themselves as the settings page. Eight pages lying
+  // about their own identity is most of why the site felt like one confusing thing
+  // rather than nine distinct ones.
+  const TITLES: Record<string, string> = {
+    '/live': '◆ Live Trading',
+    '/calendar': '📅 PnL Calendar',
+    '/calls': '📞 Call Quality',
+    '/exits': '🚪 Exit Analysis',
+    '/channels': '📡 Source Channels',
+    '/features': '🔬 Call Features',
+    '/shadow': '📄 Strategy Fleet',
+    '/builder': '🧪 Strategy Builder',
+    '/sweep': '🌡 Parameter Sweep',
+    '/params': '🎛 Parameters',
+    '/filters': '🛡 Live Filter Rules',
+    '/filter-lab': '🧪 Filter Lab',
+    '/bundles': '🕸 Bundle Checks',
+    '/ledger': '📒 Ledger',
+    '/settings': '⚙️ Settings',
+  };
+  const title = TITLES[self] ?? (self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Settings');
   const wide = self === '/builder' ? 'max-width:760px'
     : self === '/live' || self === '/shadow' ? 'max-width:1200px'
     : self === '/calendar' ? 'max-width:1000px'
-    : self.startsWith('/task') ? 'max-width:960px' : 'max-width:640px';
+    : self.startsWith('/task') ? 'max-width:960px'
+    : ['/calls', '/exits', '/channels', '/features', '/ledger', '/bundles', '/filters', '/sweep', '/params'].includes(self)
+      ? 'max-width:1100px'
+      : 'max-width:640px';
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PumpClaw ${self.startsWith('/task') ? 'Tasks' : 'Settings'}</title><style>${SETTINGS_STYLE}</style></head><body>
+<title>PumpClaw · ${(TITLES[self] ?? 'Settings').replace(/^[^ ]+ /, '')}</title><style>${SETTINGS_STYLE}</style></head><body>
 <div class="topbar" style="gap:14px"><h1 style="flex:0 0 auto">${title}</h1>${navBar(self)}</div>
 <div class="wrap" style="${wide}">${inner}</div></body></html>`;
 }
