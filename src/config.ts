@@ -139,6 +139,12 @@ export const CONFIG = {
   //
   // Share is fresh / (fresh + veterans), the same denominator the filter lab reports.
   MAX_FRESH_WALLET_PCT: Number(process.env.MAX_FRESH_WALLET_PCT ?? 60),
+
+  // How many holders the bundle check traces when DAS is available. The core method
+  // it falls back to is capped at 20 by Solana itself; this is the whole reason the
+  // fresh-wallet share was being judged on 20 wallets. Each traced wallet costs an
+  // RPC call, batched 10 wide — 60 is ~1.5s on a coin already three minutes old.
+  BUNDLE_DEEP_HOLDERS: Number(process.env.BUNDLE_DEEP_HOLDERS ?? 60),
   COHORT_MIN_VETERANS: 5,           // need this many to call it a pattern
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.

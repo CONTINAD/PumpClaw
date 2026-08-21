@@ -328,12 +328,41 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
   let devHoldPct: number | undefined;
   let cohortSpan: number | undefined;
   try {
-    // 1. Top token accounts
-    const largest = await rpc('getTokenLargestAccounts', [mint]);
-    const tokenAccts: { address: string }[] = (largest.value ?? []).slice(0, CONFIG.BUNDLE_TOP_HOLDERS);
+    // 1. Top token accounts.
+    //
+    // getTokenLargestAccounts is a Solana core method with a hard cap of 20 results.
+    // That cap is why every FRESH FARM block reads "19 new, 1 veteran" — the check
+    // has never been able to see a 21st wallet, so a launch spread across 40 is
+    // judged on the visible half. Helius's DAS getTokenAccounts has no such cap.
+    //
+    // DAS first, core method as the fallback. If DAS is unavailable or returns
+    // nothing this degrades to exactly the previous behaviour rather than blocking:
+    // checkBundle fails closed, so an exception here would stop every call, and a
+    // wider holder read is not worth a silent trading halt.
+    let tokenAccts: { address: string }[] = [];
+    let holderSource = 'core(20)';
+    try {
+      const das = await rpc('getTokenAccounts', { mint, limit: 1000, page: 1 });
+      const list: any[] = das?.token_accounts ?? [];
+      if (list.length >= 5) {
+        // Biggest first, and drop the pool / bonding curve at the top as the core
+        // path does. Cap the trace at BUNDLE_DEEP_HOLDERS for latency.
+        const ranked = list
+          .map(t => ({ address: t.address as string, amt: (() => { try { return BigInt(t.amount ?? 0); } catch { return 0n; } })() }))
+          .sort((a, b) => (b.amt > a.amt ? 1 : b.amt < a.amt ? -1 : 0));
+        tokenAccts = ranked.slice(0, CONFIG.BUNDLE_DEEP_HOLDERS).map(t => ({ address: t.address }));
+        holderSource = `das(${tokenAccts.length})`;
+      }
+    } catch { /* fall through to the core method */ }
 
     if (tokenAccts.length < 5) {
-      return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: tokenAccts.length, details: 'too few holders — blocked (fail closed)' };
+      const largest = await rpc('getTokenLargestAccounts', [mint]);
+      tokenAccts = (largest.value ?? []).slice(0, CONFIG.BUNDLE_TOP_HOLDERS);
+      holderSource = 'core(20)';
+    }
+
+    if (tokenAccts.length < 5) {
+      return { safe: false, clusterPct: 0, maxCluster: 0, totalChecked: tokenAccts.length, details: `too few holders — blocked (fail closed) [${holderSource}]` };
     }
 
     // 1b. Single-wallet supply concentration.
@@ -350,6 +379,11 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       try {
         const supplyRes = await rpc('getTokenSupply', [mint]);
         const supply = parseFloat(supplyRes?.value?.uiAmountString ?? supplyRes?.value?.uiAmount ?? '0');
+        // Deliberately still the core method here. It returns UI amounts, which is what
+        // getTokenSupply is denominated in; DAS returns raw amounts and would need the
+        // mint's decimals to compare. This check only needs the top two holders, which
+        // are inside 20 by definition, so widening the read buys it nothing.
+        const largest = await rpc('getTokenLargestAccounts', [mint]);
         const amounts = (largest.value ?? [])
           .map((a: any) => parseFloat(a?.uiAmountString ?? a?.uiAmount ?? '0'))
           .filter((n: number) => Number.isFinite(n) && n > 0)
@@ -474,7 +508,7 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
         return {
           safe: false, clusterPct: 0, maxCluster: 0, totalChecked: freshTotal,
           details: `${freshPct.toFixed(0)}% fresh wallets — ${fundingTimes.length} new, ` +
-            `${veteranCount} veteran (max ${CONFIG.MAX_FRESH_WALLET_PCT}%) [FRESH FARM]`,
+            `${veteranCount} veteran of ${holderSource} (max ${CONFIG.MAX_FRESH_WALLET_PCT}%) [FRESH FARM]`,
         };
       }
     }
