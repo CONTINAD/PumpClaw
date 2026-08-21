@@ -3554,6 +3554,17 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
       ${sourceCheckboxes(taskManager.sourcesFor(task))}
       <label>Preset (picking one resets the fields below)</label>
       <select name="preset">${presetOpts}</select>
+      <label>How it enters</label>
+      <select name="entry_mode">
+        <option value="instant" ${s.entryMode !== 'dip' ? 'selected' : ''}>Buy immediately at the call</option>
+        <option value="dip" ${s.entryMode === 'dip' ? 'selected' : ''}>Wait for a pullback below the call</option>
+      </select>
+      <label>Pullback depth — % below the call price (dip entries only)</label>
+      <input type="number" name="dip_pct" min="1" max="80" value="${Math.round((s.dipPct ?? 0.2) * 100)}">
+      <label>Give up if the pullback hasn't come within (minutes)</label>
+      <input type="number" name="dip_window" min="1" max="240" value="${s.dipWindowMin ?? 30}">
+      <label>Hard time exit — sell after this many minutes regardless (0 = off)</label>
+      <input type="number" name="max_hold" min="0" max="1440" value="${s.maxHoldMin ?? 0}">
       <label>Take-profit levels — multiplier + % of original position to sell (blank = unused)</label>
       ${tpRowsHTML(s)}
       <label>Trailing stop — % drop from ATH</label>
@@ -3829,9 +3840,23 @@ function strategyFromForm(form: Record<string, string>, current?: Strategy): Par
     const m = parseFloat(form[`tp_mult_${i}`]), sp = parseFloat(form[`tp_sell_${i}`]);
     if (Number.isFinite(m) && Number.isFinite(sp) && m > 1 && sp > 0) tps.push({ mult: m, sellPct: sp / 100 });
   }
+  // Entry shape was missing from this function entirely, so the task edit page could
+  // save every exit setting and no entry one. The Builder had the fields but only
+  // ever creates a task, which left a live dip task's depth and window uneditable
+  // by any route — the settings were visible on the task page and unchangeable.
+  //
+  // Each is taken only when the form actually carried it, so callers that post a
+  // partial form cannot blank an existing value by omission.
+  const num = (v: string | undefined) => { const n = parseFloat(v ?? ''); return Number.isFinite(n) ? n : undefined; };
+  const dipPct = num(form.dip_pct), dipWindowMin = num(form.dip_window), maxHoldMin = num(form.max_hold);
+
   return {
     preset: 'custom',
     tps,
+    ...(form.entry_mode ? { entryMode: form.entry_mode === 'dip' ? 'dip' as const : 'instant' as const } : {}),
+    ...(dipPct !== undefined ? { dipPct: dipPct / 100 } : {}),
+    ...(dipWindowMin !== undefined ? { dipWindowMin } : {}),
+    ...(maxHoldMin !== undefined ? { maxHoldMin } : {}),
     trailingDrop: parseFloat(form.trailing_drop) / 100,
     trailingFrom: form.trailing_from === 'afterLastTp' ? 'afterLastTp' : 'entry',
     stopLossPct: 1 - parseFloat(form.stop_loss) / 100,
