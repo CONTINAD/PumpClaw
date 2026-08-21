@@ -1,39 +1,40 @@
 /**
  * Post a callout to pump.fun after a real buy.
  *
- * pump.fun pays for calls that do well, and every task here buys coins minutes
- * before anyone else looks at them. The endpoints came out of pump.fun's own
- * bundle, and the whole chain has been run by hand once — callout c1486fb9 on
- * $MEMEFI came back 201 with userId GKre7a…Yypd, which is MANIFEST's own wallet:
+ * pump.fun pays for calls that do well, and these tasks buy coins minutes before
+ * anyone else looks at them. The whole chain has been run end to end:
  *
- *   POST {privy}/api/v1/siws/init          { address } -> { nonce }
- *   POST {privy}/api/v1/siws/authenticate  { message, signature, ... } -> token
- *   GET  /callout/eligibility/{mint}       can this account call this coin
- *   POST /callout/create                   { coinMint, thesis?, version: 2 }
- *                                          -> { callout: { calloutId } }
+ *   POST /auth/login   { address, signature, timestamp } -> Set-Cookie: auth_token
+ *   GET  /callout/eligibility/{mint}                     -> can this wallet call it
+ *   POST /callout/create { coinMint, thesis?, version: 2 } -> { callout: { calloutId } }
  *
- * The account has to BE the wallet. pump.fun checks the position of whoever posts,
- * and the coins sit in the task wallets — an owner's separate login can never
- * qualify, no matter whose cookie is used. That was the wrong turn taken first here:
- * a browser session was pasted in, and it 401'd not because it was stale but because
- * that account held none of the coin. Each task signs in as itself instead.
+ * The signed message is `Sign in to pump.fun: <timestamp>`, signed by the wallet and
+ * sent base58. That is all the auth there is. An earlier version of this file went
+ * through Privy's SIWS flow — that flow does work and does return a session, but
+ * pump.fun does not accept Privy tokens on its own API, so it was a detour and is
+ * gone. The token it does issue lasts 30 days.
+ *
+ * The account has to BE the wallet: pump.fun checks the position of whoever posts,
+ * and the coins sit in the task wallets. An owner's separate browser login can never
+ * qualify no matter how fresh its cookie is — that was the second detour, and the
+ * 401 it produced looked like an expiry when it was really an account holding none
+ * of the coin.
  *
  * NOTHING HERE MAY AFFECT A TRADE. postCallout has no throwing path — every branch
- * returns a result object. It is called after the buy has settled, is not awaited,
- * and is off unless CALLOUT_ENABLED is set. A callout is worth nothing next to an
- * exit that did not fire because a social API was slow.
+ * returns a result object. It runs after the buy has settled, is not awaited, and
+ * stays off until CALLOUT_ENABLED is set. A callout is worth nothing next to an exit
+ * that did not fire because a social API was slow.
  */
 import { CONFIG } from './config.js';
 import type { Keypair } from '@solana/web3.js';
 import nacl from 'tweetnacl';
+import bs58 from 'bs58';
 
 const BASE = 'https://frontend-api-v3.pump.fun';
-const PRIVY = 'https://auth.privy.io';
-/** pump.fun's Privy app. Verified: /siws/init returns a nonce for this id and 400s
- *  with "Invalid Privy app ID" for every other candidate tried. */
-const PRIVY_APP_ID = process.env.PRIVY_APP_ID ?? 'cm1p2gzot03fzqty5xzgjgthq';
 const MAX_THESIS = 2000;          // CALLOUT_REPLY_MAX_LENGTH in their bundle
 const TIMEOUT_MS = 8000;
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
 
 export interface CalloutResult {
   ok: boolean;
@@ -43,90 +44,53 @@ export interface CalloutResult {
   status?: number;
 }
 
-/* ── Sign in with Solana ───────────────────────────────────────────────────── */
+/* ── Sign in ───────────────────────────────────────────────────────────────── */
 
-const sessions = new Map<string, { token: string; expires: number }>();
+const sessions = new Map<string, { cookie: string; expires: number }>();
 
-/**
- * Privy's SIWS template, byte for byte from their bundle.
- *
- * A signature covers exact bytes. A stray space, a reordered line, a different
- * newline and it is a 401 with nothing in the response to debug from, so this is
- * deliberately literal rather than built from a nice little formatter.
- */
-function siwsMessage(address: string, nonce: string): string {
-  return `pump.fun wants you to sign in with your Solana account:\n${address}\n\n`
-    + `You are proving you own ${address}.\n\n`
-    + `URI: https://pump.fun\nVersion: 1\nChain ID: mainnet\n`
-    + `Nonce: ${nonce}\nIssued At: ${new Date().toISOString()}\nResources:\n- https://privy.io`;
-}
-
-async function privyPost(path: string, body: unknown): Promise<any> {
-  const r = await fetch(PRIVY + path, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'privy-app-id': PRIVY_APP_ID,
-      Origin: 'https://pump.fun',
-      Referer: 'https://pump.fun/',
-      'User-Agent': 'Mozilla/5.0',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`privy ${path} ${r.status}: ${text.slice(0, 140)}`);
-  return JSON.parse(text);
-}
-
-/** Log one task wallet in. Tokens are cached and reused until near expiry — a login
- *  per buy would be both slow and a good way to get rate limited. */
+/** Log a wallet in and keep the cookie. Tokens run 30 days; this refreshes daily so
+ *  an expiry can never land in the middle of a buy. */
 async function signIn(taskName: string, kp: Keypair): Promise<string> {
   const address = kp.publicKey.toBase58();
   const cached = sessions.get(address);
-  if (cached && cached.expires > Date.now() + 60_000) return cached.token;
+  if (cached && cached.expires > Date.now()) return cached.cookie;
 
-  const { nonce } = await privyPost('/api/v1/siws/init', { address });
-  if (!nonce) throw new Error('privy returned no nonce');
+  const timestamp = Date.now();
+  const message = `Sign in to pump.fun: ${timestamp}`;
+  const signature = bs58.encode(
+    nacl.sign.detached(new TextEncoder().encode(message), kp.secretKey));
 
-  const message = siwsMessage(address, nonce);
-  // base64, not base58. Their SDK does Buffer.from(sig).toString('base64'); signing
-  // is the one place where guessing the encoding costs a 400 that says only
-  // "Invalid SIWS message and/or nonce" and points at neither.
-  const signature = Buffer.from(
-    nacl.sign.detached(new TextEncoder().encode(message), kp.secretKey),
-  ).toString('base64');
-
-  const auth = await privyPost('/api/v1/siws/authenticate', {
-    message,
-    signature,
-    walletClientType: 'phantom',
-    connectorType: 'solana_adapter',
-    mode: 'login-or-sign-up',
+  const r = await fetch(BASE + '/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'application/json',
+               origin: 'https://pump.fun', referer: 'https://pump.fun/', 'user-agent': UA },
+    body: JSON.stringify({ address, signature, timestamp }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
-  const token: string | undefined =
-    auth?.token ?? auth?.identity_token ?? auth?.privy_access_token ?? auth?.access_token;
-  if (!token) throw new Error('no token in privy response: ' + JSON.stringify(auth).slice(0, 140));
+  const text = await r.text();
+  if (!r.ok) throw new Error(`login ${r.status}: ${text.slice(0, 140)}`);
 
-  // Privy access tokens run about an hour. Refresh well before the edge so a buy
-  // never lands on an expiry.
-  sessions.set(address, { token, expires: Date.now() + 45 * 60_000 });
+  // The token arrives as Set-Cookie and is not in the body, which only echoes the
+  // decoded claims.
+  const raw = r.headers.get('set-cookie') ?? '';
+  const m = raw.match(/auth_token=([^;]+)/);
+  if (!m) throw new Error('login ok but no auth_token cookie');
+
+  const cookie = `auth_token=${m[1]}`;
+  sessions.set(address, { cookie, expires: Date.now() + 24 * 3600_000 });
   console.log(`[Callout] ${taskName} signed in as ${address.slice(0, 6)}…${address.slice(-4)}`);
-  return token;
+  return cookie;
 }
 
 /* ── Posting ───────────────────────────────────────────────────────────────── */
 
-async function call(path: string, token: string, init?: RequestInit): Promise<Response> {
+async function call(path: string, cookie: string, init?: RequestInit): Promise<Response> {
   return fetch(BASE + path, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0',
-      Origin: 'https://pump.fun',
-      Referer: 'https://pump.fun/',
-      Authorization: `Bearer ${token}`,
-      Cookie: `privy-token=${token}`,
+      'Content-Type': 'application/json', accept: 'application/json',
+      origin: 'https://pump.fun', referer: 'https://pump.fun/', 'user-agent': UA,
+      Cookie: cookie,
       ...(init?.headers ?? {}),
     },
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -142,8 +106,8 @@ export async function postCallout(
   keypair?: Keypair,
 ): Promise<CalloutResult> {
   try {
-    // `force` is for the test route only, so one wallet can be proven by hand
-    // without arming every task's live buys at the same time.
+    // `force` is for the test route, so one wallet can be proven by hand without
+    // arming every task's live buys at the same time.
     if (!force && !CONFIG.CALLOUT_ENABLED) return { ok: false, skipped: 'CALLOUT_ENABLED is off' };
     if (!keypair) return { ok: false, skipped: 'no keypair for this task' };
 
@@ -152,16 +116,15 @@ export async function postCallout(
       return { ok: false, skipped: `rate limited, ${Math.ceil((MIN_GAP_MS - since) / 1000)}s to go` };
     }
 
-    const token = await signIn(taskName, keypair);
+    const cookie = await signIn(taskName, keypair);
 
     // Eligibility first. It is a GET, it costs nothing, and there are only three
     // create attempts per coin — spending one on a guaranteed rejection is waste.
-    // It also reports the position pump.fun can see, which is the thing that
-    // actually decides this, so a refusal here says why.
+    // Its verdict also names the real reason, which is the position pump.fun can see.
     try {
-      const el = await call(`/callout/eligibility/${encodeURIComponent(mint)}`, token);
+      const el = await call(`/callout/eligibility/${encodeURIComponent(mint)}`, cookie);
       if (el.status === 401) {
-        sessions.delete(keypair.publicKey.toBase58());   // force a fresh login next time
+        sessions.delete(keypair.publicKey.toBase58());   // re-login next attempt
         return { ok: false, error: 'unauthorised after sign-in', status: 401 };
       }
       if (el.ok) {
@@ -171,12 +134,12 @@ export async function postCallout(
           return { ok: false, skipped: `not eligible: ${verdict ?? 'unknown'}` };
         }
       }
-    } catch { /* advisory only — a failure to check must not block the attempt */ }
+    } catch { /* advisory only — failing to check must not block the attempt */ }
 
     const body: Record<string, unknown> = { coinMint: mint, version: 2 };
     if (thesis?.trim()) body.thesis = thesis.trim().slice(0, MAX_THESIS);
 
-    const res = await call('/callout/create', token, { method: 'POST', body: JSON.stringify(body) });
+    const res = await call('/callout/create', cookie, { method: 'POST', body: JSON.stringify(body) });
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       if (res.status === 401) sessions.delete(keypair.publicKey.toBase58());
@@ -193,8 +156,7 @@ export async function postCallout(
   }
 }
 
-/** Which tasks can post, for the health endpoint and the test route. Every real task
- *  can, now that signing in is the wallet's own job rather than a pasted cookie. */
-export function calloutStatus(names: string[]): { enabled: boolean; appId: string; tasks: string[] } {
-  return { enabled: CONFIG.CALLOUT_ENABLED, appId: PRIVY_APP_ID.slice(0, 8) + '…', tasks: names };
+/** Every real task can post — signing in is the wallet's own job, nothing to configure. */
+export function calloutStatus(names: string[]): { enabled: boolean; tasks: string[]; signedIn: number } {
+  return { enabled: CONFIG.CALLOUT_ENABLED, tasks: names, signedIn: sessions.size };
 }
