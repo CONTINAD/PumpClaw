@@ -79,15 +79,18 @@ const lastPost = new Map<string, number>();
 const MIN_GAP_MS = 60_000;
 
 export async function postCallout(
-  taskName: string, mint: string, thesis?: string,
+  taskName: string, mint: string, thesis?: string, force = false,
 ): Promise<CalloutResult> {
   try {
-    if (!CONFIG.CALLOUT_ENABLED) return { ok: false, skipped: 'CALLOUT_ENABLED is off' };
+    // `force` is for the test route only. The flag exists so that configuring a
+    // cookie does not immediately start posting on live buys — proving one wallet by
+    // hand has to be possible without arming all of them.
+    if (!force && !CONFIG.CALLOUT_ENABLED) return { ok: false, skipped: 'CALLOUT_ENABLED is off' };
     const cookie = cookieFor(taskName);
     if (!cookie) return { ok: false, skipped: `no PUMP_COOKIE_* for "${taskName}"` };
 
     const since = Date.now() - (lastPost.get(taskName) ?? 0);
-    if (since < MIN_GAP_MS) return { ok: false, skipped: `rate limited, ${Math.ceil((MIN_GAP_MS - since) / 1000)}s to go` };
+    if (!force && since < MIN_GAP_MS) return { ok: false, skipped: `rate limited, ${Math.ceil((MIN_GAP_MS - since) / 1000)}s to go` };
 
     // Eligibility first. It is a GET, it costs nothing, and posting into a coin this
     // wallet cannot call just burns the rate limit on a guaranteed rejection.
