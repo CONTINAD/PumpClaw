@@ -16,6 +16,13 @@ import { PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
 import { postCallout, calloutThesis } from './pump-callout.js';
 
+/** $12.4K / $1.2M, the way every other surface in this bot writes a market cap. */
+function fmtMC(mc: number): string {
+  if (!mc || mc <= 0) return '$0';
+  return mc >= 1_000_000 ? `$${(mc / 1e6).toFixed(1)}M`
+    : mc >= 1000 ? `$${(mc / 1000).toFixed(1)}K` : `$${Math.round(mc)}`;
+}
+
 const TASKS_FILE = `${CONFIG.DATA_DIR}/tasks.json`;
 
 export interface TradeTask {
@@ -100,6 +107,14 @@ class TaskManager {
    * new call rewrote the whole thing. Filtering on read hid the growth rather than
    * stopping it.
    */
+  /** Record the fate of a dip order against its own task. Real tasks only — a paper
+   *  dip expiring is not something anyone needs to read about. */
+  private noteDipOutcome(p: PendingEntry, reason: string): void {
+    const task = this.tasks.get(p.taskId);
+    if (!task || task.paper) return;
+    this.noteBuyOutcome(task, p.symbol, p.mint, false, reason);
+  }
+
   prunePending(): number {
     const now = Date.now();
     const before = this.pending.length;
@@ -124,6 +139,7 @@ class TaskManager {
       if (p.mint !== mint) { keep.push(p); continue; }
       if (p.expiresAt <= now) {
         console.log(`[Tasks] Dip order expired: $${p.symbol} never fell to ${p.target.toPrecision(4)}`);
+        this.noteDipOutcome(p, `dip expired: never reached ${fmtMC(p.targetMC ?? 0)}`);
         continue;
       }
       if (price > p.target) { keep.push(p); continue; }
@@ -146,6 +162,7 @@ class TaskManager {
         console.log(`[Tasks] Dip order CANCELLED: $${p.symbol} gapped to ` +
           `${(price / p.callPrice).toFixed(3)}x of the call, far below its ${(p.target / p.callPrice).toFixed(2)}x target — ` +
           `that is a rug, not a dip`);
+        this.noteDipOutcome(p, `dip cancelled: gapped to ${(price / p.callPrice).toFixed(2)}x of the call — rug, not a dip`);
         continue;
       }
 
@@ -157,9 +174,23 @@ class TaskManager {
           filled++;
           console.log(`[Tasks] ✅ Dip filled for "${task.name}": $${p.symbol} at ${((price / p.callPrice - 1) * 100).toFixed(0)}% from call`);
           if (!task.paper) {
+            this.noteBuyOutcome(task, p.symbol, p.mint, true, null);
             sendTradeActivity(task.name, 'buy', p.symbol, p.mint,
               `**${pos.entrySol} SOL** on a **${((1 - price / p.callPrice) * 100).toFixed(0)}% dip** from the call`,
               pos.entryTx).catch(() => {});
+
+            // Dip fills are real buys on a real wallet and were the one entry path
+            // that never called out — the DIP task would have stayed silent on
+            // pump.fun permanently. Same fire-and-forget contract as buyAll: last,
+            // unawaited, and postCallout has no throwing path.
+            postCallout(
+              task.name, p.mint,
+              calloutThesis(task.name, p.symbol, p.mint, task.strategy.dipPct),
+              false, this.keypairFor(task),
+            ).then(r => {
+              if (r.ok) console.log(`[Callout] ${task.name} called $${p.symbol} — ${r.calloutId}`);
+              else if (r.error) console.log(`[Callout] ${task.name} $${p.symbol} failed: ${r.error}`);
+            }).catch(() => {});
           }
         }
       } catch (err: any) {
@@ -561,6 +592,12 @@ class TaskManager {
     this.saveBuyLog();
 
     if (bought) { this.consecutiveMisses.set(task.id, 0); return; }
+
+    // Dip lifecycle rows are bookkeeping, not misses. A task that queued an order
+    // below the call has not passed on anything yet, and one whose window closed
+    // declined by design. Neither belongs in the "enabled but not trading" alarm.
+    if (reason?.startsWith('dip ')) return;
+
     const n = (this.consecutiveMisses.get(task.id) ?? 0) + 1;
     this.consecutiveMisses.set(task.id, n);
     console.log(`[Tasks] "${task.name}" did not buy $${symbol}: ${reason} (${n} in a row)`);
@@ -615,6 +652,14 @@ class TaskManager {
         targetMC: mc > 0 ? mc * (1 - dip) : undefined,
       });
       console.log(`[Tasks] ⏳ "${t.name}" waiting for $${symbol} to dip ${(dip * 100).toFixed(0)}%`);
+      // Dip tasks never reached the buy log, so "why didn't DIP buy this?" could only
+      // be answered by reading Railway logs. Every stage of a dip order is recorded
+      // now: queued here, then filled, expired or cancelled below.
+      if (!t.paper) {
+        this.noteBuyOutcome(t, symbol, mint, false,
+          `dip queued: waiting for -${(dip * 100).toFixed(0)}%` +
+          (mc > 0 ? ` (${fmtMC(mc * (1 - dip))})` : ''));
+      }
     }
     if (dipTasks.length > 0) this.savePending();
     if (tasks.length === 0) return 0;
