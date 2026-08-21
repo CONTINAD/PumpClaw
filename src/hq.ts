@@ -44,6 +44,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9997;o
   color:var(--phos);font-size:13px;box-shadow:0 0 16px rgba(61,255,158,.35) inset,0 0 12px rgba(61,255,158,.18)}
 .brand em{font-style:normal;color:var(--phos);text-shadow:0 0 18px rgba(61,255,158,.55)}
 .rail nav{display:flex;gap:3px;margin-left:auto;flex-wrap:wrap}
+.rail nav summary::-webkit-details-marker{display:none}
 .rail nav a{padding:6px 13px;border-radius:5px;color:var(--dim);text-decoration:none;font-size:11.5px;
   letter-spacing:.09em;text-transform:uppercase;font-weight:500;border:1px solid transparent;transition:.16s}
 .rail nav a:hover{color:var(--phos);border-color:var(--line2);background:rgba(61,255,158,.05)}
@@ -152,8 +153,23 @@ tbody tr:last-child td{border-bottom:none}
   <div class="brand"><span class="mk">◤</span>PUMP<em>CLAW</em></div>
   <div class="pulse"><span class="dot" id="hb"></span><span id="hbtxt">connecting</span></div>
   <nav>
-    <a href="/">HQ</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Strategies</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/strategies">Lab</a>
-    <a href="/settings">Settings</a>
+    <!-- Same six links and the same More menu as every other page.
+         The homepage kept its own eleven-link strip after the rest of the site moved
+         to six, so navigation changed shape depending on where you were standing —
+         which is its own kind of confusing. -->
+    <a href="/">Home</a><a href="/live">Live</a><a href="/calendar">Calendar</a><a href="/calls">Calls</a><a href="/shadow">Strategies</a><a href="/filter-lab">Filters</a>
+    <details style="position:relative;display:inline-block">
+      <summary style="list-style:none;cursor:pointer;display:inline-block">More &#9662;</summary>
+      <div style="position:absolute;right:0;top:100%;margin-top:6px;background:var(--pane,#0f1420);border:1px solid var(--line2,#242e44);border-radius:10px;min-width:150px;box-shadow:0 12px 32px rgba(0,0,0,.55);z-index:60;padding:6px 0;text-align:left">
+        <a href="/exits" style="display:block">Exits</a><a href="/ledger" style="display:block">Ledger</a><a href="/tasks" style="display:block">Tasks</a>
+        <div style="height:1px;background:var(--line,#1a2035);margin:4px 0"></div>
+        <a href="/channels" style="display:block">Channels</a><a href="/features" style="display:block">Features</a><a href="/bundles" style="display:block">Bundles</a>
+        <div style="height:1px;background:var(--line,#1a2035);margin:4px 0"></div>
+        <a href="/builder" style="display:block">Builder</a><a href="/sweep" style="display:block">Sweep</a><a href="/params" style="display:block">Params</a><a href="/filters" style="display:block">Live rules</a>
+        <div style="height:1px;background:var(--line,#1a2035);margin:4px 0"></div>
+        <a href="/settings" style="display:block">Settings</a>
+      </div>
+    </details>
   </nav>
 </div>
 
@@ -176,7 +192,7 @@ tbody tr:last-child td{border-bottom:none}
         <div class="body flush" id="calls"><div class="empty">loading…</div></div>
       </div>
       <div class="panel">
-        <h2>◆ Fleet Equity <span class="tag" id="eqtag">cumulative PnL · 24h</span></h2>
+        <h2>◆ Real Money Curve <span class="tag" id="eqtag">cumulative PnL · 24h</span></h2>
         <div class="body"><canvas id="eq" height="150" style="width:100%"></canvas></div>
       </div>
       <div class="panel">
@@ -397,6 +413,49 @@ async function paint() {
   $('entrynote').innerHTML = dipG.n < 20 || instG.n < 20 ? 'Gathering data — both groups need 20+ trades to compare.' :
     'Fleet figures, which overstate dip entries badly — a dip order used to fill at the bottom of a rug, so the bounce read as profit. On real candles the gap is far smaller. Treat as a direction, not a size. Waiting for the pullback is worth <b class="' + (edge >= 0 ? 'up' : 'down') + '">' + fmtSol(edge) + ' SOL per trade</b>. ' +
     'Every call in the sample dipped ≥20% below the call price within 30 minutes.';
+
+  // ── real money curve ──
+  //
+  // This canvas existed from the first version and nothing ever drew to it, so the
+  // panel was a heading over blank space. It was also labelled Fleet Equity — the
+  // cumulative PnL of 2,400 paper strategies, which is the same unactionable
+  // aggregate that used to sit in the KPI row. Real money is the curve worth having.
+  try {
+    const tl = (data.realPnlTimeline || []).slice().sort((a, b) => a.time - b.time);
+    const cv = document.getElementById('eq');
+    if (cv && cv.getContext) {
+      const dpr = window.devicePixelRatio || 1;
+      const W = cv.clientWidth || 600, H = 150;
+      cv.width = W * dpr; cv.height = H * dpr;
+      const c = cv.getContext('2d');
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      c.clearRect(0, 0, W, H);
+      if (tl.length < 2) {
+        c.fillStyle = '#4a5570'; c.font = '12px -apple-system,sans-serif';
+        c.fillText('not enough closed trades yet', 10, H / 2);
+      } else {
+        const ys = tl.map(p => p.pnl);
+        const lo = Math.min(0, ...ys), hi = Math.max(0, ...ys);
+        const pad = (hi - lo) * 0.12 || 0.05;
+        const y = v => H - 14 - ((v - lo + pad) / ((hi - lo) + pad * 2)) * (H - 26);
+        const x = i => 6 + (i / (tl.length - 1)) * (W - 12);
+        // Zero line first, so the sign of the curve is readable at a glance.
+        c.strokeStyle = '#242e44'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(0, y(0)); c.lineTo(W, y(0)); c.stroke();
+        const end = ys[ys.length - 1];
+        const col = end >= 0 ? '#10b981' : '#ef4444';
+        c.beginPath(); c.moveTo(x(0), y(ys[0]));
+        for (let i = 1; i < tl.length; i++) c.lineTo(x(i), y(ys[i]));
+        c.strokeStyle = col; c.lineWidth = 2; c.lineJoin = 'round'; c.stroke();
+        c.lineTo(x(tl.length - 1), y(0)); c.lineTo(x(0), y(0)); c.closePath();
+        c.fillStyle = col + '22'; c.fill();
+        c.fillStyle = col; c.beginPath(); c.arc(x(tl.length - 1), y(end), 3, 0, 7); c.fill();
+        c.font = '600 12px -apple-system,sans-serif';
+        c.fillText((end >= 0 ? '+' : '') + end.toFixed(3) + ' \u25ce', 8, 16);
+      }
+      $('eqtag').textContent = tl.length + ' closed trades · 24h';
+    }
+  } catch (e) {}
 
   // ── skip reasons ──
   const by = (skipped && skipped.byReason) || {};
