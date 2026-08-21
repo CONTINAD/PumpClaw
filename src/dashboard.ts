@@ -1137,7 +1137,7 @@ tbody tr:nth-child(even):hover td{background:rgba(77,142,255,0.04)}
     ${(['1h','6h','12h','24h','7d','all'] as TimeRange[]).map(r =>
       `<a href="/?range=${r}" class="${activeRange===r?'active':''}">${RANGE_LABELS[r]}</a>`
     ).join('')}
-    <a href="/strategies" style="border-color:var(--border2)">🧪 Strategy Lab</a>
+    <a href="/shadow" style="border-color:var(--border2)">🧪 Strategy Lab</a>
     <a href="/tasks" style="border-color:var(--border2)">🤖 Tasks</a>
     <a href="/shadow" style="border-color:var(--border2)">📄 Shadow Fleet</a>
     <a href="/bundles" style="border-color:var(--border2)">🔍 Bundles</a>
@@ -4066,6 +4066,25 @@ export function startDashboard(port?: number): void {
     } else if (pathname === '/' || pathname === '/hq') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(buildHqHTML());
+    } else if (pathname === '/strategies') {
+      // Retired. Every cell on this page was peak x (1 - trail): it took the coin's
+      // highest print and assumed the trailing stop filled exactly that far below it.
+      // It never replayed a path. On the six coins traded with real money the night
+      // it was retired it claimed 4.51X on $Guineas (wallet: 1.02X), 3.36X on $CASY
+      // (1.47X), 1.96X on $DOG (0.99X) — and a running total of +487 SOL while the
+      // wallet went 1.00 to 0.59.
+      //
+      // The peaks were wrong too, measured from the call price rather than the fill.
+      // $Guineas peaked 8.21X from the call and 1.65X from where the bot actually
+      // bought, so the page was compounding two errors in the same direction.
+      //
+      // It carried a warning banner calling itself unreliable and superseded. That is
+      // not enough when the number beside the warning is +487 SOL. /shadow answers the
+      // same question for these six strategies and 2,400 others, against captured
+      // minute candles.
+      res.writeHead(302, { Location: '/shadow' });
+      res.end();
+      return;
     } else if (pathname === '/classic' || pathname === '/dashboard') {
       // Retired. These served a second, older copy of the entire dashboard — two
       // pages to keep correct, and in practice one of them quietly went stale while
