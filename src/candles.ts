@@ -15,6 +15,10 @@ import { CONFIG } from './config.js';
 
 const DIR = join(CONFIG.DATA_DIR, 'candles');
 
+/** Mirrors CONFIG.DIP_MAX_OVERSHOOT. Kept local so the backtest has no runtime
+ *  config dependency, but the two must not drift. */
+const DIP_MAX_OVERSHOOT = 0.30;
+
 export interface Candle { ts: number; o: number; h: number; l: number; c: number }
 export interface CoinPath { mint: string; symbol: string; callTs: number; entryPrice: number; candles: Candle[] }
 
@@ -196,8 +200,21 @@ export function backtest(cfg: BacktestCfg, paths: CoinPath[], horizonMin = 180):
 
     if (cfg.entryMode === 'dip') {
       const target = ref * (1 - cfg.dipPct);
+      // A limit order fills at its limit only if the price stops there. When a coin
+      // falls through the target inside one minute it is not dipping, it is being
+      // sold off, and the live bot cancels rather than catching it — that is what
+      // DIP_MAX_OVERSHOOT does in tasks.ts, added after $QUASI filled at the bottom
+      // of a gap. The replay had no such rule: it filled every dip at exactly the
+      // limit no matter how far the candle blew past it, which is why deep dips read
+      // as the best strategies on the board. A −70% dip "won" 91% of the time by
+      // buying collapses at a price that was never on offer.
+      const floor = target * (1 - DIP_MAX_OVERSHOOT);
       let found = -1;
-      for (let i = 0; i < Math.min(c.length, cfg.dipWindowMin); i++) if (c[i].l <= target) { found = i; break; }
+      for (let i = 0; i < Math.min(c.length, cfg.dipWindowMin); i++) {
+        if (c[i].l > target) continue;
+        if (c[i].l < floor) break;      // gapped through — the live bot cancels here
+        found = i; break;
+      }
       if (found < 0) { skipped++; continue; }
       idx = found; entry = target;
     }
