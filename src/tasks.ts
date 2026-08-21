@@ -64,6 +64,9 @@ export interface PendingEntry {
   expiresAt: number;
   callMC?: number;      // market cap when the call landed
   targetMC?: number;    // the market cap the buy actually triggers at
+  /** Highest price seen since the call, tracked on the same 3s ticks that decide the
+   *  fill — so the run-up is observed at exactly the resolution the fill is. */
+  peakSinceCall?: number;
 }
 
 const PENDING_FILE = `${CONFIG.DATA_DIR}/pending-entries.json`;
@@ -142,6 +145,23 @@ class TaskManager {
         this.noteDipOutcome(p, `dip expired: never reached ${fmtMC(p.targetMC ?? 0)}`);
         continue;
       }
+      // Track the run-up BEFORE the target test, or the only prices ever seen would
+      // be the ones at or under target and a 2x would be invisible.
+      p.peakSinceCall = Math.max(p.peakSinceCall ?? p.callPrice, price);
+
+      // A coin that ran this far and came all the way back to a -20% target was not
+      // pulling back; it was being distributed into, and the order would be buying
+      // from the people who made the run. Kill it on sight rather than at fill time:
+      // once the run has happened the thesis is dead whatever the price does next.
+      if (CONFIG.DIP_MAX_RUNUP > 0 && p.callPrice > 0
+          && p.peakSinceCall >= p.callPrice * CONFIG.DIP_MAX_RUNUP) {
+        const ran = p.peakSinceCall / p.callPrice;
+        console.log(`[Tasks] Dip order CANCELLED: $${p.symbol} already ran ${ran.toFixed(2)}x from the call — ` +
+          `a retrace after that is distribution, not a pullback`);
+        this.noteDipOutcome(p, `dip cancelled: already ran ${ran.toFixed(2)}x from the call — distribution, not a pullback`);
+        continue;
+      }
+
       if (price > p.target) { keep.push(p); continue; }
 
       // A dip order had an upper bound and no lower one, so it filled at whatever

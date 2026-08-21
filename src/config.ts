@@ -81,6 +81,13 @@ export const CONFIG = {
    *  cancelled below that. Without a floor the order filled at any price at all, which
    *  meant every dip task in the fleet bought the bottom of $QUASI's 94% rug and booked
    *  the bounce as a 16x. Only affects entryMode 'dip'; MANIFEST buys instantly. */
+  /** A dip order dies if the coin ever reached this multiple of the call price.
+   *  A coin that ran to 2x and then fell back to the -20% target did not pull back,
+   *  it was distributed into — the buyers who made the run are the sellers on the
+   *  way down, and the order would be catching that. DIP_MAX_OVERSHOOT already kills
+   *  fills that gap far BELOW target; this kills fills that only got there after a
+   *  run ABOVE it. */
+  DIP_MAX_RUNUP: 2.0,
   DIP_MAX_OVERSHOOT: 0.30,
   BUNDLE_CHECK_ENABLED: true,
   BUNDLE_TOP_HOLDERS: 20,           // top holders checked (getTokenLargestAccounts caps at 20)
