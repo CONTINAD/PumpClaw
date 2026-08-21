@@ -376,6 +376,9 @@ export function shadowRows(url: string) {
   const hoursM = url.match(/[?&]hours=(\d+|all)/);
   const hv = hoursM ? hoursM[1] : '24';
   const cutoff = hv === 'all' ? 0 : Date.now() - parseInt(hv) * 3600_000;
+  // Memoised and warmed at boot, so this is a map lookup rather than 2,400 replays.
+  let twins: Map<string, CleanRow> | null = null;
+  try { twins = cleanReplay(); } catch { twins = null; }
   return taskManager.all().filter(t => t.paper).map(t => {
     const positions = taskManager.traderFor(t).getAllPositions();
     const closed = positions.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cutoff);
@@ -390,12 +393,32 @@ export function shadowRows(url: string) {
     const robust = n > 3 ? rs.slice(3).reduce((s, x) => s + x, 0) / (n - 3) : 0;  // drop best 3
     const median = n ? rs[Math.floor(n / 2)] : 0;
     const topShare = n && mean > 0 ? Math.max(0, rs.slice(0, 3).reduce((s, x) => s + x, 0)) / Math.max(1e-9, rs.reduce((s, x) => s + x, 0)) : 0;
-    const verdict = n < 15 ? 'thin'
-      : tStat > 2 && robust > 0.03 ? 'strong'
-      : tStat > 1.5 && robust > 0 ? 'promising'
-      : mean > 0 && robust <= 0 ? 'tail-driven'
-      : mean > 0 ? 'weak'
-      : 'losing';
+    // Judge on the replay, and say whether the result survives the assumption.
+    //
+    // This was computed from the fleet's own per-trade returns, which are inflated by
+    // feed gaps. The leaderboard ended up stamping LOSING on the rows the replay ranks
+    // best — a badge contradicting the number printed next to it, which is worse than
+    // no badge at all.
+    //
+    // The replay gives two figures per strategy: one assuming the fall comes first
+    // inside each candle, one assuming the spike does. Across these paths the deepest
+    // fall inside a single candle is a median 64% of that candle's own high, so which
+    // half is assumed to happen first genuinely decides the answer. A result that is
+    // positive under BOTH is the only kind that does not rest on that coin flip, and
+    // that distinction is what the badge should carry.
+    const cl = twins ? (twins.get(t.strategy.preset) ?? null) : null;
+    const verdict = cl
+      ? (cl.trades < 15 ? 'thin'
+        : cl.avg > 0 && cl.high > 0 && cl.robust > 0 ? 'robust'
+        : cl.avg > 0 && cl.high > 0 ? 'promising'
+        : cl.avg > 0 || cl.high > 0 ? 'fragile'
+        : 'losing')
+      : (n < 15 ? 'thin'
+        : tStat > 2 && robust > 0.03 ? 'strong'
+        : tStat > 1.5 && robust > 0 ? 'promising'
+        : mean > 0 && robust <= 0 ? 'tail-driven'
+        : mean > 0 ? 'weak'
+        : 'losing');
     const pnl = closed.reduce((s, p) => s + (p.finalPnlSol ?? 0), 0);
     const wins = closed.filter(p => (p.finalPnlSol ?? 0) > 0).length;
     const best = closed.reduce((mx, p) => Math.max(mx, p.peakMultiplier ?? 1), 0);
@@ -1700,7 +1723,7 @@ function n2(v: any, d = 2, dash = '—'): string {
  * only changes when a new path lands. Keyed on the path count with a ten-minute
  * ceiling, which picks up new captures without ever serving a stale shape.
  */
-interface CleanRow { avg: number; high: number; best: number; winPct: number; total: number; trades: number }
+interface CleanRow { avg: number; high: number; robust: number; best: number; winPct: number; total: number; trades: number }
 let cleanCache: { at: number; paths: number; rows: Map<string, CleanRow> } | null = null;
 
 function cleanReplay(): Map<string, CleanRow> {
@@ -1716,8 +1739,8 @@ function cleanReplay(): Map<string, CleanRow> {
       if (lo.trades <= 0) continue;
       const hi = backtest({ ...base, intraOrder: 'high' }, paths);
       rows.set(key, {
-        avg: +lo.avg.toFixed(4), high: +hi.avg.toFixed(4), best: +lo.best.toFixed(2),
-        winPct: lo.winPct, total: +lo.total.toFixed(2), trades: lo.trades,
+        avg: +lo.avg.toFixed(4), high: +hi.avg.toFixed(4), robust: +lo.robustAvg.toFixed(4),
+        best: +lo.best.toFixed(2), winPct: lo.winPct, total: +lo.total.toFixed(2), trades: lo.trades,
       });
     } catch { /* a preset the replay cannot express has no twin */ }
   }

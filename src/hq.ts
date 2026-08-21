@@ -100,9 +100,9 @@ tbody tr:last-child td{border-bottom:none}
 .chip.dip{color:var(--amber);border-color:rgba(255,179,64,.32);background:rgba(255,179,64,.08)}
 .chip.inst{color:var(--dim);border-color:var(--line2);background:rgba(107,125,148,.07)}
 .chip.live{color:var(--phos);border-color:rgba(61,255,158,.32);background:rgba(61,255,158,.08)}
-.chip.strong{color:var(--phos);border-color:rgba(61,255,158,.4);background:rgba(61,255,158,.1)}
+.chip.strong,.chip.robust{color:var(--phos);border-color:rgba(61,255,158,.4);background:rgba(61,255,158,.1)}
 .chip.promising{color:var(--ice);border-color:rgba(77,216,255,.3);background:rgba(77,216,255,.08)}
-.chip.tail{color:var(--amber);border-color:rgba(255,179,64,.3);background:rgba(255,179,64,.08)}
+.chip.tail,.chip.fragile{color:var(--amber);border-color:rgba(255,179,64,.3);background:rgba(255,179,64,.08)}
 .chip.thin{color:var(--faint);border-color:var(--line2)}
 .chip.losing{color:var(--blood);border-color:rgba(255,61,90,.3);background:rgba(255,61,90,.07)}
 /* perf bar behind the avg cell */
@@ -209,8 +209,9 @@ tbody tr:last-child td{border-bottom:none}
       <div class="panel">
         <h2>◆ Strategy Leaderboard <a href="/shadow">ALL →</a></h2>
         <div class="body flush" id="strats"><div class="empty">loading…</div></div>
-        <div class="foot">Paper trades at 1 SOL each. <b class="up">strong</b> = statistically real (t&gt;2) and survives dropping its best 3 trades ·
-    <b class="ic">promising</b> = trending that way · <b class="warnc">tail-driven</b> = profit comes from 1–3 lucky trades · <b>thin</b> = under 15 trades.</div>
+        <div class="foot">Replayed against real minute candles. <b class="upc">robust</b> = positive whichever half of a candle is assumed to happen first, and still positive after dropping its best 3 trades ·
+    <b class="ic">promising</b> = positive, but only if the spike happens before the fall inside a candle ·
+    <b class="warnc">fragile</b> = depends entirely on that assumption · <b>thin</b> = under 15 replayed trades.</div>
       </div>
       <div class="panel">
         <h2>◆ Entry Timing <span class="tag">the core question</span></h2>
@@ -394,8 +395,10 @@ async function paint() {
         '<td class="num"><span class="bar"><i style="width:' + w + '%;background:' + (good ? 'var(--phos)' : cv(s) >= 0 ? 'var(--amber)' : 'var(--blood)') + '"></i>' +
         '<span class="' + (good ? 'up' : cv(s) >= 0 ? 'warnc' : 'down') + '">' + fmtSol(cv(s)) + '</span></span></td>' +
         '<td class="num dimc" title="What the live-tick fleet claimed for the same strategy. Where this is far above the replay, feed gaps invented peaks the coin never reached.">' + fmtSol(s.avgPerTrade) + '</td>' +
-        '<td><span class="chip ' + (s.verdict === 'tail-driven' ? 'tail' : (s.verdict || 'thin')) + '" title="robust avg ' +
-        (s.robustAvg !== undefined ? s.robustAvg.toFixed(3) : '?') + ' · t=' + (s.tStat ?? '?') + '">' + (s.verdict || 'thin') + '</span></td></tr>';
+        '<td><span class="chip ' + (s.verdict === 'tail-driven' ? 'tail' : (s.verdict || 'thin')) + '" title="' +
+        (s.clean ? 'replay: fall-first ' + s.clean.avg.toFixed(3) + ' · spike-first ' + s.clean.high.toFixed(3) +
+                   ' · robust ' + s.clean.robust.toFixed(3) + ' · ' + s.clean.trades + ' trades'
+                 : 'no replay — fleet only, t=' + (s.tStat ?? '?')) + '">' + (s.verdict || 'thin') + '</span></td></tr>';
     }).join('') + '</tbody></table>';
 
   // ── entry timing split ──
