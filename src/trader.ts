@@ -137,6 +137,12 @@ export class Trader {
    */
   lastSkip: string | null = null;
   private lastSellFailAlert = new Map<string, number>();
+  /** Last time the feed-vs-executable divergence was logged, per mint. The guard it
+   *  reports runs on the 250ms real-position loop and the divergence persists for as
+   *  long as the feed is stale, so logging every tick buried everything else: finding
+   *  two callout confirmations from the same minute needed `railway logs --lines 5000`.
+   *  The guard itself is untouched — only how often it narrates. */
+  private lastStalePriceLog = new Map<string, number>();
 
   /**
    * @param taskId    stable id — 'main' keeps the legacy positions.json
@@ -927,9 +933,13 @@ export class Trader {
               // And the quote is not an opinion. It is the route the sell would take:
               // if it says 1.73x, the sell fills near 1.73x. A price the position can
               // actually transact at outranks one it cannot.
-              console.log(`[Trader] $${pos.symbol} near stop — watched ${currentPrice.toExponential(3)} but ` +
-                `executable ${jup.priceUsd.toExponential(3)} (${((jup.priceUsd / currentPrice - 1) * 100).toFixed(1)}% ` +
-                `higher); the stop level is judged against the price a sell would fill at`);
+              const lastLog = this.lastStalePriceLog.get(mint) ?? 0;
+              if (Date.now() - lastLog > 60_000) {
+                this.lastStalePriceLog.set(mint, Date.now());
+                console.log(`[Trader] $${pos.symbol} near stop — watched ${currentPrice.toExponential(3)} but ` +
+                  `executable ${jup.priceUsd.toExponential(3)} (${((jup.priceUsd / currentPrice - 1) * 100).toFixed(1)}% ` +
+                  `higher); the stop level is judged against the price a sell would fill at`);
+              }
               currentPrice = jup.priceUsd;
             }
           }
