@@ -83,6 +83,16 @@ const sRes = await fetch(SWAP, {
 const sMs = Date.now() - t1;
 if (!sRes.ok) {
   console.log(`✗ BUILD   HTTP ${sRes.status} in ${sMs}ms — ${(await sRes.text()).slice(0, 160)}`);
+  if (!JUP_KEY) {
+    // A free-tier build failure says nothing about the bot. Measured on $CASY: the
+    // buy build returned "Missing token program" on lite-api and succeeded on the
+    // paid host in the same second, with the coin held live. Reporting that as a
+    // failed preflight is a false alarm on the exact path that matters.
+    console.log('\n  ⚠ This ran on the FREE host. The bot builds against api.jup.ag with a key,');
+    console.log('    which resolves mints the free tier does not. This result is INCONCLUSIVE.');
+    console.log('    Re-run against the real path before treating it as a fault:');
+    console.log('      railway run -s PumpClaw npx tsx scripts/preflight-buy.ts');
+  }
   process.exit(1);
 }
 const swap: any = await sRes.json();
