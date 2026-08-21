@@ -153,7 +153,7 @@ tbody tr:last-child td{border-bottom:none}
   <div class="pulse"><span class="dot" id="hb"></span><span id="hbtxt">connecting</span></div>
   <nav>
     <a href="/">HQ</a><a href="/live">Live</a><a href="/exits">Exits</a><a href="/calls">Calls</a><a href="/features">Features</a><a href="/filters">Filters</a><a href="/shadow">Strategies</a><a href="/sweep">Sweep</a><a href="/tasks">Tasks</a><a href="/strategies">Lab</a>
-    <a href="/settings">Settings</a><a href="/classic">Classic</a>
+    <a href="/settings">Settings</a>
   </nav>
 </div>
 
@@ -405,6 +405,64 @@ async function paint() {
   const colors = { LOW_VOL:'var(--ice)', BUNDLED:'var(--blood)', LOW_LIQ:'var(--amber)', DUMP:'var(--violet)',
     HEAVY_SELLING:'var(--amber)', COOLING_OFF:'var(--dim)', LOW_ACTIVITY:'var(--dim)', LOW_FEES:'var(--dim)',
     RATE_CAP:'var(--violet)', FADED:'var(--amber)' };
+  // ── real money: the last trades that actually spent SOL ──
+  //
+  // These four panels shipped as placeholder divs that paint() never touched, so
+  // they said "loading…" forever. A panel that never resolves is worse than no
+  // panel — it reads as broken rather than absent.
+  const closed = [];
+  {
+    const m = {};
+    for (const e of ev) {
+      const r = m[e.mint] || (m[e.mint] = { sym: e.symbol, i: 0, o: 0, ts: e.ts, exits: [] });
+      if (e.kind === 'buy') { r.i += e.sol; r.ts = e.ts; }
+      else { r.o += e.sol; r.exits.push(e.detail || ''); r.close = Math.max(r.close || 0, e.ts); }
+    }
+    for (const k in m) if (m[k].o > 0) closed.push(m[k]);
+    closed.sort((a, b) => (b.close || 0) - (a.close || 0));
+  }
+  $('realmoney').innerHTML = !closed.length ? '<div class="empty">no real trades yet</div>' :
+    '<table><thead><tr><th>Coin</th><th class="num">In</th><th class="num">Out</th>' +
+    '<th class="num">Result</th><th>Exit</th></tr></thead><tbody>' +
+    closed.slice(0, 10).map(r => {
+      const mult = r.i > 0 ? r.o / r.i : 0;
+      const pnl = r.o - r.i;
+      return '<tr><td class="sym">$' + String(r.sym).slice(0, 12) + '</td>' +
+        '<td class="num dimc">' + r.i.toFixed(3) + '</td>' +
+        '<td class="num dimc">' + r.o.toFixed(3) + '</td>' +
+        '<td class="num ' + (pnl >= 0 ? 'up' : 'down') + '" style="font-weight:600">' + mult.toFixed(2) + '× ' + fmtSol(pnl) + '</td>' +
+        '<td class="dimc" style="font-size:11px">' + String(r.exits[r.exits.length - 1] || '').slice(0, 28) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+
+  // ── live feed: every buy and sell, newest first ──
+  $('feed').innerHTML = !ev.length ? '<div class="empty">no real trades yet</div>' :
+    '<table><tbody>' + ev.slice(0, 12).map(e =>
+      '<tr><td class="dimc" style="font-size:11px;width:52px">' + ago(e.ts) + '</td>' +
+      '<td><span class="chip ' + (e.kind === 'buy' ? 'inst' : 'dip') + '">' + e.kind + '</span></td>' +
+      '<td class="sym">$' + String(e.symbol || '').slice(0, 12) + '</td>' +
+      '<td class="num dimc">' + (+e.sol).toFixed(4) + ' ◎</td>' +
+      '<td class="dimc" style="font-size:11px">' + String(e.detail || '').slice(0, 30) + '</td></tr>').join('') +
+    '</tbody></table>';
+
+  // ── best calls: what the filters actually found ──
+  const bestCalls = cw.slice().sort((a, b) => b.peakMultiplier - a.peakMultiplier).slice(0, 8);
+  $('best').innerHTML = !bestCalls.length ? '<div class="empty">no graded calls yet</div>' :
+    '<table><tbody>' + bestCalls.map(c =>
+      '<tr><td class="sym">' + (c.mint ? '<a href="/coin?mint=' + c.mint + '" style="color:var(--txt);text-decoration:none">$' + String(c.symbol).slice(0, 12) + '</a>' : '$' + String(c.symbol).slice(0, 12)) + '</td>' +
+      '<td class="num ' + (c.peakMultiplier >= 2 ? 'up' : 'warnc') + '" style="font-weight:600">' + c.peakMultiplier.toFixed(2) + '×</td>' +
+      '<td class="num dimc">' + mc(c.entryMC) + ' → ' + mc(c.peakMC) + '</td>' +
+      '<td class="num dimc">' + ago(c.entryTime) + '</td></tr>').join('') + '</tbody></table>';
+
+  // ── go live: what the replay would promote, not what the fleet claims ──
+  $('golive').innerHTML = !strat.length ? '<div class="empty">no strategy has enough replayed trades yet</div>' :
+    strat.slice(0, 4).map(s2 => {
+      const v = s2.clean ? s2.clean.avg : s2.avgPerTrade;
+      return '<a href="/strategy?key=' + (s2.key || '') + '" style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;' +
+        'border-bottom:1px solid var(--line);text-decoration:none;color:var(--txt);font-size:12px">' +
+        '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + s2.strategy.slice(0, 34) + '</span>' +
+        '<span class="' + (v >= 0 ? 'up' : 'down') + '" style="font-weight:600;white-space:nowrap">' + fmtSol(v) + '</span></a>';
+    }).join('');
+
   $('skips').innerHTML = !keys.length ? '<div class="empty">no rejections recorded yet</div>' :
     keys.map(k => '<div class="skip"><span class="dimc">' + k.replace(/_/g,' ').toLowerCase() + '</span>' +
       '<span class="track"><span class="fill" style="width:' + (by[k]/smax*100) + '%;background:' + (colors[k]||'var(--dim)') + '"></span></span>' +

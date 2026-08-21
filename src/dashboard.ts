@@ -3993,16 +3993,12 @@ export function startDashboard(port?: number): void {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(buildHqHTML());
     } else if (pathname === '/classic' || pathname === '/dashboard') {
-      try {
-        const range = parseRange(url);
-        const data = buildDashboardData(range);
-        const html = buildHTML(data, range);
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(html);
-      } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Error building dashboard: ' + err.message + '\n' + err.stack);
-      }
+      // Retired. These served a second, older copy of the entire dashboard — two
+      // pages to keep correct, and in practice one of them quietly went stale while
+      // every fix landed on the other. Redirected rather than 404'd so any bookmark
+      // still lands somewhere useful.
+      res.writeHead(302, { Location: '/' });
+      res.end();
     } else if (pathname === '/bundles') {
       buildBundlesHTML().then(html => {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
