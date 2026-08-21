@@ -4491,8 +4491,9 @@ export function startDashboard(port?: number): void {
               ${nav(prev, '‹')}<div style="font-size:15px;font-weight:600;min-width:150px;text-align:center">${label}</div>${nav(nxt, '›')}
             </div>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 4px">
-            ${tasks.slice(0, 14).map(t => `<a href="/calendar?task=${t.id}&month=${mk(new Date(first))}"
+          <div style="font-size:10px;letter-spacing:.09em;color:var(--text3);text-transform:uppercase;margin-top:14px">Trader — real money first</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px">
+            ${[...tasks].sort((a, b) => Number(!!a.paper) - Number(!!b.paper)).slice(0, 14).map(t => `<a href="/calendar?task=${t.id}&month=${mk(new Date(first))}"
               style="font-size:11px;text-decoration:none;padding:4px 10px;border-radius:6px;border:1px solid ${t.id === task.id ? 'var(--border2)' : 'var(--border)'};background:${t.id === task.id ? 'var(--bg3)' : 'transparent'};color:${t.id === task.id ? 'var(--text)' : 'var(--text2)'}">${t.paper ? '📄 ' : '◆ '}${t.name.replace('📄 ', '')}</a>`).join('')}
           </div>
           <div style="font-size:34px;font-weight:800;margin:12px 0 4px;color:${total >= 0 ? '#10b981' : '#ef4444'};font-variant-numeric:tabular-nums">${total >= 0 ? '+' : ''}${total.toFixed(3)} ◎</div>
