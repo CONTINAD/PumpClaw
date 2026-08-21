@@ -463,6 +463,22 @@ async function _checkBundleInner(mint: string): Promise<BundleResult | null> {
       }
     }
 
+    // Too many brand-new wallets. The two checks above guard the low end of this same
+    // axis — 'aged cohort' when nothing can be dated, 'unverifiable' when too little
+    // can — and neither has anything to say about a set that is entirely new, which
+    // is the shape a farm actually has.
+    const freshTotal = fundingTimes.length + veteranCount;
+    if (CONFIG.MAX_FRESH_WALLET_PCT > 0 && freshTotal > 0) {
+      const freshPct = (fundingTimes.length / freshTotal) * 100;
+      if (freshPct > CONFIG.MAX_FRESH_WALLET_PCT) {
+        return {
+          safe: false, clusterPct: 0, maxCluster: 0, totalChecked: freshTotal,
+          details: `${freshPct.toFixed(0)}% fresh wallets — ${fundingTimes.length} new, ` +
+            `${veteranCount} veteran (max ${CONFIG.MAX_FRESH_WALLET_PCT}%) [FRESH FARM]`,
+        };
+      }
+    }
+
     if (CONFIG.BUNDLE_BLOCK_UNVERIFIABLE && fundingTimes.length < CONFIG.BUNDLE_MIN_VERIFIABLE && graph.checked < 3) {
       return {
         safe: false, clusterPct: 0, maxCluster: 0, totalChecked: fundingTimes.length,

@@ -515,11 +515,13 @@ async function fastScanCycle() {
       const blind = /\[UNVERIFIABLE\]|fail closed/.test(bundle.details);
       const devHeavy = /\[DEV HOLDS\]/.test(bundle.details);
       const aged = /\[AGED COHORT\]/.test(bundle.details);
-      const reason = devHeavy ? 'DEV_HOLDS' : aged ? 'AGED_FARM' : blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
+      const freshFarm = /\[FRESH FARM\]/.test(bundle.details);
+      const reason = devHeavy ? 'DEV_HOLDS' : freshFarm ? 'FRESH_FARM'
+        : aged ? 'AGED_FARM' : blind ? 'BUNDLE_UNVERIFIABLE' : 'BUNDLED';
       log(`⚠ ${reason} — skipping ${post.name}: ${bundle.details}`);
       recordSkip(post, reason, bundle.details, market.marketCap, market.priceUsd, market, { devHoldPct: bundle.metrics?.devHoldPct, freshWallets: bundle.metrics?.freshWallets, veterans: bundle.metrics?.veterans, sameFunderPct: bundle.metrics?.sameFunderPct });
       recordBundleObs(post, bundle, false, reason, market.marketCap, market.priceUsd);
-      if (blind && !devHeavy && !aged) noteBlindBlock(post.name); else blindBlocks = 0;
+      if (blind && !devHeavy && !aged && !freshFarm) noteBlindBlock(post.name); else blindBlocks = 0;
       continue;
     }
     blindBlocks = 0;

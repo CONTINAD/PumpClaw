@@ -126,6 +126,19 @@ export const CONFIG = {
   // Measured on real calls: TOADER spanned 23 days with 0 fresh holders, while
   // Doug/MAUS/1two3code spanned 124-196 days and each had organic buyers.
   COHORT_SPAN_DAYS: 60,             // veteran activity spans this tight = one cohort
+
+  // A holder set that is almost entirely brand-new wallets is a manufactured chart.
+  // Alex's call, and the measurement backs the shape: across 431 observations a coin
+  // above 90% fresh crashed below 0.25x 90.7% of the time against 59.3% for the rest,
+  // and $ACE — 19 fresh of 20 — went to 0.20x in under a minute with real money on it.
+  //
+  // Every other holder check guarded the opposite end. 'unverifiable' blocks when too
+  // FEW wallets can be dated and 'aged cohort' blocks when none can, so a set of all
+  // new wallets read as maximally verifiable and therefore maximally trusted. Nothing
+  // asked whether being all-new was itself the problem.
+  //
+  // Share is fresh / (fresh + veterans), the same denominator the filter lab reports.
+  MAX_FRESH_WALLET_PCT: Number(process.env.MAX_FRESH_WALLET_PCT ?? 60),
   COHORT_MIN_VETERANS: 5,           // need this many to call it a pattern
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.
