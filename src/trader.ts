@@ -674,6 +674,17 @@ export class Trader {
 
           pos.exits.push(exit);
           pos.totalSolReturned += solReceived;
+          // A sell that lands after the record was already closed still returned real
+          // SOL. Every close site recomputes finalPnlSol from totalSolReturned, but
+          // only inside an `if (status === 'open')` guard — so proceeds arriving after
+          // a close were counted in one field and not the other.
+          //
+          // $Juliano: the panic seller saw an empty token account and closed the
+          // record at -0.1992 while the Post-TP1 stop was still in flight; the stop
+          // then returned 0.1821 SOL. Real result -0.0171. The ledger read -0.1992,
+          // a phantom loss 11x the true one, and the position had exits recorded so
+          // the "closed with no sell" counter could not see it either.
+          if (pos.status === 'closed') pos.finalPnlSol = pos.totalSolReturned - pos.entrySol;
           pos.remainingPct = Math.max(0, pos.remainingPct - actualPct);
           pos.tokensRemaining = Math.max(0, pos.tokensRemaining - finalSellAmount);
           newExits.push(exit);
@@ -1249,7 +1260,25 @@ export class Trader {
     try {
       const raw = readFileSync(this.positionsFile, 'utf-8');
       const data: RealPosition[] = JSON.parse(raw);
-      for (const p of data) this.positions.set(p.mint, p);
+      let healed = 0;
+      for (const p of data) {
+        // finalPnlSol is derived, never independent — every site that writes it
+        // computes exactly this. A stored value disagreeing with its own inputs is
+        // corrupt by definition, so it is recomputed rather than trusted. Records
+        // closed with no exits at all are unaffected: 0 - entrySol is what they
+        // already hold, and the ledger keeps reporting them as unverified.
+        if (p.status === 'closed') {
+          const derived = (p.totalSolReturned ?? 0) - (p.entrySol ?? 0);
+          if (typeof p.finalPnlSol === 'number' && Math.abs(p.finalPnlSol - derived) > 1e-9) {
+            console.log(`[Trader:${this.taskId}] Corrected $${p.symbol} P&L ` +
+              `${p.finalPnlSol.toFixed(4)} -> ${derived.toFixed(4)} (proceeds landed after close)`);
+            p.finalPnlSol = derived;
+            healed++;
+          }
+        }
+        this.positions.set(p.mint, p);
+      }
+      if (healed > 0) this.save();
       if (data.length > 0) {
         const open = data.filter(p => p.status === 'open').length;
         console.log(`[Trader:${this.taskId}] Loaded ${data.length} positions (${open} open)`);
