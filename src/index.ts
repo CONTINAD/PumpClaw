@@ -1838,11 +1838,20 @@ async function main() {
   // Trading info — one line per task
   if (CONFIG.TRADE_ENABLED) {
     console.log('  ── Real Trading (tasks) ──────────────────────');
-    for (const task of taskManager.all()) {
+    // Real tasks only. This loop used to run over taskManager.all(), which is 2,425
+    // tasks, and awaited getSolBalance on every one — including the 2,422 paper tasks
+    // that never spend SOL and every one of which printed 0.0000. That burst drew 251
+    // "429 Too Many Requests" retries out of the RPC at boot, throttling the endpoint
+    // the real trading path needs, and buried the startup log under 2,422 lines.
+    for (const task of taskManager.all().filter(t => !t.paper)) {
       const kp = taskManager.keypairFor(task);
       let balance = 0;
       try { balance = await getSolBalance(kp); } catch {}
       console.log(`  ${task.enabled ? '🟢' : '⚪'} ${task.name.padEnd(16)} ${kp.publicKey.toBase58().slice(0, 8)}…  ${balance.toFixed(4)} SOL  ${describeStrategy(task.strategy)}`);
+    }
+    const paperCount = taskManager.all().filter(t => t.paper).length;
+    if (paperCount > 0) {
+      console.log(`  ⚪ ${paperCount} shadow (paper) tasks — no wallet, not listed`);
     }
     if (taskManager.all().length === 0) {
       console.log('  (no tasks — create one at /tasks on the dashboard)');
