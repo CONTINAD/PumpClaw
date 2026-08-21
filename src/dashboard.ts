@@ -20,6 +20,7 @@ import { jupiterGetPrice, JUP_PAID, jupiterProbe } from './jupiter.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, describeStrategy, type Strategy } from './strategy.js';
 import { sourceRegistry, PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { loadPaths, backtest, captureQueueStats, type BacktestCfg } from './candles.js';
+import { postCallout, calloutStatus } from './pump-callout.js';
 import type { CallRecord } from './tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -4217,6 +4218,29 @@ export function startDashboard(port?: number): void {
       res.writeHead(302, { Location: '/shadow' });
       res.end();
       return;
+    } else if (pathname === '/api/callout-test') {
+      // Fire one callout on demand, so the flow can be proven per wallet without
+      // waiting for a real buy. Auth-gated: it posts publicly as the owner.
+      if (!authOk(req)) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end('{"error":"auth"}'); return; }
+      const mm = url.match(/[?&]mint=([1-9A-HJ-NP-Za-km-z]{32,44})/);
+      const tm = url.match(/[?&]task=([^&]+)/);
+      const tasks = taskManager.all().filter(t => !t.paper);
+      if (!mm) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ usage: '/api/callout-test?mint=<mint>[&task=<name>]',
+          ...calloutStatus(tasks.map(t => t.name)) }));
+        return;
+      }
+      const want = tm ? decodeURIComponent(tm[1]) : null;
+      const targets = want ? tasks.filter(t => t.name === want) : tasks;
+      Promise.all(targets.map(t =>
+        postCallout(t.name, mm[1], `Bought $${mm[1].slice(0, 6)} — auto-called by ${t.name}.`)
+          .then(r => ({ task: t.name, ...r }))))
+        .then(out => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ mint: mm[1], results: out }, null, 1));
+        });
+      return;
     } else if (pathname === '/gates') {
       import('./index.js').then(idx => {
         const html = settingsShell(gatesHTML(idx.gradedSkips()), '/gates');
@@ -5998,6 +6022,7 @@ export function startDashboard(port?: number): void {
                 expiresInMin: Math.max(0, Math.round((p.expiresAt - Date.now()) / 60000)) })),
           })),
           positionFiles, candleFiles, candleCapture: captureHealth(),
+          callout: calloutStatus(taskManager.all().filter(t => !t.paper).map(t => t.name)),
           files: info,
         }, null, 2));
       } catch (err: any) {

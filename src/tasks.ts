@@ -14,6 +14,7 @@ import { STRATEGY_PRESETS, sanitizeStrategy, type Strategy } from './strategy.js
 import { walletSource, getWallet } from './wallet.js';
 import { PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
+import { postCallout } from './pump-callout.js';
 
 const TASKS_FILE = `${CONFIG.DATA_DIR}/tasks.json`;
 
@@ -646,6 +647,18 @@ class TaskManager {
             `**${pos.entrySol} SOL** at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC`,
             pos.entryTx, tasks[i].webhook,
           ).catch(() => {});
+
+          // Call it on pump.fun. Deliberately last, deliberately not awaited, and
+          // postCallout never throws — the buy has already settled and nothing about
+          // a social post may be allowed to touch the position from here.
+          postCallout(
+            tasks[i].name, mint,
+            `Bought $${symbol} at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC.`,
+          ).then(r => {
+            if (r.ok) console.log(`[Callout] ${tasks[i].name} called $${symbol} — ${r.calloutId}`);
+            else if (r.error) console.log(`[Callout] ${tasks[i].name} $${symbol} failed: ${r.error}`);
+            // A "skipped" is the normal state before cookies are set; not worth a line.
+          }).catch(() => {});
         }
       } else if (r.status === 'rejected') {
         console.error(`[Tasks] Buy error (${tasks[i].name}): ${r.reason?.message}`);

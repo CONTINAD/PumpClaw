@@ -151,6 +151,11 @@ export const CONFIG = {
   // catch a star and a direct edge, this catches a chain. 60% of a 50-wallet sample
   // being reachable from each other is not a coincidence.
   GRAPH_CLUSTER_PCT: Number(process.env.GRAPH_CLUSTER_PCT ?? 60),
+
+  // Post a callout on pump.fun after a real buy. Off until each task's session
+  // cookie is set AND this is turned on, so a half-configured deploy posts nothing
+  // rather than erroring on every trade.
+  CALLOUT_ENABLED: process.env.CALLOUT_ENABLED === 'true',
   COHORT_MIN_VETERANS: 5,           // need this many to call it a pattern
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.
