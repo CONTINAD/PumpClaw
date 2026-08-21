@@ -27,15 +27,26 @@ const MAX_THESIS = 2000;          // CALLOUT_REPLY_MAX_LENGTH in their bundle
 const TIMEOUT_MS = 8000;
 
 /** Cookie per task name, from env. Absent means this task simply does not post. */
+/** A real pump.fun session cookie is long. Railway will not store an empty variable,
+ *  so the slots are seeded with a placeholder, and a half-pasted cookie is a thing
+ *  that happens — both would otherwise 401 on every single buy forever. Anything
+ *  this short is treated as "not configured" instead. */
+const MIN_COOKIE_LEN = 24;
+function looksLikeCookie(v: string | undefined): boolean {
+  const t = (v ?? '').trim();
+  return t.length >= MIN_COOKIE_LEN && !/^(unset|paste|todo|changeme|placeholder)/i.test(t);
+}
+
 function cookieFor(taskName: string): string | null {
   const key = 'PUMP_COOKIE_' + taskName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
   const direct = process.env[key];
-  if (direct?.trim()) return direct.trim();
+  if (looksLikeCookie(direct)) return direct!.trim();
   // Convenience: PUMP_COOKIE_MANIFEST also matches a task called "MANIFEST 2".
   for (const [k, v] of Object.entries(process.env)) {
-    if (!k.startsWith('PUMP_COOKIE_') || !v?.trim()) continue;
+    if (!k.startsWith('PUMP_COOKIE_') || !looksLikeCookie(v)) continue;
+    const val = (v ?? '').trim();
     const want = k.slice('PUMP_COOKIE_'.length);
-    if (key.slice('PUMP_COOKIE_'.length).startsWith(want)) return v.trim();
+    if (key.slice('PUMP_COOKIE_'.length).startsWith(want)) return val;
   }
   return null;
 }
