@@ -5574,7 +5574,14 @@ export function startDashboard(port?: number): void {
           + `${th('REAL total', 'cleantotal', 'Total SOL across every replayed trade, 1 SOL each')}`
           + `${th('fleet', 'avg', 'What the live-tick fleet claimed. Far above the replay means feed gaps invented peaks the coin never reached.')}<th></th></tr>`;
 
-        const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
+        // Pick and quote the replay, not the fleet.
+        //
+        // These cards read r.avg — the live-tick figure — while the table beside them
+        // showed the replay, so the same strategy appeared as +0.102 up here and
+        // +0.533 down there. Two numbers for one thing on one screen is worse than
+        // either alone. Anything without a replay is not a winner we can vouch for.
+        const winners = enough.filter(r => r.cleanAvg !== null && r.cleanAvg > 0.03 && (r.cleanTrades ?? 0) >= 15)
+          .sort((a, b) => (b.cleanAvg ?? 0) - (a.cleanAvg ?? 0)).slice(0, 5);
         const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
         const instRows = rows.filter(r => r.entry === 'instant' && r.trades > 0);
         const grpAvg = (rs: any[]) => {
@@ -5605,9 +5612,10 @@ export function startDashboard(port?: number): void {
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:12px">
             ${winners.length ? winners.map(w => `<div style="background:var(--bg1);border:1px solid #1e5c3a;border-radius:8px;padding:10px 12px">
               <div style="font-size:12px;font-weight:700"><a href="/strategy?key=${w.key}" style="color:var(--text);text-decoration:none">${w.name} →</a></div>
-              <div style="font-size:22px;font-weight:700;color:#10b981">${w.avg >= 0 ? '+' : ''}${w.avg.toFixed(3)}<span style="font-size:11px;color:var(--text3);font-weight:400"> /trade</span></div>
-              <div style="font-size:11px;color:var(--text2)">${w.trades} trades · ${w.winPct}% win · ${w.pnl >= 0 ? '+' : ''}${w.pnl.toFixed(1)} SOL</div>
-            </div>`).join('') : '<span style="color:var(--text3)">No strategy is clearly profitable yet.</span>'}
+              <div style="font-size:22px;font-weight:700;color:#10b981">${(w.cleanAvg ?? 0) >= 0 ? '+' : ''}${(w.cleanAvg ?? 0).toFixed(3)}<span style="font-size:11px;color:var(--text3);font-weight:400"> /trade replayed</span></div>
+              <div style="font-size:11px;color:var(--text2)">${w.cleanTrades ?? 0} replayed trades · ${w.cleanWin ?? 0}% win · ${(w.cleanTotal ?? 0) >= 0 ? '+' : ''}${(w.cleanTotal ?? 0).toFixed(1)} SOL</div>
+              <div style="font-size:10px;color:var(--text3);margin-top:2px">fleet said ${w.avg >= 0 ? '+' : ''}${w.avg.toFixed(3)}</div>
+            </div>`).join('') : '<span style="color:var(--text3)">No strategy is clearly profitable on replayed candles yet.</span>'}
           </div>
           <div style="display:flex;gap:20px;font-size:13px;flex-wrap:wrap">
             <span>Dip entry: <b style="color:${grpAvg(dipRows) >= 0 ? '#10b981' : '#ef4444'}">${grpAvg(dipRows) >= 0 ? '+' : ''}${grpAvg(dipRows).toFixed(3)}</b>/trade
@@ -5623,7 +5631,7 @@ export function startDashboard(port?: number): void {
             ${['1', '3', '6', '12', '24', '48', '168', 'all'].map(h => `<a href="/shadow?hours=${h}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${h === hours ? 'var(--border2)' : 'var(--border)'};background:${h === hours ? 'var(--bg3)' : 'transparent'};color:${h === hours ? 'var(--text)' : 'var(--text2)'}">${h === 'all' ? 'All time' : h + 'h'}</a>`).join('')}
           </div>
           <p style="font-size:12px;color:var(--text2);line-height:1.6">
-            Sorted by <b>${({ name: 'name', entry: 'dip depth', target: 'top target', stop: 'stop width', trades: 'trade count', win: 'win rate', avg: 'average PnL per closed trade', pnl: 'total PnL', best: 'best single trade' } as Record<string, string>)[fSort]}</b>,
+            Sorted by <b>${({ name: 'name', entry: 'dip depth', target: 'top target', stop: 'stop width', trades: 'trade count', win: 'win rate', avg: 'the live-tick fleet average', pnl: 'live-tick total PnL', best: 'best single trade', cleanavg: 'replayed average per trade', cleanhigh: 'replayed average, spike-first', cleantotal: 'replayed total SOL', cleanbest: 'best replayed trade' } as Record<string, string>)[fSort] ?? fSort}</b>,
             ${fDir === 'desc' ? 'highest first' : 'lowest first'} — click any column heading to change it.
             <b>Strategies with fewer than 8 trades are listed separately</b> — a
             small sample tells you nothing. Even above that bar, treat a one-day leader with suspicion: with
