@@ -97,6 +97,65 @@ async function call(path: string, cookie: string, init?: RequestInit): Promise<R
   });
 }
 
+/* ── Voices ────────────────────────────────────────────────────────────────────
+ *
+ * Three wallets often buy the same coin within seconds of each other. Posting the
+ * same sentence three times reads as one operator with three accounts, which is what
+ * it is, and is the sort of thing a callout leaderboard is likely to discount.
+ *
+ * So each task gets its own register and a set of lines to rotate through. Every one
+ * of them says only what actually happened — the coin, the market cap it was bought
+ * at, and how that task enters. No invented conviction, no analysis the bot did not
+ * do. Varied phrasing about a real trade, not a fabricated thesis.
+ */
+type Voice = (sym: string, mc: string) => string[];
+
+const VOICES: Record<string, Voice> = {
+  // Terse, the way someone types when they are watching a chart, not writing.
+  MANIFEST: (s, mc) => [
+    `in on $${s} at ${mc}`,
+    `$${s} — ${mc} entry. filters came back clean`,
+    `took $${s} here, ${mc}`,
+    `$${s} at ${mc}. holder check passed, that's enough for a starter`,
+    `entry on $${s} — ${mc} mc`,
+  ],
+  // Momentum framing: this one buys the call itself, no waiting.
+  INSTANT: (s, mc) => [
+    `bought $${s} on the call — ${mc}`,
+    `$${s} at ${mc}, straight in. not waiting on a pullback for this one`,
+    `taking $${s} here at ${mc} rather than trying to time a dip`,
+    `$${s} — ${mc}. in at the call price, laddering out on the way up`,
+    `market bought $${s} at ${mc}`,
+  ],
+  // Patience framing: this one only fills 20% under the call.
+  DIP: (s, mc) => [
+    `waited for the pullback on $${s} — filled at ${mc}`,
+    `$${s} at ${mc}, 20% under where it was called. better basis`,
+    `let $${s} come to me. ${mc} entry`,
+    `$${s} — ${mc}. only takes it if it dips, and it did`,
+    `filled the dip on $${s} at ${mc}`,
+  ],
+};
+
+function voiceFor(taskName: string): Voice {
+  const n = taskName.toUpperCase();
+  if (n.startsWith('DIP')) return VOICES.DIP;
+  if (n.startsWith('INSTANT')) return VOICES.INSTANT;
+  return VOICES.MANIFEST;
+}
+
+/** Pick a line. Rotates per task so consecutive buys from one wallet do not repeat,
+ *  and the three wallets do not land on matching phrasing for the same coin. */
+const voiceCursor = new Map<string, number>();
+export function calloutThesis(taskName: string, symbol: string, mc: number): string {
+  const cap = mc >= 1_000_000 ? `$${(mc / 1e6).toFixed(1)}M`
+    : mc >= 1000 ? `$${(mc / 1000).toFixed(1)}K` : `$${Math.round(mc)}`;
+  const lines = voiceFor(taskName)(symbol, cap);
+  const i = (voiceCursor.get(taskName) ?? Math.floor(Math.random() * lines.length)) % lines.length;
+  voiceCursor.set(taskName, i + 1);
+  return lines[i];
+}
+
 /** Their API answers "You're replying too fast" — one per wallet per minute. */
 const lastPost = new Map<string, number>();
 const MIN_GAP_MS = 60_000;

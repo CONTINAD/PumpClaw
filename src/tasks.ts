@@ -14,7 +14,7 @@ import { STRATEGY_PRESETS, sanitizeStrategy, type Strategy } from './strategy.js
 import { walletSource, getWallet } from './wallet.js';
 import { PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
-import { postCallout } from './pump-callout.js';
+import { postCallout, calloutThesis } from './pump-callout.js';
 
 const TASKS_FILE = `${CONFIG.DATA_DIR}/tasks.json`;
 
@@ -652,8 +652,7 @@ class TaskManager {
           // postCallout never throws — the buy has already settled and nothing about
           // a social post may be allowed to touch the position from here.
           postCallout(
-            tasks[i].name, mint,
-            `Bought $${symbol} at ${mc >= 1000 ? '$' + (mc / 1000).toFixed(1) + 'K' : '$' + mc.toFixed(0)} MC.`,
+            tasks[i].name, mint, calloutThesis(tasks[i].name, symbol, mc),
             false, this.keypairFor(tasks[i]),
           ).then(r => {
             if (r.ok) console.log(`[Callout] ${tasks[i].name} called $${symbol} — ${r.calloutId}`);
