@@ -117,6 +117,17 @@ export class Trader {
   private positions = new Map<string, RealPosition>();
   private positionsFile: string;
   private sellFailCounts = new Map<string, number>();
+  /** Mints with a sell in flight. The reconciler must not reprice a position while
+   *  its own sell is mid-air: it reads the post-sale balance from chain, writes
+   *  remainingPct from it, and then executeSell subtracts its percentage on top —
+   *  counting the same sale twice.
+   *
+   *  $PUP: TP1 sold exactly half at 2.48x. The reconciler landed between the swap
+   *  and the bookkeeping, set remainingPct to 0.50 from the wallet, and executeSell
+   *  then did 0.50 - 0.50 = 0. The position closed holding half its tokens, so
+   *  nothing was watching when the coin went on to 3.07x and TP2 at 3.01x never
+   *  fired. The sale was fine. The arithmetic around it was not. */
+  private sellInFlight = new Set<string>();
   /**
    * Earliest time a further sell may be attempted for a mint.
    *
@@ -711,6 +722,10 @@ export class Trader {
             if (attempt > 1 || fails > 0) opts.slippageBps = Math.max(opts.slippageBps ?? 3000, fails >= 2 ? 9000 : 5000);
           }
           console.log(`[Trader] Selling ${finalSellAmount} tokens of $${pos.symbol} (${label})${attempt > 1 ? ` [RETRY #${attempt}]` : ''} slip:${(opts.slippageBps ?? 3000) / 100}%...`);
+          // Held until this sale's own bookkeeping has been applied, so the
+          // reconciler cannot write remainingPct from a wallet that already
+          // reflects a sale this function is about to subtract for.
+          this.sellInFlight.add(mint);
           const result = await jupiterSell(mint, finalSellAmount, opts);
 
           const solReceived = result.outputAmount / 1e9;
@@ -763,8 +778,10 @@ export class Trader {
           }
 
           console.log(`[Trader] ✅ ${label}: sold ${finalSellAmount} tokens → ${solReceived.toFixed(4)} SOL (tx: ${result.txSignature.slice(0, 16)}...)`);
+          this.sellInFlight.delete(mint);
           return exit;
         } catch (err: any) {
+          this.sellInFlight.delete(mint);
           rateLimited = /\(429\)|rate limit/i.test(err?.message ?? '');
           console.error(`[Trader] Sell failed for $${pos.symbol} (${label}) attempt ${attempt}: ${err.message}`);
           if (attempt < 2) {
@@ -774,6 +791,7 @@ export class Trader {
         }
       }
 
+      this.sellInFlight.delete(mint);
       console.error(`[Trader] ⚠ Sell FAILED after 2 attempts for $${pos.symbol} (${label}) — will retry next check cycle`);
       // Pace every retry, whatever the cause. 5s, 10s, 20s, 40s, then once a minute.
       // Still 12 attempts a minute at the floor — plenty to catch a recovering route,
@@ -1215,7 +1233,11 @@ export class Trader {
           this.flush();
           continue;
         }
-        // (b) counts drifted → trust the wallet
+        // (b) counts drifted → trust the wallet. Never while this position's own
+        // sell is in flight: the wallet already shows that sale and executeSell has
+        // not yet subtracted for it, so writing remainingPct here double-counts and
+        // can zero a position that is only half sold.
+        if (this.sellInFlight.has(pos.mint)) continue;
         if (onChain > 0 && Math.abs(onChain / Math.max(1, pos.tokensRemaining) - 1) > 0.03) {
           pos.tokensRemaining = onChain;
           if (pos.tokensReceived > 0) pos.remainingPct = Math.min(1, onChain / pos.tokensReceived);
