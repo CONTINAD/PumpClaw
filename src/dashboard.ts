@@ -5554,30 +5554,25 @@ export function startDashboard(port?: number): void {
           </form>`;
         const fmt = (r: any, rank: number) => `<tr>
           <td class="mono" style="color:var(--text3)">${rank}</td>
-          <td><a href="/strategy?key=${r.key}" style="color:var(--text);font-weight:700;text-decoration:none;border-bottom:1px dotted var(--border2)">${r.name}</a></td>
+          <td style="max-width:230px"><a href="/strategy?key=${r.key}" title="${r.name.replace(/"/g, '&quot;')}" style="color:var(--text);font-weight:700;text-decoration:none;border-bottom:1px dotted var(--border2);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</a></td>
           <td style="color:${r.dipPct ? '#f59e0b' : 'var(--text2)'};font-size:12px;white-space:nowrap">${r.dipPct ? `−${r.dipPct}% dip` : 'instant'}</td>
           <td style="font-size:12px;color:var(--text);white-space:nowrap">${r.targets.length ? r.targets.map((m: number) => m + '×').join('/') : r.holdMin ? `${r.holdMin}m clock` : `trail ${r.trailPct}%`}</td>
           <td style="font-size:12px;white-space:nowrap;color:${r.stopPct === null ? 'var(--text3)' : r.stopPct <= 20 ? '#ef4444' : r.stopPct <= 40 ? '#f59e0b' : 'var(--text2)'}">${r.stopPct === null ? 'none' : '−' + r.stopPct + '%'}</td>
-          <td style="font-size:11px;color:var(--text3);white-space:nowrap">${r.trailPct ? `trail ${r.trailPct}%` : ''}${r.holdMin && r.targets.length ? ` ${r.holdMin}m cap` : ''}</td>
           <td class="mono">${r.trades}${r.open ? ` <span style="color:${r.open > r.trades ? '#f59e0b' : '#10b981'}" title="${r.open} still open. When these outnumber the closed trades, the closed ones are mostly winners — losers without a stop never close.">+${r.open}</span>` : ''}</td>
           <td class="mono">${r.winPct}%</td>
           <td class="mono" style="color:${r.cleanAvg === null ? 'var(--text3)' : r.cleanAvg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.cleanAvg === null ? '—' : (r.cleanAvg >= 0 ? '+' : '') + r.cleanAvg.toFixed(3)}</td>
           <td class="mono" style="color:${r.cleanHigh === null ? 'var(--text3)' : (r.cleanAvg !== null && r.cleanAvg >= 0 && r.cleanHigh >= 0) ? '#10b981' : 'var(--text2)'};font-size:12px" title="Same strategy assuming the spike happens before the fall inside each candle. Truth is between this and the REAL avg column; both positive means the result does not depend on the assumption.">${r.cleanHigh === null ? '—' : (r.cleanHigh >= 0 ? '+' : '') + r.cleanHigh.toFixed(3)}</td>
           <td class="mono" style="color:${(r.cleanTotal ?? 0) >= 0 ? '#10b981' : '#ef4444'};font-weight:600" title="Total SOL across every replayed trade, 1 SOL per trade">${r.cleanTotal === null ? '—' : (r.cleanTotal >= 0 ? '+' : '') + r.cleanTotal.toFixed(1)}</td>
-          <td class="mono" style="color:var(--text3)">${r.cleanBest === null ? '—' : r.cleanBest.toFixed(1) + 'x'}</td>
           <td class="mono" style="color:var(--text3);font-size:11px" title="Live-tick figure. Inflated by feed gaps that invent peaks; the inflation is larger the tighter the trail.">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
-          <td class="mono" style="color:var(--text3);font-size:11px" title="Live-tick total SOL.">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(1)}</td>
           <td><a href="/builder?from=${r.key}" title="Open this strategy in the builder to edit or clone it" style="color:#3b82f6;text-decoration:none;font-size:11px;white-space:nowrap">copy →</a></td>
         </tr>`;
         const head = `<tr>${th('#')}${th('Strategy', 'name')}${th('Entry', 'entry', 'Sort by dip depth — instant first')}`
-          + `${th('Target', 'target', 'Sort by the highest take-profit')}${th('Stop', 'stop', 'Sort by stop width')}${th('Extra')}`
+          + `${th('Target', 'target', 'Sort by the highest take-profit')}${th('Stop', 'stop', 'Sort by stop width')}`
           + `${th('Trades', 'trades')}${th('Win', 'win', 'Sort by win rate')}`
           + `${th('REAL avg', 'cleanavg', 'Real candles, assuming the fall comes first inside each candle — the floor')}`
           + `${th('if spike 1st', 'cleanhigh', 'Same strategy assuming the spike comes first — the ceiling. Both positive = the result does not depend on the assumption.')}`
           + `${th('REAL total', 'cleantotal', 'Total SOL across every replayed trade, 1 SOL each')}`
-          + `${th('REAL best', 'cleanbest', 'Best single trade on real candles')}`
-          + `${th('fleet avg', 'avg', 'Live-tick figure. Inflated by feed gaps that invent peaks.')}`
-          + `${th('fleet SOL', 'pnl', 'Live-tick total.')}<th></th></tr>`;
+          + `${th('fleet', 'avg', 'What the live-tick fleet claimed. Far above the replay means feed gaps invented peaks the coin never reached.')}<th></th></tr>`;
 
         const winners = enough.filter(r => r.avg > 0.03).slice(0, 5);
         const dipRows = rows.filter(r => r.entry !== 'instant' && r.trades > 0);
