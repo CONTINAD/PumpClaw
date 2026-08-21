@@ -470,3 +470,65 @@ export async function anySignatureStatus(sig: string): Promise<'ok' | 'pending' 
   }
   return 'pending';
 }
+
+/**
+ * What a sale actually returned, read back off the chain.
+ *
+ * The reconciler closes a position when the wallet no longer holds the token, and
+ * it has no proceeds to record because it did not make the sale — so it books the
+ * remainder at zero and the trade reads as a total loss. That is a floor, not a
+ * measurement, and on DIP's $MENSA it was wrong by 0.45 SOL: the book said -0.3710
+ * on a trade that actually returned +0.4524.
+ *
+ * The proceeds are not unknowable, only unobserved. Every sale is on chain. This
+ * walks the wallet's recent signatures, keeps the transactions that touched this
+ * mint, and sums the wallet's own SOL deltas across them — which is the amount that
+ * genuinely landed, fees already netted out, because that is what a balance delta
+ * is.
+ *
+ * Bounded deliberately: a short signature window and a time cutoff, so a sale of
+ * the same coin from days ago can never be attributed to today's position. Returns
+ * null when it cannot tell, and the caller keeps booking zero — a wrong number
+ * confidently recorded would be worse than the honest floor it replaces.
+ */
+export async function recoverSaleProceeds(
+  mint: string, keypair?: Keypair, sinceMs = 30 * 60_000, maxSigs = 25,
+): Promise<{ sol: number; txs: number } | null> {
+  const kp = keypair ?? getWallet();
+  const owner = kp.publicKey.toBase58();
+  const cutoff = Math.floor((Date.now() - sinceMs) / 1000);
+  try {
+    const sigs = await rpcRead(
+      c => c.getSignaturesForAddress(kp.publicKey, { limit: maxSigs }), 'sigs-for-recover');
+    const recent = sigs.filter(s => !s.err && (s.blockTime ?? 0) >= cutoff);
+    if (recent.length === 0) return null;
+
+    let sol = 0, txs = 0;
+    for (const s of recent) {
+      let tx;
+      try {
+        tx = await rpcRead(c => c.getParsedTransaction(s.signature, {
+          maxSupportedTransactionVersion: 0,
+        }), 'tx-for-recover');
+      } catch { continue; }
+      if (!tx?.meta) continue;
+
+      // Only transactions that moved THIS token. A balance entry for the mint on
+      // either side is the cheapest reliable test, and it excludes the unrelated
+      // buys and sells that sit between these signatures.
+      const touched = [...(tx.meta.preTokenBalances ?? []), ...(tx.meta.postTokenBalances ?? [])]
+        .some(b => b.mint === mint);
+      if (!touched) continue;
+
+      const keys = tx.transaction.message.accountKeys.map(k => k.pubkey.toBase58());
+      const i = keys.indexOf(owner);
+      if (i < 0) continue;
+      const delta = (tx.meta.postBalances[i] - tx.meta.preBalances[i]) / 1e9;
+      // A sale pays SOL in. A buy pays it out, and must never be counted as proceeds.
+      if (delta > 0) { sol += delta; txs++; }
+    }
+    return txs > 0 ? { sol, txs } : null;
+  } catch {
+    return null;   // no second opinion available; the caller keeps its floor
+  }
+}

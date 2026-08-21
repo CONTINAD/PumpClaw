@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { Keypair } from '@solana/web3.js';
 import { CONFIG, NON_POSITION_MINTS } from './config.js';
-import { getSolBalance, getSolBalanceFresh, getTokenBalance, closeTokenAccount, getConnection, mintDecimals } from './wallet.js';
+import { getSolBalance, getSolBalanceFresh, getTokenBalance, closeTokenAccount, getConnection, mintDecimals, recoverSaleProceeds} from './wallet.js';
 import { getSolPrice } from './dexscreener.js';
 import { jupiterBuy, jupiterSell, jupiterGetPrice, type SwapResult, type SwapOpts } from './jupiter.js';
 import { STRATEGY_PRESETS, type Strategy } from './strategy.js';
@@ -1179,6 +1179,33 @@ export class Trader {
         const onChain = await getTokenBalance(pos.mint, this.kp());
         // (a) book says we hold it, wallet says we don't → it was sold elsewhere
         if (onChain <= 0 && pos.remainingPct >= 0.001) {
+          // The sale happened; this bot just did not make it. Booking the remainder
+          // at zero turns an unobserved sale into a recorded total loss — DIP's
+          // $MENSA was written down -0.3710 on a trade that returned +0.4524, which
+          // is what made a wallet that is up read as a task that is down.
+          //
+          // The proceeds are on chain whether or not this process saw them, so read
+          // them back before closing. Null means it could not tell, and the old
+          // floor stands.
+          const recovered = await recoverSaleProceeds(pos.mint, this.kp());
+          if (recovered && recovered.sol > 0) {
+            pos.exits.push({
+              reason: 'recovered_exit',
+              label: `Sold off-bot · recovered from chain (${recovered.txs} tx)`,
+              multiplierAtExit: pos.entrySol > 0
+                ? recovered.sol / (pos.entrySol * pos.remainingPct) : 0,
+              pctSold: pos.remainingPct,
+              tokensSold: pos.tokensRemaining,
+              solReceived: recovered.sol,
+              txSignature: '',
+              timestamp: Date.now(),
+            });
+            pos.totalSolReturned += recovered.sol;
+            console.log(`[Trader:${this.taskId}] $${pos.symbol} was sold off-bot — ` +
+              `recovered ${recovered.sol.toFixed(4)} SOL from ${recovered.txs} on-chain tx, ` +
+              `booking ${(pos.totalSolReturned - pos.entrySol >= 0 ? '+' : '')}` +
+              `${(pos.totalSolReturned - pos.entrySol).toFixed(4)} instead of a total loss`);
+          }
           pos.remainingPct = 0;
           pos.tokensRemaining = 0;
           pos.status = 'closed';
