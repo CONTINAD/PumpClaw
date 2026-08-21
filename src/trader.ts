@@ -30,6 +30,10 @@ const EXEC_OVERRIDE_GAP = 0.12;
  * discipline applied across time on one source.
  */
 const PRICE_JUMP_LIMIT = 4;
+/** A one-tick fall past this factor is verified against Jupiter before it is allowed
+ *  to decide anything. Deliberately wide: it only chooses when to spend a quote, and
+ *  a real collapse still gets through once the quote confirms it. */
+const PRICE_COLLAPSE_LIMIT = 20;
 
 export interface RealExit {
   reason: string;  // 'tp1'..'tpN' | 'trailing_stop' | 'stop_loss' | 'be_stop' | 'profit_protect'
@@ -492,6 +496,42 @@ export class Trader {
   private async checkPositionInner(mint: string, currentPrice: number, currentMC: number, forceExitLabel?: string): Promise<RealExit[]> {
     const pos = this.positions.get(mint);
     if (!pos || pos.status !== 'open' || pos.remainingPct < 0.001) return [];
+
+    // A one-tick collapse is a feed artefact until something independent confirms it
+    // — the same judgement the spike guard below already makes, which treats a 4x
+    // one-tick rise as "not a move". That guard only looks upward, and downward is
+    // the direction that force-sells.
+    //
+    // It matters here specifically because `mult` is computed once, on the next
+    // line, and never recomputed. The circuit breaker, the TP ladder and the stop
+    // all read it, while the executable-price guard that could correct a bad reading
+    // sits 400 lines further down and cannot reach any of them. So a single zero
+    // tick from the feed reads as a total loss and sells the position outright.
+    //
+    // $AMM was sold at 2.35x by a breaker reporting 0.00x, on a coin that went on to
+    // 10.6x — its 5.05x and 10.05x take-profits never got the chance. $vibefi went
+    // the same way at 0.745x against a 0.70x stop.
+    //
+    // Jupiter arbitrates because it is the price a sell would actually fill at. If
+    // it confirms the fall, the tick proceeds on the executable number. If it does
+    // not, the tick is skipped and the one 250ms later decides. If no quote can be
+    // had, the feed price stands — a coin that really is gone must stay exitable.
+    if (!this.paper && pos.lastGoodPrice > 0 && currentPrice > 0
+        && currentPrice < pos.lastGoodPrice / PRICE_COLLAPSE_LIMIT) {
+      let executable = 0;
+      try {
+        const solUsd = await getSolPrice();
+        const jup = await jupiterGetPrice(mint, solUsd, true);
+        if (jup && jup.priceUsd > 0) executable = jup.priceUsd;
+      } catch { /* no second opinion available — fall through on the feed */ }
+      if (executable > 0 && executable >= pos.lastGoodPrice / PRICE_COLLAPSE_LIMIT) {
+        console.log(`[Trader:${this.taskId}] $${pos.symbol}: feed collapsed to ` +
+          `${currentPrice.toExponential(3)} but executable is ${executable.toExponential(3)} — ` +
+          `feed artefact, skipping this tick`);
+        return [];
+      }
+      if (executable > 0) currentPrice = executable;
+    }
 
     const mult = currentPrice / pos.entryPrice;
     // The multiple an exit is RECORDED at, which is not always the one decisions are
