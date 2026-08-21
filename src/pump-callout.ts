@@ -26,7 +26,6 @@
 import { CONFIG } from './config.js';
 import type { Keypair } from '@solana/web3.js';
 import nacl from 'tweetnacl';
-import bs58 from 'bs58';
 
 const BASE = 'https://frontend-api-v3.pump.fun';
 const PRIVY = 'https://auth.privy.io';
@@ -91,7 +90,12 @@ async function signIn(taskName: string, kp: Keypair): Promise<string> {
   if (!nonce) throw new Error('privy returned no nonce');
 
   const message = siwsMessage(address, nonce);
-  const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), kp.secretKey));
+  // base64, not base58. Their SDK does Buffer.from(sig).toString('base64'); signing
+  // is the one place where guessing the encoding costs a 400 that says only
+  // "Invalid SIWS message and/or nonce" and points at neither.
+  const signature = Buffer.from(
+    nacl.sign.detached(new TextEncoder().encode(message), kp.secretKey),
+  ).toString('base64');
 
   const auth = await privyPost('/api/v1/siws/authenticate', {
     message,
