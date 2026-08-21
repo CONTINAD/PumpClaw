@@ -2546,7 +2546,7 @@ function buildLedgerHTML(): string {
     <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-top:6px">
       <b>basis from chain</b> means the entry price was read from the wallet after the swap rather than taken from
       Jupiter's quote — a quote said 852K tokens on $Layoo and 614K arrived, a 28% gap, so a quoted basis misstates
-      every multiple and PnL that follows it. <b>slip</b> is fill against quote.
+      every multiple and PnL that follows it. <b>slip</b> is the fill against the price the coin was CALLED at — how far it moved in the seconds between the call and the buy landing. It is NOT slippage against Jupiter's quote: that tolerance is enforced on-chain by minOut, and a swap outside it reverts rather than filling. A +98% reading is a coin that ran away from the entry, not a slippage guard being bypassed.
       This page counts trades, not transfers: deposits and withdrawals are not trades and are not included, so this
       will not equal the wallet balance on its own.
     </p>

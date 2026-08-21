@@ -89,7 +89,14 @@ export interface RealPosition {
   // Entry audit — proves the recorded basis came from the chain, not a quote.
   quotedPrice?: number;      // what the feed said when we decided to buy
   quotedTokens?: number;     // what Jupiter's quote promised
-  fillSlipPct?: number;      // (fill / quote - 1) * 100
+  /** (fill / call-time market price - 1) * 100 — how far the price moved between the
+   *  coin being called and the buy landing, NOT slippage against the Jupiter quote.
+   *  buy() receives DexScreener's price at call time and this is measured off that.
+   *  Jupiter's own minOut is enforced on-chain and is a separate guarantee: a swap
+   *  that would fill worse than the quote's tolerance reverts rather than landing.
+   *  Reading this as quote slippage suggests the slippage guard is being bypassed,
+   *  which it is not — a +98% reading is a coin that ran, not a broken swap. */
+  fillSlipPct?: number;
   entrySource?: 'chain' | 'quote';
 
   // State
@@ -446,10 +453,10 @@ export class Trader {
     this.save();
 
     console.log(`[Trader] ✅ Bought ${realTokens} tokens of $${symbol} for ${entrySol} SOL — entry ${fillMC.toFixed(0)} MC ` +
-      `(${position.entrySource}, ${position.fillSlipPct! >= 0 ? '+' : ''}${position.fillSlipPct}% vs quote) tx ${result.txSignature.slice(0, 16)}…`);
+      `(${position.entrySource}, ${position.fillSlipPct! >= 0 ? '+' : ''}${position.fillSlipPct}% vs call price) tx ${result.txSignature.slice(0, 16)}…`);
     if (Math.abs(position.fillSlipPct ?? 0) > 10) {
-      sendOpsAlert(`⚠️ **$${symbol}** filled **${position.fillSlipPct}%** away from the quoted price ` +
-        `(expected ${currentMC.toFixed(0)} MC, got ${fillMC.toFixed(0)} MC). All targets and the stop are keyed to the real fill.`,
+      sendOpsAlert(`⚠️ **$${symbol}** filled **${position.fillSlipPct}%** away from the price it was called at ` +
+        `(called ${currentMC.toFixed(0)} MC, filled ${fillMC.toFixed(0)} MC). All targets and the stop are keyed to the real fill.`,
         CFG.TRADES_WEBHOOK).catch(() => {});
     }
     return position;
