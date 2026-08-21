@@ -145,6 +145,12 @@ export const CONFIG = {
   // fresh-wallet share was being judged on 20 wallets. Each traced wallet costs an
   // RPC call, batched 10 wide — 60 is ~1.5s on a coin already three minutes old.
   BUNDLE_DEEP_HOLDERS: Number(process.env.BUNDLE_DEEP_HOLDERS ?? 60),
+
+  // Share of sampled holders sitting in one connected funding component before the
+  // set is treated as one operator. This is the bubble-map number: hub and peer-link
+  // catch a star and a direct edge, this catches a chain. 60% of a 50-wallet sample
+  // being reachable from each other is not a coincidence.
+  GRAPH_CLUSTER_PCT: Number(process.env.GRAPH_CLUSTER_PCT ?? 60),
   COHORT_MIN_VETERANS: 5,           // need this many to call it a pattern
   // Wallet-graph ("bubble map") thresholds — catches farms built from ACTIVE wallets,
   // which funding-time clustering cannot see.

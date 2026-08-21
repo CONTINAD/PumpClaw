@@ -14,6 +14,10 @@ export interface GraphResult {
   hubPct: number;         // % of holders funded by the single most common source
   hubAddress: string;
   peerLinkPct: number;    // % of holders that received SOL from another holder
+  /** Largest set of holders reachable from one another through funding transfers,
+   *  at any number of hops. This is the number a bubble map shows as one blob. */
+  clusterSize: number;
+  clusterPct: number;
   suspicious: boolean;
   details: string;
 }
@@ -31,7 +35,11 @@ const KNOWN_EXCHANGES = new Set([
 ]);
 
 const MIN_FUND_SOL = 0.01;   // ignore dust/fee refunds
-const MAX_HOLDERS = 15;      // cap API calls — top holders are what matter
+// Was 15. The holder read now returns up to 60 wallets via DAS, and sampling a
+// quarter of them is how $BTC passed: 58 holders, 56 of them aged wallets that all
+// exited together, and the graph check reported "0/14 peer-linked" because it never
+// looked at wallets 15 through 58. A bubble map showed one connected blob.
+const MAX_HOLDERS = Number(process.env.GRAPH_MAX_HOLDERS ?? 50);
 const TX_LIMIT = 30;
 
 function heliusKey(): string {
@@ -71,7 +79,7 @@ async function fundingSources(wallet: string, key: string): Promise<string[]> {
  */
 export async function checkWalletGraph(holders: string[]): Promise<GraphResult> {
   const key = heliusKey();
-  const empty: GraphResult = { checked: 0, hubPct: 0, hubAddress: '', peerLinkPct: 0, suspicious: false, details: 'graph check unavailable' };
+  const empty: GraphResult = { checked: 0, hubPct: 0, hubAddress: '', peerLinkPct: 0, clusterSize: 0, clusterPct: 0, suspicious: false, details: 'graph check unavailable' };
   if (!key || holders.length === 0) return empty;
 
   const targets = holders.slice(0, MAX_HOLDERS);
@@ -103,12 +111,62 @@ export async function checkWalletGraph(holders: string[]): Promise<GraphResult> 
     if (n > hubMax) { hubMax = n; hubAddress = addr; }
   }
 
+  // ── Connected components, which is what a bubble map actually draws ───────────
+  //
+  // hubPct finds a star: one address funding many holders. peerLink finds a direct
+  // edge: holder A funded by holder B. A farm defeats both by funding in a chain —
+  // A pays B, B pays C, C pays D — because then every wallet has a different
+  // immediate funder and no holder is funded directly by another that we sampled.
+  // $BTC scored 0% on both while every wallet sat in one blob on a bubble map.
+  //
+  // Union-find over holders AND their funders, so two holders are joined when they
+  // share a funder or when one funded the other, transitively and at any depth. A
+  // non-holder intermediary still merges the two sides because both attach to it.
+  // Exchanges are excluded — they legitimately connect thousands of strangers.
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let r = parent.get(x) ?? x;
+    if (r !== x) { r = find(r); parent.set(x, r); }
+    return r;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const [holder, sources] of sourcesByHolder) {
+    if (!parent.has(holder)) parent.set(holder, holder);
+    for (const src of sources) {
+      if (KNOWN_EXCHANGES.has(src)) continue;
+      if (!parent.has(src)) parent.set(src, src);
+      union(holder, src);
+    }
+  }
+  const compSize = new Map<string, number>();
+  for (const holder of sourcesByHolder.keys()) {
+    const r = find(holder);
+    compSize.set(r, (compSize.get(r) ?? 0) + 1);
+  }
+  let clusterSize = 0;
+  for (const n of compSize.values()) if (n > clusterSize) clusterSize = n;
+  const clusterPct = Math.round((clusterSize / checked) * 100);
+
   const hubPct = Math.round((hubMax / checked) * 100);
   const peerLinkPct = Math.round((peerLinked / checked) * 100);
-  const suspicious = hubPct >= CONFIG.GRAPH_HUB_PCT || peerLinkPct >= CONFIG.GRAPH_PEER_PCT;
+  // A component only means something once it is several wallets deep — on a small
+  // sample two holders sharing one funder is noise, not a farm.
+  const clustered = clusterSize >= 4 && clusterPct >= CONFIG.GRAPH_CLUSTER_PCT;
+  const suspicious = hubPct >= CONFIG.GRAPH_HUB_PCT || peerLinkPct >= CONFIG.GRAPH_PEER_PCT || clustered;
 
-  const parts = [`graph ${hubMax}/${checked} same funder (${hubPct}%)`, `${peerLinked}/${checked} peer-linked (${peerLinkPct}%)`];
-  if (suspicious) parts.push(`[WALLET GRAPH: ${hubAddress.slice(0, 8)}…]`);
+  const parts = [
+    `graph ${hubMax}/${checked} same funder (${hubPct}%)`,
+    `${peerLinked}/${checked} peer-linked (${peerLinkPct}%)`,
+    `largest cluster ${clusterSize}/${checked} (${clusterPct}%)`,
+  ];
+  if (suspicious) {
+    parts.push(clustered && hubPct < CONFIG.GRAPH_HUB_PCT
+      ? `[WALLET GRAPH: one cluster of ${clusterSize}]`
+      : `[WALLET GRAPH: ${hubAddress.slice(0, 8)}…]`);
+  }
 
-  return { checked, hubPct, hubAddress, peerLinkPct, suspicious, details: parts.join(' | ') };
+  return { checked, hubPct, hubAddress, peerLinkPct, clusterSize, clusterPct, suspicious, details: parts.join(' | ') };
 }
