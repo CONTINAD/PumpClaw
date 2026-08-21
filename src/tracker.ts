@@ -251,17 +251,39 @@ export class PerformanceTracker {
   }
 
   /** Update peak if current price is higher. Call this every time we have fresh price data. */
-  // Wick guard: single-tick price spikes on thin pools were being recorded as
-  // permanent ATHs (milestones + /mog then repeat the phantom number). A reading
-  // that jumps the peak >50% must be confirmed by the NEXT distinct reading.
-  private lastReading = new Map<string, { mult: number; ts: number }>();
+  //
+  // Wick guard. A reading that jumps the peak >50% has to be confirmed before it
+  // becomes an ATH, because a single-tick spike on a thin pool otherwise becomes a
+  // permanent number that milestones and /mog repeat forever.
+  //
+  // The confirmation used to be "the next reading, one second later, also looks high".
+  // That is not a confirmation when both readings come from the same cached feed:
+  // $DOG was called at 03:02 and the alert immediately claimed peak 1.91x / $14.8K,
+  // while the coin's own candles show it never got past 1.24x until 03:05. The 1.91x
+  // was the pre-call spike still sitting in DexScreener's cache, read twice a second
+  // apart and counted as agreement. The same number twice is one observation.
+  //
+  // So a spike now has to survive a reading that is both LATER and a DIFFERENT price.
+  // A frozen cache fails on the price test, a brief wick fails on the time test, and a
+  // real move passes both — it is still elevated 20 seconds on, at a price that moved.
+  private static readonly SPIKE_CONFIRM_MS = 20_000;
+  private lastReading = new Map<string, { mult: number; ts: number; price: number }>();
 
-  private confirmedHigh(mint: string, mult: number, currentPeak: number): boolean {
-    const prev = this.lastReading.get(mint);
+  private confirmedHigh(mint: string, mult: number, currentPeak: number, price: number): boolean {
     const now = Date.now();
     const spike = currentPeak > 0 && mult > currentPeak * 1.5;
-    const confirmed = !spike || (prev !== undefined && prev.mult > currentPeak * 1.5 && now - prev.ts > 1000);
-    if (!prev || now - prev.ts > 1000) this.lastReading.set(mint, { mult, ts: now });
+    if (!spike) { this.lastReading.set(mint, { mult, ts: now, price }); return true; }
+
+    const prev = this.lastReading.get(mint);
+    const pending = prev !== undefined && prev.mult > currentPeak * 1.5;
+    const confirmed = pending
+      && now - prev!.ts >= PerformanceTracker.SPIKE_CONFIRM_MS
+      && prev!.price !== price;
+
+    // Keep the pending spike as the thing to confirm against. Overwriting it on every
+    // tick, as the old guard did, meant the clock restarted constantly and a spike was
+    // only ever compared with the reading immediately before it.
+    if (!pending) this.lastReading.set(mint, { mult, ts: now, price });
     return confirmed;
   }
 
@@ -275,7 +297,7 @@ export class PerformanceTracker {
       return;
     }
     // Soft reject: big jumps wait one tick for confirmation
-    if (!this.confirmedHigh(mint, mult, rec.peakMultiplier)) {
+    if (!this.confirmedHigh(mint, mult, rec.peakMultiplier, currentPrice)) {
       console.log(`[Tracker] Peak spike for $${rec.symbol} (${mult.toFixed(2)}X vs ${rec.peakMultiplier.toFixed(2)}X) — awaiting confirmation`);
       return;
     }
@@ -301,7 +323,7 @@ export class PerformanceTracker {
     if (multiplier > rec.peakMultiplier * 50 && rec.peakMultiplier > 1) {
       return [];
     }
-    if (!this.confirmedHigh(mint, multiplier, rec.peakMultiplier)) {
+    if (!this.confirmedHigh(mint, multiplier, rec.peakMultiplier, currentPrice)) {
       return [];
     }
 
