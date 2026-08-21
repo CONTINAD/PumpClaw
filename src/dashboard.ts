@@ -1880,9 +1880,122 @@ const NAV_MORE: [string, [string, string][]][] = [
   ['Real money', [['/exits', 'Exits'], ['/ledger', 'Ledger'], ['/tasks', 'Tasks']]],
   ['Calls', [['/channels', 'Channels'], ['/features', 'Features'], ['/bundles', 'Bundles']]],
   ['Strategy', [['/builder', 'Builder'], ['/sweep', 'Sweep'], ['/params', 'Params']]],
-  ['Filters', [['/filters', 'Live rules']]],
+  ['Filters', [['/gates', 'Gate scoreboard'], ['/filters', 'Live rules']]],
   ['', [['/settings', 'Settings']]],
 ];
+
+/* ── /gates — what every filter actually blocked, and what it cost ──────────────
+ *
+ * Alex's point, and it was a fair hit: every strategy number on this site is
+ * replayed against calls that PASSED the gates. The coins the gates rejected have
+ * never been scored, so a filter could be throwing away the best coins we see and
+ * nothing on the dashboard would say so.
+ *
+ * The data was already on disk. recordSkip() has been storing every rejection with
+ * its entry price for weeks, and an hourly grader back-fills what the coin went on
+ * to do. 2,629 graded rejections, readable from one JSON endpoint and no page.
+ *
+ * A filter is not good because it blocks a lot. It is good when the things it
+ * blocks die. So the columns that matter are `died` (under 0.5x — the filter did
+ * its job) and `missed` (2x or more — the filter cost money), and the ranking is
+ * by missed, not by volume. */
+function gatesHTML(grades: any[]): string {
+  const n2 = (v: any, d = 2) => (typeof v === 'number' && isFinite(v) ? v.toFixed(d) : '—');
+  type Row = { reason: string; n: number; died: number; missed: number; peaks: number[]; worst: any };
+  const by = new Map<string, Row>();
+  for (const g of grades) {
+    const pk = g.peakMultiplier ?? 0;
+    const r: Row = by.get(g.reason) ?? { reason: g.reason, n: 0, died: 0, missed: 0, peaks: [] as number[], worst: null };
+    r.n++;
+    if (pk < 0.5) r.died++;
+    if (pk >= 2) r.missed++;
+    r.peaks.push(pk);
+    if (!r.worst || pk > (r.worst.peakMultiplier ?? 0)) r.worst = g;
+    by.set(g.reason, r);
+  }
+  const rows = [...by.values()].sort((a, b) => (b.missed / Math.max(1, b.n)) - (a.missed / Math.max(1, a.n)));
+  const med = (a: number[]) => { const x = [...a].sort((p, q) => p - q); return x[Math.floor(x.length / 2)] ?? 0; };
+
+  // A gate's verdict is the balance of the two things it does: kill rugs, and miss
+  // runners. Missing more than one in eight is expensive at any block rate.
+  const verdict = (r: Row) => {
+    const m = r.missed / Math.max(1, r.n), d = r.died / Math.max(1, r.n);
+    if (r.n < 20) return ['thin', 'var(--text3)'];
+    if (m >= 0.125) return ['EXPENSIVE', 'var(--red)'];
+    if (d >= 0.70 && m <= 0.05) return ['excellent', 'var(--green)'];
+    if (d >= 0.55) return ['working', 'var(--green)'];
+    return ['weak', 'var(--amber)'];
+  };
+
+  const totalMissed = rows.reduce((a, r) => a + r.missed, 0);
+  const totalN = rows.reduce((a, r) => a + r.n, 0);
+
+  const table = rows.map(r => {
+    const [v, c] = verdict(r);
+    const mPct = 100 * r.missed / Math.max(1, r.n);
+    const dPct = 100 * r.died / Math.max(1, r.n);
+    return `<tr style="border-top:1px solid var(--border)">
+      <td><b>${r.reason}</b><div style="font-size:10px;color:${c}">${v}</div></td>
+      <td class="mono">${r.n}</td>
+      <td class="mono" style="color:var(--green)">${r.died} <span style="color:var(--text3);font-size:11px">${dPct.toFixed(0)}%</span></td>
+      <td class="mono" style="color:${mPct >= 12.5 ? 'var(--red)' : 'var(--text2)'}">${r.missed} <span style="color:var(--text3);font-size:11px">${mPct.toFixed(0)}%</span></td>
+      <td class="mono">${n2(med(r.peaks))}x</td>
+      <td class="mono">${n2(r.worst?.peakMultiplier)}x
+        <div style="font-size:10px;color:var(--text3)">$${(r.worst?.name ?? '?').toString().slice(0, 14)}</div></td>
+    </tr>`;
+  }).join('');
+
+  const blocked = [...grades]
+    .filter(g => (g.peakMultiplier ?? 0) > 0)
+    .sort((a, b) => (b.peakMultiplier ?? 0) - (a.peakMultiplier ?? 0))
+    .slice(0, 120)
+    .map(g => {
+      const pk = g.peakMultiplier ?? 0;
+      const col = pk >= 2 ? 'var(--red)' : pk < 0.5 ? 'var(--green)' : 'var(--text2)';
+      return `<tr style="border-top:1px solid var(--border)">
+        <td style="white-space:nowrap"><b>$${(g.name ?? '?').toString().slice(0, 16)}</b>
+          <div style="font-size:10px;color:var(--text3)">${new Date(g.timestamp).toISOString().slice(5, 16).replace('T', ' ')}</div></td>
+        <td class="mono" style="font-size:11px;color:var(--text3)">
+          <a href="https://dexscreener.com/solana/${g.mint}" target="_blank" style="color:var(--text3)">${g.mint}</a></td>
+        <td class="mono" style="color:${col};font-weight:700">${n2(pk)}x</td>
+        <td class="mono" style="font-size:11px">${n2(g.lastMultiplier)}x</td>
+        <td style="font-size:11px"><b>${g.reason}</b>
+          <div style="color:var(--text3)">${(g.details ?? '').toString().slice(0, 60)}</div></td>
+      </tr>`;
+    }).join('');
+
+  return `
+  <div class="card">
+    <h3>What the gates blocked</h3>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:10px">
+      Every strategy number elsewhere on this site is replayed against calls that <i>passed</i>. This page is the
+      other half — ${totalN} rejections, graded on what the coin did afterwards. <b>died</b> is under 0.5x, the
+      filter working. <b>missed</b> is 2x or more, the filter costing money. A gate that blocks a lot is not
+      thereby a good gate; sorted by miss rate, worst first.
+    </p>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Gate</th><th>Blocked</th><th>Died &lt;0.5x</th><th>Missed ≥2x</th><th>Median peak</th><th>Worst miss</th></tr>
+      ${table}
+    </table></div>
+    <p style="font-size:11px;color:var(--text3);margin-top:10px">
+      Across every gate: ${totalMissed} of ${totalN} rejections went on to 2x
+      (${(100 * totalMissed / Math.max(1, totalN)).toFixed(1)}%). RATE_CAP is excluded — it fires on our own
+      throttle, not on the coin, so grading it would measure us rather than the filter.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Every blocked coin — biggest misses first</h3>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:10px">
+      Top 120 by peak after rejection. Red is what we left on the table; green died as intended.
+      Peak is a running maximum across all grading passes, not a single spot check.
+    </p>
+    <div style="overflow-x:auto"><table>
+      <tr><th>Coin</th><th>Contract</th><th>Peak after block</th><th>Now</th><th>Gate + why</th></tr>
+      ${blocked}
+    </table></div>
+  </div>`;
+}
 
 function navBar(self: string): string {
   const on = (href: string) => self === href || self.startsWith(href + '?');
@@ -1925,6 +2038,7 @@ function settingsShell(inner: string, self = '/settings'): string {
     '/builder': '🧪 Strategy Builder',
     '/sweep': '🌡 Parameter Sweep',
     '/params': '🎛 Parameters',
+    '/gates': '🚦 Gate Scoreboard',
     '/filters': '🛡 Live Filter Rules',
     '/filter-lab': '🧪 Filter Lab',
     '/bundles': '🕸 Bundle Checks',
@@ -1934,6 +2048,7 @@ function settingsShell(inner: string, self = '/settings'): string {
   const title = TITLES[self] ?? (self.startsWith('/task') ? '🤖 Trading Tasks' : '⚙️ Settings');
   const wide = self === '/builder' ? 'max-width:760px'
     : self === '/live' || self === '/shadow' ? 'max-width:1200px'
+    : self === '/gates' ? 'max-width:1150px'
     : self === '/calendar' ? 'max-width:1000px'
     : self.startsWith('/task') ? 'max-width:960px'
     : ['/calls', '/exits', '/channels', '/features', '/ledger', '/bundles', '/filters', '/sweep', '/params'].includes(self)
@@ -4084,6 +4199,16 @@ export function startDashboard(port?: number): void {
       // minute candles.
       res.writeHead(302, { Location: '/shadow' });
       res.end();
+      return;
+    } else if (pathname === '/gates') {
+      import('./index.js').then(idx => {
+        const html = settingsShell(gatesHTML(idx.gradedSkips()), '/gates');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+      }).catch(err => {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('gates: ' + err.message);
+      });
       return;
     } else if (pathname === '/classic' || pathname === '/dashboard') {
       // Retired. These served a second, older copy of the entire dashboard — two
