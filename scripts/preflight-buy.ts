@@ -38,7 +38,14 @@ let sol = parseFloat(process.argv[3] ?? '');
 const live: any = await (await fetch(`${BASE}/api/live`, { headers: UA })).json();
 const task = (live.realTasks ?? [])[0];
 if (!Number.isFinite(sol)) {
-  sol = task ? Math.max(live.balance * task.entryPct, task.minEntrySol) : 0.11;
+  // live.balance is the SUM of every real task's wallet. Sizing from it tests a trade
+  // no task would ever place: with three traders running it reported 3.67 SOL for a
+  // task whose own wallet holds 0.48 and whose real entry is 0.169, and then failed
+  // itself on the slippage of a size that does not exist.
+  //
+  // /api/live now publishes each task's own balance and the entry it would actually
+  // compute, caps included. Use that.
+  sol = task?.entrySol ?? (task ? Math.max(live.balance * task.entryPct, task.minEntrySol) : 0.11);
 }
 if (!mint) {
   const ex: any = await (await fetch(`${BASE}/api/export-all`, { headers: UA })).json();
@@ -50,7 +57,7 @@ if (!mint) { console.log('no mint to test'); process.exit(1); }
 
 const slippage = 1500;
 console.log(`mint       ${mint}`);
-console.log(`size       ${sol.toFixed(4)} SOL  (${task ? `${(task.entryPct * 100).toFixed(0)}% of ${live.balance.toFixed(4)}` : 'default'})`);
+console.log(`size       ${sol.toFixed(4)} SOL  (${task ? `${task.name}: ${(task.entryPct * 100).toFixed(0)}% capped at ${task.maxEntrySol}` : 'default'})`);
 console.log(`slippage   ${slippage / 100}%`);
 console.log(`jupiter    ${JUP_BASE.replace('https://', '')}  ${JUP_KEY ? '(paid, key set locally)' : '(FREE tier — no local JUPITER_API_KEY, so this is NOT the path the bot uses)'}\n`);
 

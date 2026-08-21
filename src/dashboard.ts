@@ -4120,6 +4120,7 @@ export function startDashboard(port?: number): void {
           trailingActive: p.trailingActive,
         }));
         let balance: number | null = null;
+        const perTaskBal = new Map<string, number>();
         try {
           // combined balance across enabled task wallets
           const realTasks = taskManager.allEnabled().filter(t => !t.paper);
@@ -4127,11 +4128,18 @@ export function startDashboard(port?: number): void {
             getSolBalance(taskManager.keypairFor(t)).catch(() => null)));
           const known = bals.filter((b): b is number => b !== null);
           balance = known.length ? known.reduce((s, b) => s + b, 0) : null;
+          // Each task trades its OWN wallet — the trader sizes from
+          // getSolBalance(this.kp()), never from this sum. Publishing only the total
+          // made three separate reports claim MANIFEST was buying 2 SOL when its
+          // wallet held 0.48 and its real entry was 0.169. The total is still useful
+          // as "how much is live"; it is not a number anything should size from.
+          realTasks.forEach((t, i) => { if (bals[i] !== null) perTaskBal.set(t.id, bals[i]!); });
         } catch { /* omit */ }
         const tasks = taskManager.all();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           balance,
+          balanceNote: 'sum across real task wallets — each task sizes from its own, see realTasks[].balance',
           tradeEnabled: CONFIG.TRADE_ENABLED,
           taskCount: tasks.length,
           enabledCount: tasks.filter(t => t.enabled).length,
@@ -4140,7 +4148,16 @@ export function startDashboard(port?: number): void {
           // fields were reporting a random strategy's settings on a page about real
           // money. Report the real tasks explicitly instead.
           realTasks: tasks.filter(t => !t.paper).map(t => ({
+            id: t.id,
             name: t.name,
+            balance: perTaskBal.get(t.id) ?? null,
+            entrySol: (() => {
+              const b = perTaskBal.get(t.id);
+              if (b == null) return null;
+              let e = Math.max(b * t.strategy.entryPct, t.strategy.minEntrySol);
+              if (t.strategy.maxEntrySol > 0) e = Math.min(e, t.strategy.maxEntrySol);
+              return +e.toFixed(4);
+            })(),
             enabled: t.enabled,
             preset: t.strategy.preset,
             entryPct: t.strategy.entryPct,
