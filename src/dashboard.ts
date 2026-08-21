@@ -1901,124 +1901,193 @@ const NAV_MORE: [string, [string, string][]][] = [
  * its job) and `missed` (2x or more — the filter cost money), and the ranking is
  * by missed, not by volume. */
 /**
- * When the calls are worth taking.
+ * When the calls are worth taking — and what is different about the hours when
+ * they are not.
  *
- * Alex noticed that overnight calls ran and afternoon calls did not, and the
- * scraped-from-HTML answer could only use 51 of 356 calls: the calls page renders
- * relative ages, so anything past a day collapses to "3d ago" and loses the hour.
- * Every CallRecord already carries entryTime and peakMultiplier, so the real answer
- * was always on disk — it just had no surface.
+ * The first version of this page answered "when" and stopped there, which is only
+ * half an answer: knowing 12:00-15:59 hits 2x on 36% of calls against a 49%
+ * baseline tells you to avoid the block, not what to change. It also carried a
+ * dead column — "died <0.5x" read 0% everywhere because peakMultiplier starts at 1
+ * and only ratchets up, so it can never record a coin going down. minMultiplier is
+ * the field that actually holds that, and it was sitting unused.
  *
- * This is that surface, and nothing else. It reads calls.json and renders. It does
- * not gate a call, size a trade, or touch a task, because the point is to find out
- * whether the effect survives more data before anything acts on it.
+ * So this reads the rest of what the tracker already keeps: the drawdown, the time
+ * from call to peak, and the entry conditions each call was made under. Those turn
+ * "afternoons are bad" into a testable reason — the coins called then are younger,
+ * or thinner, or their holders are worse — which is the only form the observation
+ * can be acted on.
  *
- * Hours are LOCAL time, matching how the owner experiences "1-5am". The bucketing
- * is by local hour of day across every day on record, so a 3am row is every 3am.
+ * Still read-only. It renders history and changes nothing: no gate, no size, no
+ * task. A block of sixty calls over twelve days is an argument for looking again
+ * next week, not for rewiring the filters today.
+ *
+ * Coverage is printed next to every derived stat, because these fields were added
+ * at different times and an average over eleven records that looks like an average
+ * over four hundred is the exact mistake this page exists to prevent.
  */
 function clockHTML(calls: any[]): string {
   const rows = calls
     .filter(c => typeof c.entryTime === 'number' && c.entryTime > 0)
-    .map(c => ({ h: new Date(c.entryTime).getHours(), pk: c.peakMultiplier ?? 0, sym: c.symbol, t: c.entryTime }));
+    .map(c => ({
+      h: new Date(c.entryTime).getHours(),
+      t: c.entryTime,
+      sym: c.symbol,
+      pk: c.peakMultiplier ?? 0,
+      mn: typeof c.minMultiplier === 'number' ? c.minMultiplier : null,
+      atMin: typeof c.peakAtMin === 'number' ? c.peakAtMin : null,
+      mc: c.entryMC ?? null,
+      age: typeof c.entryAgeMin === 'number' ? c.entryAgeMin : null,
+      liq: c.entryLiquidity ?? null,
+      fresh: c.entryDeepHolders?.traced > 0
+        ? (c.entryDeepHolders.fresh / c.entryDeepHolders.traced) * 100 : null,
+      owners: c.entryDeepHolders?.owners ?? null,
+    }));
 
   if (rows.length === 0) {
     return `<div class="card"><h3>🕑 Clock</h3><p>No call records with timestamps yet.</p></div>`;
   }
 
   const span = (Math.max(...rows.map(r => r.t)) - Math.min(...rows.map(r => r.t))) / 86400000;
-  const med = (a: number[]) => { const x = [...a].sort((p, q) => p - q); return x[Math.floor(x.length / 2)] ?? 0; };
+  const med = (a: number[]) => { const x = [...a].sort((p, q) => p - q); return x.length ? x[Math.floor(x.length / 2)] : 0; };
   const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
+  const nn = (a: (number | null)[]) => a.filter((v): v is number => v !== null && isFinite(v));
 
-  interface Bucket { n: number; peaks: number[] }
-  const mk = (): Bucket => ({ n: 0, peaks: [] });
-  const byHour = new Map<number, Bucket>();
-  const byBlock = new Map<number, Bucket>();
-  for (const r of rows) {
-    const h = byHour.get(r.h) ?? mk(); h.n++; h.peaks.push(r.pk); byHour.set(r.h, h);
-    const b = Math.floor(r.h / 4) * 4;
-    const bb = byBlock.get(b) ?? mk(); bb.n++; bb.peaks.push(r.pk); byBlock.set(b, bb);
-  }
+  const BLOCKS = [0, 4, 8, 12, 16, 20];
+  const blockOf = (h: number) => Math.floor(h / 4) * 4;
+  const inBlock = (b: number) => rows.filter(r => blockOf(r.h) === b);
+  const label = (b: number) => `${String(b).padStart(2, '0')}:00–${String(b + 3).padStart(2, '0')}:59`;
 
-  // The whole point of the page is to say when a difference is real. A block with
-  // six calls in it can show any hit-rate at all and mean nothing, so the sample is
-  // stated next to every number rather than left for the reader to infer.
+  const baseline2x = pct(rows.filter(r => r.pk >= 2).length, rows.length);
   const conf = (n: number) => (n >= 40 ? ['solid', 'var(--green)'] : n >= 15 ? ['fair', 'var(--amber)'] : ['thin', 'var(--text3)']);
 
-  const overall2x = pct(rows.filter(r => r.pk >= 2).length, rows.length);
-
-  const blockRow = (b: number) => {
-    const d = byBlock.get(b);
-    if (!d) return '';
-    const two = pct(d.peaks.filter(p => p >= 2).length, d.n);
-    const five = pct(d.peaks.filter(p => p >= 5).length, d.n);
-    const died = pct(d.peaks.filter(p => p < 0.5).length, d.n);
-    const [label, colour] = conf(d.n);
-    // Lift against the all-hours rate is the number that answers the question:
-    // "is this block actually better, or does it just feel that way?"
-    const lift = overall2x > 0 ? Math.round(((two - overall2x) / overall2x) * 100) : 0;
-    const liftCol = lift >= 25 ? 'var(--green)' : lift <= -25 ? 'var(--red)' : 'var(--text2)';
+  /* ── Outcomes ─────────────────────────────────────────────────────────────── */
+  const outcomeRow = (b: number) => {
+    const d = inBlock(b); if (!d.length) return '';
+    const two = pct(d.filter(r => r.pk >= 2).length, d.length);
+    const five = pct(d.filter(r => r.pk >= 5).length, d.length);
+    const mins = nn(d.map(r => r.mn));
+    const rug = mins.length ? pct(mins.filter(m => m < 0.5).length, mins.length) : null;
+    const lift = baseline2x > 0 ? Math.round(((two - baseline2x) / baseline2x) * 100) : 0;
+    const lc = lift >= 20 ? 'var(--green)' : lift <= -20 ? 'var(--red)' : 'var(--text2)';
+    const [cl, cc] = conf(d.length);
     return `<tr style="border-top:1px solid var(--border)">
-      <td class="mono"><b>${String(b).padStart(2, '0')}:00–${String(b + 3).padStart(2, '0')}:59</b></td>
-      <td class="mono">${d.n}</td>
-      <td class="mono">${med(d.peaks).toFixed(2)}x</td>
+      <td class="mono"><b>${label(b)}</b></td>
+      <td class="mono">${d.length}</td>
+      <td class="mono">${med(d.map(r => r.pk)).toFixed(2)}x</td>
       <td class="mono">${two}%</td>
       <td class="mono">${five}%</td>
-      <td class="mono">${died}%</td>
-      <td class="mono" style="color:${liftCol};font-weight:700">${lift >= 0 ? '+' : ''}${lift}%</td>
-      <td style="color:${colour};font-size:11px">${label}</td>
+      <td class="mono">${mins.length ? med(mins).toFixed(2) + 'x' : '—'}</td>
+      <td class="mono" style="color:${rug !== null && rug >= 40 ? 'var(--red)' : 'var(--text2)'}">${rug !== null ? rug + '%' : '—'}<span style="color:var(--text3);font-size:10px"> n=${mins.length}</span></td>
+      <td class="mono" style="color:${lc};font-weight:700">${lift >= 0 ? '+' : ''}${lift}%</td>
+      <td style="color:${cc};font-size:11px">${cl}</td>
     </tr>`;
   };
 
-  const hourRow = (h: number) => {
-    const d = byHour.get(h);
-    if (!d) return '';
-    const two = pct(d.peaks.filter(p => p >= 2).length, d.n);
-    const bar = '█'.repeat(Math.max(0, Math.round(two / 10))) || '·';
+  /* ── Timing: how long the move lasts ─────────────────────────────────────── */
+  const timingRow = (b: number) => {
+    const d = inBlock(b); if (!d.length) return '';
+    const at = nn(d.map(r => r.atMin));
+    const winners = d.filter(r => r.pk >= 2);
+    const atW = nn(winners.map(r => r.atMin));
     return `<tr style="border-top:1px solid var(--border)">
-      <td class="mono">${String(h).padStart(2, '0')}:00</td>
-      <td class="mono">${d.n}</td>
-      <td class="mono">${med(d.peaks).toFixed(2)}x</td>
-      <td class="mono">${two}%</td>
-      <td class="mono" style="color:var(--green)">${bar}</td>
+      <td class="mono"><b>${label(b)}</b></td>
+      <td class="mono">${at.length ? med(at).toFixed(0) + 'm' : '—'}</td>
+      <td class="mono">${atW.length ? med(atW).toFixed(0) + 'm' : '—'}</td>
+      <td class="mono" style="color:var(--text3);font-size:11px">n=${at.length}</td>
     </tr>`;
   };
 
-  const blocks = [0, 4, 8, 12, 16, 20];
-  const best = blocks.filter(b => byBlock.has(b))
-    .sort((a, b) => pct(byBlock.get(b)!.peaks.filter(p => p >= 2).length, byBlock.get(b)!.n)
-                  - pct(byBlock.get(a)!.peaks.filter(p => p >= 2).length, byBlock.get(a)!.n));
+  /* ── Entry conditions: what is different about the coins called then ─────── */
+  const entryRow = (b: number) => {
+    const d = inBlock(b); if (!d.length) return '';
+    const mc = nn(d.map(r => r.mc)), age = nn(d.map(r => r.age));
+    const fr = nn(d.map(r => r.fresh)), ow = nn(d.map(r => r.owners));
+    const fmtMC = (v: number) => (v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `$${(v / 1000).toFixed(0)}K` : `$${Math.round(v)}`);
+    return `<tr style="border-top:1px solid var(--border)">
+      <td class="mono"><b>${label(b)}</b></td>
+      <td class="mono">${mc.length ? fmtMC(med(mc)) : '—'}</td>
+      <td class="mono">${age.length ? med(age).toFixed(0) + 'm' : '—'}</td>
+      <td class="mono">${ow.length ? med(ow).toFixed(0) : '—'}<span style="color:var(--text3);font-size:10px"> n=${ow.length}</span></td>
+      <td class="mono">${fr.length ? med(fr).toFixed(0) + '%' : '—'}<span style="color:var(--text3);font-size:10px"> n=${fr.length}</span></td>
+    </tr>`;
+  };
+
+  /* ── The comparison that suggests what to change ──────────────────────────── */
+  const scored = BLOCKS.filter(b => inBlock(b).length >= 15)
+    .map(b => ({ b, two: pct(inBlock(b).filter(r => r.pk >= 2).length, inBlock(b).length) }))
+    .sort((x, y) => y.two - x.two);
+  let diagnosis = '';
+  if (scored.length >= 2) {
+    const good = inBlock(scored[0].b), bad = inBlock(scored[scored.length - 1].b);
+    const cmp = (name: string, pick: (r: typeof rows[0]) => number | null, unit: string, fmt = (v: number) => v.toFixed(0)) => {
+      const g = nn(good.map(pick)), a = nn(bad.map(pick));
+      if (g.length < 8 || a.length < 8) return `<li style="color:var(--text3)">${name}: too few records to compare (${g.length} vs ${a.length})</li>`;
+      const gm = med(g), am = med(a);
+      const delta = gm !== 0 ? Math.round(((am - gm) / gm) * 100) : 0;
+      const notable = Math.abs(delta) >= 20;
+      return `<li${notable ? ' style="color:var(--amber)"' : ''}><b>${name}</b>: ${fmt(gm)}${unit} in the best block vs ${fmt(am)}${unit} in the worst — <b>${delta >= 0 ? '+' : ''}${delta}%</b>${notable ? '' : ' (not a meaningful gap)'}</li>`;
+    };
+    diagnosis = `
+    <div class="card" style="max-width:none">
+      <h3>What is different about the worst block</h3>
+      <p style="font-size:12px;color:var(--text2);margin:2px 0 10px">
+        Best <b>${label(scored[0].b)}</b> (${scored[0].two}% hit 2x) against worst
+        <b>${label(scored[scored.length - 1].b)}</b> (${scored[scored.length - 1].two}%).
+        A gap under 20% is noise at these sample sizes and is marked as such. Anything highlighted is
+        a hypothesis to test, not a reason to change a filter today.
+      </p>
+      <ul style="font-size:12px;line-height:1.9;margin:0;padding-left:18px">
+        ${cmp('Entry market cap', r => r.mc, '', v => (v >= 1000 ? `$${(v / 1000).toFixed(0)}K` : `$${v.toFixed(0)}`))}
+        ${cmp('Token age at call', r => r.age, 'm')}
+        ${cmp('Holders at call', r => r.owners, '')}
+        ${cmp('Fresh-wallet share', r => r.fresh, '%')}
+        ${cmp('Minutes to peak', r => r.atMin, 'm')}
+        ${cmp('Worst drawdown', r => r.mn, 'x', v => v.toFixed(2))}
+      </ul>
+    </div>`;
+  }
 
   return `
   <div class="card" style="max-width:none">
-    <h3>🕑 Clock — call quality by hour</h3>
+    <h3>🕑 Clock — outcomes by hour</h3>
     <p style="font-size:12px;color:var(--text2);margin:2px 0 12px">
-      ${rows.length} calls over ${span.toFixed(1)} days, bucketed by <b>local</b> hour of day.
-      Baseline: <b>${overall2x}%</b> of all calls reach 2x. <b>Lift</b> is each block against that baseline.
-      This page reads history and renders it — it does not gate calls or size trades.
+      ${rows.length} calls over ${span.toFixed(1)} days, bucketed by <b>local</b> hour.
+      Baseline <b>${baseline2x}%</b> reach 2x; <b>lift</b> is each block against that.
+      <b>worst dip</b> is the median minMultiplier — how far a call fell at its lowest — and
+      <b>rug</b> is the share that fell under 0.5x. Read-only: this page gates nothing and sizes nothing.
     </p>
     <div style="overflow-x:auto"><table>
-      <tr><th>block</th><th>calls</th><th>median peak</th><th>hit 2x</th><th>hit 5x</th><th>died &lt;0.5x</th><th>lift</th><th>sample</th></tr>
-      ${blocks.map(blockRow).join('')}
+      <tr><th>block</th><th>calls</th><th>median peak</th><th>hit 2x</th><th>hit 5x</th><th>worst dip</th><th>rug</th><th>lift</th><th>sample</th></tr>
+      ${BLOCKS.map(outcomeRow).join('')}
     </table></div>
-    ${best.length >= 2 ? `<p style="font-size:12px;color:var(--text2);margin-top:10px">
-      Best block <b>${String(best[0]).padStart(2, '0')}:00–${String(best[0] + 3).padStart(2, '0')}:59</b>
-      at ${pct(byBlock.get(best[0])!.peaks.filter(p => p >= 2).length, byBlock.get(best[0])!.n)}% ·
-      worst <b>${String(best[best.length - 1]).padStart(2, '0')}:00–${String(best[best.length - 1] + 3).padStart(2, '0')}:59</b>
-      at ${pct(byBlock.get(best[best.length - 1])!.peaks.filter(p => p >= 2).length, byBlock.get(best[best.length - 1])!.n)}%.
-      Treat any block marked <b>thin</b> as a hint, not a finding — it needs more days before it means anything.
-    </p>` : ''}
   </div>
 
   <div class="card" style="max-width:none">
-    <h3>Hour by hour</h3>
+    <h3>How long you have</h3>
     <p style="font-size:12px;color:var(--text2);margin:2px 0 10px">
-      Same data at full resolution. Most single hours will be thin for a while; the bar is the 2x rate.
+      Minutes from the call to the peak. If this differs by block, the hold clock and trail should too —
+      a coin that tops out in four minutes is not managed the same way as one that runs for forty.
     </p>
     <div style="overflow-x:auto"><table>
-      <tr><th>hour</th><th>calls</th><th>median peak</th><th>hit 2x</th><th></th></tr>
-      ${Array.from({ length: 24 }, (_, h) => hourRow(h)).join('')}
+      <tr><th>block</th><th>median time to peak</th><th>…for calls that hit 2x</th><th>sample</th></tr>
+      ${BLOCKS.map(timingRow).join('')}
     </table></div>
-  </div>`;
+  </div>
+
+  <div class="card" style="max-width:none">
+    <h3>What is being called, by block</h3>
+    <p style="font-size:12px;color:var(--text2);margin:2px 0 10px">
+      The entry conditions themselves. If the bad block is calling younger or thinner coins, that is a
+      filter problem with a time signature — and it is fixable. If these all match, the hour is doing
+      something the entry data cannot see.
+    </p>
+    <div style="overflow-x:auto"><table>
+      <tr><th>block</th><th>median entry MC</th><th>median token age</th><th>median holders</th><th>median fresh %</th></tr>
+      ${BLOCKS.map(entryRow).join('')}
+    </table></div>
+  </div>
+
+  ${diagnosis}`;
 }
 
 function gatesHTML(grades: any[]): string {
