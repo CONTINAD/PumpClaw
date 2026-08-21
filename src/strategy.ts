@@ -22,7 +22,12 @@ export interface Strategy {
   trailingDrop: number;                 // 0.05-0.90 — % drop from ATH that exits
   trailingFrom: 'entry' | 'afterLastTp';
   stopLossPct: number;                  // ladder-style initial stop (0.75 = -25%); ignored when trailingFrom=entry
-  breakEvenAfterTp1: boolean;           // move stop to entry after first TP
+  breakEvenAfterTp1: boolean;           // move stop after the first TP
+  /** Where that stop lands, as a multiple of entry. 1 = break-even, the original and
+   *  still the default. 0.9 leaves the runner 10% of room instead of stopping it dead
+   *  at cost. Only read when breakEvenAfterTp1 is on, and it can only ever RAISE the
+   *  stop — setting it below the opening stop is ignored rather than loosening one. */
+  postTp1StopPct?: number;
   maxHoldMin?: number;                  // hard time exit — sell the rest after N minutes
   entryPct: number;                     // fraction of wallet balance per trade
   minEntrySol: number;
@@ -1418,8 +1423,12 @@ export function sanitizeStrategy(s: Partial<Strategy>): Strategy {
     for (const tp of tps) tp.sellPct = tp.sellPct / totalSell; // normalize to 100%
   }
   const trailingDrop = clamp(s.trailingDrop, 0.05, 0.9, base.trailingDrop);
+  // 0.5 to 1.2: below half is not a break-even stop by any reading, and above entry
+  // is a profit lock, which is a different feature and not what this switch means.
+  const postTp1StopPct = s.postTp1StopPct == null ? 1 : clamp(s.postTp1StopPct, 0.5, 1.2, 1);
   return {
     preset: typeof s.preset === 'string' ? s.preset : 'custom',
+    postTp1StopPct,
     entryMode: s.entryMode === 'dip' ? 'dip' : 'instant',
     dipPct: clamp(s.dipPct, 0.02, 0.8, 0.20),
     dipWindowMin: clamp(s.dipWindowMin, 1, 240, 30),

@@ -827,8 +827,14 @@ export class Trader {
           pos.tpHits[i] = true;
           if (i < 3) (pos as any)[`tp${i + 1}Hit`] = true;
           if (i === 0 && strat.breakEvenAfterTp1 && !pos.beStopArmed) {
+            // Where the stop lands after TP1. Break-even is the default and was the
+            // only option: $Guineas peaked 1.65x, faded, and the break-even stop closed
+            // the remaining 90% at cost. That is the stop working, but it is also the
+            // tightest setting there is, and a runner gets no room at all. Math.max so
+            // this can only ever raise the stop, never loosen the opening one.
+            const lvl = pos.entryPrice * (strat.postTp1StopPct ?? 1);
             pos.beStopArmed = true;
-            pos.stopLossPrice = pos.entryPrice;
+            pos.stopLossPrice = Math.max(pos.stopLossPrice, lvl);
           }
         } else if (!this.paper) {
           const fails = (this.tpFailCounts.get(mint) ?? 0) + 1;
@@ -941,7 +947,12 @@ export class Trader {
       } else if (currentPrice <= pos.stopLossPrice) {
         pos.stopTriggered = true; this.save();
         const reason = pos.beStopArmed ? 'be_stop' : 'stop_loss';
-        const label = pos.beStopArmed ? 'Break-Even Stop' : `Stop Loss −${((1 - strat.stopLossPct) * 100).toFixed(0)}%`;
+        // A stop parked 10% under entry is not a break-even stop, and labelling it one
+        // makes a small loss read as a scratch in the ledger and the exits page.
+        const bePct = strat.postTp1StopPct ?? 1;
+        const label = pos.beStopArmed
+          ? (bePct >= 0.999 ? 'Break-Even Stop' : `Post-TP1 Stop −${((1 - bePct) * 100).toFixed(0)}%`)
+          : `Stop Loss −${((1 - strat.stopLossPct) * 100).toFixed(0)}%`;
         await executeSell(reason, label, pos.remainingPct,
           pos.entryPrice > 0 ? pos.stopLossPrice / pos.entryPrice : undefined);
       }

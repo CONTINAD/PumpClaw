@@ -2890,7 +2890,10 @@ function buildBuilderHTML(url: string, canAct: boolean): string {
     if (st.trailingFrom === 'entry' && !st.tps.length) return 'Pure trailing';
     if (st.tps.length >= 2 && st.tps[st.tps.length - 1].mult >= 5) return 'Moonbag tails';
     if (st.tps.length === 1 && st.tps[0].mult <= 1.25) return 'Scalps';
-    if (st.breakEvenAfterTp1) return 'Break-even';
+    if (st.breakEvenAfterTp1) {
+      const bp = st.postTp1StopPct ?? 1;
+      return bp >= 0.999 ? 'Break-even' : `Post-TP1 −${Math.round((1 - bp) * 100)}%`;
+    }
     if (st.tps.length) return 'Single target';
     return 'Other';
   };
@@ -2973,7 +2976,12 @@ function buildBuilderHTML(url: string, canAct: boolean): string {
       <p style="font-size:12px;color:var(--text2);margin-bottom:4px">Multiple to sell at, and what % of the position to sell there. Leave blank to skip a rung.</p>
       ${[0, 1, 2, 3, 4, 5].map(tpRow).join('')}
       <div class="toggle-row"><input type="checkbox" id="be" name="break_even" value="1" ${base.breakEvenAfterTp1 ? 'checked' : ''} onchange="preview()">
-        <label for="be" style="margin:0;font-size:13px;color:var(--text)">Move the stop to break-even after the first take-profit</label></div>
+        <label for="be" style="margin:0;font-size:13px;color:var(--text)">Move the stop up after the first take-profit</label></div>
+      <label style="margin-top:8px">Where that stop lands — % below entry (0 = break-even)</label>
+      <input type="number" id="be_pct" name="be_pct" min="0" max="50" step="1"
+             value="${Math.round((1 - (base.postTp1StopPct ?? 1)) * 100)}" onchange="preview()">
+      <p style="font-size:11px;color:var(--text3);margin-top:4px">0 stops the runner dead at cost. A few percent
+        gives it room to wobble and come back, at the price of turning some scratches into small losses.</p>
     </div>
 
     <div class="card">
@@ -3045,6 +3053,7 @@ function cfg() {
     trailingFrom: document.getElementById('trailing_from').value,
     stopLossPct: 1 - (+document.getElementById('stop_loss').value || 50) / 100,
     breakEvenAfterTp1: document.getElementById('be').checked,
+    postTp1StopPct: 1 - (+document.getElementById('be_pct').value || 0) / 100,
     maxHoldMin: +document.getElementById('max_hold').value || 0,
   };
 }
@@ -3250,7 +3259,9 @@ async function buildTaskDetailHTML(task: TradeTask, msg?: { ok: boolean; text: s
       </select>
       <label>Stop loss % below entry (ladder-style only)</label>
       <input type="number" name="stop_loss" min="1" max="95" value="${Math.round((1 - s.stopLossPct) * 100)}">
-      <div class="toggle-row"><input type="checkbox" id="be" name="break_even" value="1" ${s.breakEvenAfterTp1 ? 'checked' : ''}><label for="be" style="margin:0;font-size:13px;color:var(--text)">Move stop to break-even after first TP</label></div>
+      <div class="toggle-row"><input type="checkbox" id="be" name="break_even" value="1" ${s.breakEvenAfterTp1 ? 'checked' : ''}><label for="be" style="margin:0;font-size:13px;color:var(--text)">Move stop up after first TP</label></div>
+      <label>Where that stop lands — % below entry (0 = break-even)</label>
+      <input type="number" name="be_pct" min="0" max="50" step="1" value="${Math.round((1 - (s.postTp1StopPct ?? 1)) * 100)}">
       <label>Entry — % of wallet per trade</label>
       <input type="number" name="entry_pct" min="1" max="100" value="${Math.round(s.entryPct * 100)}">
       <label>Min entry (SOL) / Max entry (SOL, 0 = uncapped)</label>
@@ -3519,6 +3530,7 @@ function strategyFromForm(form: Record<string, string>, current?: Strategy): Par
     trailingFrom: form.trailing_from === 'afterLastTp' ? 'afterLastTp' : 'entry',
     stopLossPct: 1 - parseFloat(form.stop_loss) / 100,
     breakEvenAfterTp1: form.break_even === '1',
+    postTp1StopPct: 1 - (parseFloat(form.be_pct) || 0) / 100,
     entryPct: parseFloat(form.entry_pct) / 100,
     minEntrySol: parseFloat(form.min_entry),
     maxEntrySol: parseFloat(form.max_entry),
@@ -3912,7 +3924,9 @@ export function startDashboard(port?: number): void {
             } : null,
             pp.stopLossPrice > 0 ? {
               kind: 'stop' as const,
-              label: pp.beStopArmed ? 'Break-even stop' : `Stop −${Math.round((1 - (strat.stopLossPct ?? 0)) * 100)}%`,
+              label: pp.beStopArmed
+                ? ((strat.postTp1StopPct ?? 1) >= 0.999 ? 'Break-even stop' : `Post-TP1 stop −${Math.round((1 - (strat.postTp1StopPct ?? 1)) * 100)}%`)
+                : `Stop −${Math.round((1 - (strat.stopLossPct ?? 0)) * 100)}%`,
               mult: stopMult, sellPct: Math.round(pp.remainingPct * 100),
               price: pp.stopLossPrice, mc: mcAt(stopMult), hit: false,
             } : null,
@@ -4025,6 +4039,7 @@ export function startDashboard(port?: number): void {
             trailingFrom: t.strategy.trailingFrom,
             stopLossPct: t.strategy.stopLossPct,
             breakEvenAfterTp1: t.strategy.breakEvenAfterTp1,
+            postTp1StopPct: t.strategy.postTp1StopPct,
             maxHoldMin: t.strategy.maxHoldMin,
             sources: t.sources ?? null,
             // How many consecutive losses before entries fall under the minimum and
@@ -4460,6 +4475,7 @@ export function startDashboard(port?: number): void {
               trailingFrom: form.trailing_from === 'entry' ? 'entry' : 'afterLastTp',
               stopLossPct: 1 - parseFloat(form.stop_loss) / 100,
               breakEvenAfterTp1: form.break_even === '1',
+              postTp1StopPct: 1 - (parseFloat(form.be_pct) || 0) / 100,
               maxHoldMin: parseFloat(form.max_hold) || 0,
               entryPct: parseFloat(form.entry_pct) / 100,
               minEntrySol: parseFloat(form.min_entry),
@@ -4625,7 +4641,7 @@ export function startDashboard(port?: number): void {
               <div style="font-size:20px;font-weight:700">${positions.length - closed.length}</div></div>
           </div>
           <div class="kv" style="margin-top:10px"><b>Entry:</b> ${entryDesc}</div>
-          <div class="kv"><b>Exit:</b> ${shape}${s.stopLossPct < 0.99 ? ` · stop at −${Math.round((1 - s.stopLossPct) * 100)}%` : ''}${s.breakEvenAfterTp1 ? ' · break-even stop after first TP' : ''}</div>
+          <div class="kv"><b>Exit:</b> ${shape}${s.stopLossPct < 0.99 ? ` · stop at −${Math.round((1 - s.stopLossPct) * 100)}%` : ''}${s.breakEvenAfterTp1 ? ((s.postTp1StopPct ?? 1) >= 0.999 ? ' · break-even stop after first TP' : ` · stop to −${Math.round((1 - (s.postTp1StopPct ?? 1)) * 100)}% after first TP`) : ''}</div>
           <div class="kv"><b>Sizing:</b> ${Math.round(s.entryPct * 100)}% of wallet, min ${s.minEntrySol} ◎${s.maxEntrySol ? `, max ${s.maxEntrySol} ◎` : ''} · ${s.slippageBps / 100}% slippage</div>
         </div>
 

@@ -153,6 +153,8 @@ export interface BacktestCfg {
   trailingFrom: 'entry' | 'afterLastTp';
   stopLossPct: number;
   breakEvenAfterTp1: boolean;
+  /** Where the post-TP1 stop lands, as a multiple of entry. 1 = break-even (default). */
+  postTp1StopPct?: number;
   maxHoldMin: number;
   /** Which half of a candle is assumed to happen first.
    *
@@ -225,7 +227,7 @@ export function backtest(cfg: BacktestCfg, paths: CoinPath[], horizonMin = 180):
             proceeds += sell * entry * cfg.tps[j].mult;
             remaining -= sell; hits[j] = true;
             exitLabel = `TP ${cfg.tps[j].mult}×`;
-            if (cfg.breakEvenAfterTp1 && j === 0) stop = Math.max(stop, entry);
+            if (cfg.breakEvenAfterTp1 && j === 0) stop = Math.max(stop, entry * (cfg.postTp1StopPct ?? 1));
           }
         }
       };
