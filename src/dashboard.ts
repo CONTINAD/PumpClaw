@@ -1881,7 +1881,7 @@ const NAV_MORE: [string, [string, string][]][] = [
   ['Real money', [['/exits', 'Exits'], ['/ledger', 'Ledger'], ['/tasks', 'Tasks']]],
   ['Calls', [['/channels', 'Channels'], ['/features', 'Features'], ['/bundles', 'Bundles']]],
   ['Strategy', [['/builder', 'Builder'], ['/sweep', 'Sweep'], ['/params', 'Params']]],
-  ['Filters', [['/gates', 'Gate scoreboard'], ['/filters', 'Live rules']]],
+  ['Filters', [['/gates', 'Gate scoreboard'], ['/clock', 'Clock'], ['/filters', 'Live rules']]],
   ['', [['/settings', 'Settings']]],
 ];
 
@@ -1900,6 +1900,127 @@ const NAV_MORE: [string, [string, string][]][] = [
  * blocks die. So the columns that matter are `died` (under 0.5x — the filter did
  * its job) and `missed` (2x or more — the filter cost money), and the ranking is
  * by missed, not by volume. */
+/**
+ * When the calls are worth taking.
+ *
+ * Alex noticed that overnight calls ran and afternoon calls did not, and the
+ * scraped-from-HTML answer could only use 51 of 356 calls: the calls page renders
+ * relative ages, so anything past a day collapses to "3d ago" and loses the hour.
+ * Every CallRecord already carries entryTime and peakMultiplier, so the real answer
+ * was always on disk — it just had no surface.
+ *
+ * This is that surface, and nothing else. It reads calls.json and renders. It does
+ * not gate a call, size a trade, or touch a task, because the point is to find out
+ * whether the effect survives more data before anything acts on it.
+ *
+ * Hours are LOCAL time, matching how the owner experiences "1-5am". The bucketing
+ * is by local hour of day across every day on record, so a 3am row is every 3am.
+ */
+function clockHTML(calls: any[]): string {
+  const rows = calls
+    .filter(c => typeof c.entryTime === 'number' && c.entryTime > 0)
+    .map(c => ({ h: new Date(c.entryTime).getHours(), pk: c.peakMultiplier ?? 0, sym: c.symbol, t: c.entryTime }));
+
+  if (rows.length === 0) {
+    return `<div class="card"><h3>🕑 Clock</h3><p>No call records with timestamps yet.</p></div>`;
+  }
+
+  const span = (Math.max(...rows.map(r => r.t)) - Math.min(...rows.map(r => r.t))) / 86400000;
+  const med = (a: number[]) => { const x = [...a].sort((p, q) => p - q); return x[Math.floor(x.length / 2)] ?? 0; };
+  const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
+
+  interface Bucket { n: number; peaks: number[] }
+  const mk = (): Bucket => ({ n: 0, peaks: [] });
+  const byHour = new Map<number, Bucket>();
+  const byBlock = new Map<number, Bucket>();
+  for (const r of rows) {
+    const h = byHour.get(r.h) ?? mk(); h.n++; h.peaks.push(r.pk); byHour.set(r.h, h);
+    const b = Math.floor(r.h / 4) * 4;
+    const bb = byBlock.get(b) ?? mk(); bb.n++; bb.peaks.push(r.pk); byBlock.set(b, bb);
+  }
+
+  // The whole point of the page is to say when a difference is real. A block with
+  // six calls in it can show any hit-rate at all and mean nothing, so the sample is
+  // stated next to every number rather than left for the reader to infer.
+  const conf = (n: number) => (n >= 40 ? ['solid', 'var(--green)'] : n >= 15 ? ['fair', 'var(--amber)'] : ['thin', 'var(--text3)']);
+
+  const overall2x = pct(rows.filter(r => r.pk >= 2).length, rows.length);
+
+  const blockRow = (b: number) => {
+    const d = byBlock.get(b);
+    if (!d) return '';
+    const two = pct(d.peaks.filter(p => p >= 2).length, d.n);
+    const five = pct(d.peaks.filter(p => p >= 5).length, d.n);
+    const died = pct(d.peaks.filter(p => p < 0.5).length, d.n);
+    const [label, colour] = conf(d.n);
+    // Lift against the all-hours rate is the number that answers the question:
+    // "is this block actually better, or does it just feel that way?"
+    const lift = overall2x > 0 ? Math.round(((two - overall2x) / overall2x) * 100) : 0;
+    const liftCol = lift >= 25 ? 'var(--green)' : lift <= -25 ? 'var(--red)' : 'var(--text2)';
+    return `<tr style="border-top:1px solid var(--border)">
+      <td class="mono"><b>${String(b).padStart(2, '0')}:00–${String(b + 3).padStart(2, '0')}:59</b></td>
+      <td class="mono">${d.n}</td>
+      <td class="mono">${med(d.peaks).toFixed(2)}x</td>
+      <td class="mono">${two}%</td>
+      <td class="mono">${five}%</td>
+      <td class="mono">${died}%</td>
+      <td class="mono" style="color:${liftCol};font-weight:700">${lift >= 0 ? '+' : ''}${lift}%</td>
+      <td style="color:${colour};font-size:11px">${label}</td>
+    </tr>`;
+  };
+
+  const hourRow = (h: number) => {
+    const d = byHour.get(h);
+    if (!d) return '';
+    const two = pct(d.peaks.filter(p => p >= 2).length, d.n);
+    const bar = '█'.repeat(Math.max(0, Math.round(two / 10))) || '·';
+    return `<tr style="border-top:1px solid var(--border)">
+      <td class="mono">${String(h).padStart(2, '0')}:00</td>
+      <td class="mono">${d.n}</td>
+      <td class="mono">${med(d.peaks).toFixed(2)}x</td>
+      <td class="mono">${two}%</td>
+      <td class="mono" style="color:var(--green)">${bar}</td>
+    </tr>`;
+  };
+
+  const blocks = [0, 4, 8, 12, 16, 20];
+  const best = blocks.filter(b => byBlock.has(b))
+    .sort((a, b) => pct(byBlock.get(b)!.peaks.filter(p => p >= 2).length, byBlock.get(b)!.n)
+                  - pct(byBlock.get(a)!.peaks.filter(p => p >= 2).length, byBlock.get(a)!.n));
+
+  return `
+  <div class="card" style="max-width:none">
+    <h3>🕑 Clock — call quality by hour</h3>
+    <p style="font-size:12px;color:var(--text2);margin:2px 0 12px">
+      ${rows.length} calls over ${span.toFixed(1)} days, bucketed by <b>local</b> hour of day.
+      Baseline: <b>${overall2x}%</b> of all calls reach 2x. <b>Lift</b> is each block against that baseline.
+      This page reads history and renders it — it does not gate calls or size trades.
+    </p>
+    <div style="overflow-x:auto"><table>
+      <tr><th>block</th><th>calls</th><th>median peak</th><th>hit 2x</th><th>hit 5x</th><th>died &lt;0.5x</th><th>lift</th><th>sample</th></tr>
+      ${blocks.map(blockRow).join('')}
+    </table></div>
+    ${best.length >= 2 ? `<p style="font-size:12px;color:var(--text2);margin-top:10px">
+      Best block <b>${String(best[0]).padStart(2, '0')}:00–${String(best[0] + 3).padStart(2, '0')}:59</b>
+      at ${pct(byBlock.get(best[0])!.peaks.filter(p => p >= 2).length, byBlock.get(best[0])!.n)}% ·
+      worst <b>${String(best[best.length - 1]).padStart(2, '0')}:00–${String(best[best.length - 1] + 3).padStart(2, '0')}:59</b>
+      at ${pct(byBlock.get(best[best.length - 1])!.peaks.filter(p => p >= 2).length, byBlock.get(best[best.length - 1])!.n)}%.
+      Treat any block marked <b>thin</b> as a hint, not a finding — it needs more days before it means anything.
+    </p>` : ''}
+  </div>
+
+  <div class="card" style="max-width:none">
+    <h3>Hour by hour</h3>
+    <p style="font-size:12px;color:var(--text2);margin:2px 0 10px">
+      Same data at full resolution. Most single hours will be thin for a while; the bar is the 2x rate.
+    </p>
+    <div style="overflow-x:auto"><table>
+      <tr><th>hour</th><th>calls</th><th>median peak</th><th>hit 2x</th><th></th></tr>
+      ${Array.from({ length: 24 }, (_, h) => hourRow(h)).join('')}
+    </table></div>
+  </div>`;
+}
+
 function gatesHTML(grades: any[]): string {
   const n2 = (v: any, d = 2) => (typeof v === 'number' && isFinite(v) ? v.toFixed(d) : '—');
   type Row = { reason: string; n: number; died: number; missed: number; peaks: number[]; worst: any };
@@ -4242,6 +4363,15 @@ export function startDashboard(port?: number): void {
           res.end(JSON.stringify({ mint: mm[1], results: out }, null, 1));
         });
       return;
+    } else if (pathname === '/clock') {
+      try {
+        const calls = loadJSON<any>(join(CONFIG.DATA_DIR, 'calls.json'));
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(settingsShell(clockHTML(calls), '/clock'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('clock: ' + err.message);
+      }
     } else if (pathname === '/gates') {
       import('./index.js').then(idx => {
         const html = settingsShell(gatesHTML(idx.gradedSkips()), '/gates');
