@@ -378,7 +378,7 @@ export function shadowRows(url: string) {
   const cutoff = hv === 'all' ? 0 : Date.now() - parseInt(hv) * 3600_000;
   // Memoised and warmed at boot, so this is a map lookup rather than 2,400 replays.
   let twins: Map<string, CleanRow> | null = null;
-  try { twins = cleanReplay(); } catch { twins = null; }
+  try { twins = cleanReplay(hv); } catch { twins = null; }
   return taskManager.all().filter(t => t.paper).map(t => {
     const positions = taskManager.traderFor(t).getAllPositions();
     const closed = positions.filter(p => p.status === 'closed' && (p.closedTime ?? 0) >= cutoff);
@@ -1724,13 +1724,24 @@ function n2(v: any, d = 2, dash = '—'): string {
  * ceiling, which picks up new captures without ever serving a stale shape.
  */
 interface CleanRow { avg: number; high: number; robust: number; best: number; winPct: number; total: number; trades: number }
-let cleanCache: { at: number; paths: number; rows: Map<string, CleanRow> } | null = null;
+const cleanCache = new Map<string, { at: number; paths: number; rows: Map<string, CleanRow> }>();
 
-function cleanReplay(): Map<string, CleanRow> {
-  const paths = loadPaths(600);
-  if (cleanCache && cleanCache.paths === paths.length && Date.now() - cleanCache.at < 600_000) {
-    return cleanCache.rows;
-  }
+/**
+ * @param hv  window token from the URL — '24', 'all', etc.
+ *
+ * The replay used to run over every captured path regardless of the window
+ * selector, so the fleet columns moved when you switched to 1h and the REAL ones
+ * did not. Two columns on one row answering different questions, silently. REAL
+ * TOTAL especially: a total is meaningless unless you know what it is a total OF.
+ *
+ * Cached per window. Short windows hold few paths and are cheap; only 'all' and 7d
+ * cost anything, and those are the two the boot warmer builds.
+ */
+function cleanReplay(hv: string = 'all'): Map<string, CleanRow> {
+  const cut = hv === 'all' ? 0 : Date.now() - parseInt(hv) * 3600_000;
+  const paths = loadPaths(600).filter(p => !cut || (p.callTs ?? 0) >= cut);
+  const hit = cleanCache.get(hv);
+  if (hit && hit.paths === paths.length && Date.now() - hit.at < 600_000) return hit.rows;
   const rows = new Map<string, CleanRow>();
   for (const [key, preset] of Object.entries(STRATEGY_PRESETS)) {
     try {
@@ -1744,7 +1755,7 @@ function cleanReplay(): Map<string, CleanRow> {
       });
     } catch { /* a preset the replay cannot express has no twin */ }
   }
-  cleanCache = { at: Date.now(), paths: paths.length, rows };
+  cleanCache.set(hv, { at: Date.now(), paths: paths.length, rows });
   return rows;
 }
 
@@ -1762,7 +1773,10 @@ export function warmCleanReplay(): void {
   const run = () => {
     const t0 = Date.now();
     try {
-      const n = cleanReplay().size;
+      // The two windows anything actually lands on. Shorter ones hold few paths
+      // and build in well under a second on demand.
+      const n = cleanReplay('all').size;
+      cleanReplay('24');
       console.log(`[Dashboard] replay warmed: ${n} strategies in ${Date.now() - t0}ms`);
     } catch (err: any) {
       console.log(`[Dashboard] replay warm failed: ${err?.message ?? err}`);
@@ -5436,7 +5450,7 @@ export function startDashboard(port?: number): void {
         // candles.ts replays real minute OHLCV: a trail ratchets only on a high the
         // coin actually printed, and a dip fills at its limit, not at a gap's bottom.
         try {
-          const twins = cleanReplay();
+          const twins = cleanReplay(hours);
           for (const r of rows) {
             const c = twins.get(r.key);
             if (!c) continue;
@@ -5563,7 +5577,6 @@ export function startDashboard(port?: number): void {
           <td class="mono" style="color:${r.cleanAvg === null ? 'var(--text3)' : r.cleanAvg >= 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.cleanAvg === null ? '—' : (r.cleanAvg >= 0 ? '+' : '') + r.cleanAvg.toFixed(3)}</td>
           <td class="mono" style="color:${r.cleanHigh === null ? 'var(--text3)' : (r.cleanAvg !== null && r.cleanAvg >= 0 && r.cleanHigh >= 0) ? '#10b981' : 'var(--text2)'};font-size:12px" title="Same strategy assuming the spike happens before the fall inside each candle. Truth is between this and the REAL avg column; both positive means the result does not depend on the assumption.">${r.cleanHigh === null ? '—' : (r.cleanHigh >= 0 ? '+' : '') + r.cleanHigh.toFixed(3)}</td>
           <td class="mono" style="color:${(r.cleanTotal ?? 0) >= 0 ? '#10b981' : '#ef4444'};font-weight:600" title="Total SOL across every replayed trade, 1 SOL per trade">${r.cleanTotal === null ? '—' : (r.cleanTotal >= 0 ? '+' : '') + r.cleanTotal.toFixed(1)}</td>
-          <td class="mono" style="color:var(--text3);font-size:11px" title="Live-tick figure. Inflated by feed gaps that invent peaks; the inflation is larger the tighter the trail.">${r.avg >= 0 ? '+' : ''}${r.avg.toFixed(3)}</td>
           <td><a href="/builder?from=${r.key}" title="Open this strategy in the builder to edit or clone it" style="color:#3b82f6;text-decoration:none;font-size:11px;white-space:nowrap">copy →</a></td>
         </tr>`;
         const head = `<tr>${th('#')}${th('Strategy', 'name')}${th('Entry', 'entry', 'Sort by dip depth — instant first')}`
@@ -5572,7 +5585,7 @@ export function startDashboard(port?: number): void {
           + `${th('REAL avg', 'cleanavg', 'Real candles, assuming the fall comes first inside each candle — the floor')}`
           + `${th('if spike 1st', 'cleanhigh', 'Same strategy assuming the spike comes first — the ceiling. Both positive = the result does not depend on the assumption.')}`
           + `${th('REAL total', 'cleantotal', 'Total SOL across every replayed trade, 1 SOL each')}`
-          + `${th('fleet', 'avg', 'What the live-tick fleet claimed. Far above the replay means feed gaps invented peaks the coin never reached.')}<th></th></tr>`;
+          + `<th></th></tr>`;
 
         // Pick and quote the replay, not the fleet.
         //
@@ -5614,7 +5627,7 @@ export function startDashboard(port?: number): void {
               <div style="font-size:12px;font-weight:700"><a href="/strategy?key=${w.key}" style="color:var(--text);text-decoration:none">${w.name} →</a></div>
               <div style="font-size:22px;font-weight:700;color:#10b981">${(w.cleanAvg ?? 0) >= 0 ? '+' : ''}${(w.cleanAvg ?? 0).toFixed(3)}<span style="font-size:11px;color:var(--text3);font-weight:400"> /trade replayed</span></div>
               <div style="font-size:11px;color:var(--text2)">${w.cleanTrades ?? 0} replayed trades · ${w.cleanWin ?? 0}% win · ${(w.cleanTotal ?? 0) >= 0 ? '+' : ''}${(w.cleanTotal ?? 0).toFixed(1)} SOL</div>
-              <div style="font-size:10px;color:var(--text3);margin-top:2px">fleet said ${w.avg >= 0 ? '+' : ''}${w.avg.toFixed(3)}</div>
+              <div style="font-size:10px;color:var(--text3);margin-top:2px">live-tick fleet said ${w.avg >= 0 ? '+' : ''}${w.avg.toFixed(3)}</div>
             </div>`).join('') : '<span style="color:var(--text3)">No strategy is clearly profitable on replayed candles yet.</span>'}
           </div>
           <div style="display:flex;gap:20px;font-size:13px;flex-wrap:wrap">
@@ -5899,7 +5912,7 @@ export function startDashboard(port?: number): void {
         // ratchet on a candle high the coin actually printed, and a dip fills at its
         // limit rather than at the bottom of a gap. Same 218 coins, honest path.
         const paths = loadPaths(600);
-        const clean = cleanReplay();
+        const clean = cleanReplay(hv);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
