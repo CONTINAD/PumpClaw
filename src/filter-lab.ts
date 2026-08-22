@@ -555,6 +555,160 @@ export const CANDIDATES: Candidate[] = [
   { key: 'tc18', name: 'fresh<70% + trade size rising + 1h positive',  group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const a = s.buys5m + s.sells5m, b = s.buys1h + s.sells1h; return t > 0 && a > 0 && b > 0 && s.vol1h > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.vol5m / a) > (s.vol1h / b) && s.chg1h > 0) : null; } },
   { key: 'tc19', name: 'fresh<70% + under 500 trades + avg over $80',  group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && tr < 500 && s.vol5m / tr > 80) : null; } },
   { key: 'tc20', name: 'veterans>50% + independent>50% + 20 funders',  group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const d = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 && d > 0 && s.deepFunders != null ? ((s.veterans ?? 0) / t > 0.5 && (s.deepIndependent ?? 0) / d > 0.5 && s.deepFunders >= 20) : null; } },
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Fourth wave — 112 candidates, and a change of SHAPE rather than of subject.
+  //
+  // Everything so far has been "is this number good", then "is this ratio good",
+  // then "is this ratio better than its own baseline". All of it was one-sided and
+  // all of it was AND. These are built differently on purpose:
+  //
+  //   per-minute   normalise by the coin's own lifetime, not by a fixed window —
+  //                $20K in five minutes means one thing at age 3 and another at 300
+  //   interaction  products rather than ratios, because liquidity AND veterans is a
+  //                different claim from liquidity PER veteran
+  //   path         the full ordering of 5m/1h/6h as a taxonomy, so accelerating,
+  //                decelerating and reversing are separable rather than averaged
+  //   agreement    do independent signals CONCUR — a coin whose volume, holders and
+  //                price disagree is being pushed by one of them
+  //   corner       exclude a specific bad two-dimensional corner instead of
+  //                requiring both dimensions to be good
+  //   extreme      nothing about it is in an outlier band. Boring as a thesis
+  //   data quality whether we know enough to have an opinion at all, which is a
+  //                different question from whether the coin is good
+  //   implied      quantities the snapshot never states: MC an hour ago, dollars
+  //                added per trade, what the move is worth per holder
+  //   or-combos    the first predicates in this file joined by OR — "either of these
+  //                two things is enough" is not reachable by any AND rule
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // ── Per minute of the coin's own life ──
+  { key: 'pmVol1k',  name: 'over $1K of 5m volume per minute of age',  group: 'permin', pass: s => s.ageMin > 0 ? (s.vol5m / 5) / 1 > 1000 && s.vol24h / s.ageMin > 1000 : null },
+  { key: 'pmVolAge', name: 'over $500 of 24h volume per minute of age',group: 'permin', pass: s => s.ageMin > 0 ? s.vol24h / s.ageMin > 500 : null },
+  { key: 'pmVolCap', name: 'under $20K of 24h volume per minute of age',group: 'permin', pass: s => s.ageMin > 0 ? s.vol24h / s.ageMin < 20000 : null },
+  { key: 'pmMc',     name: 'over $300 of MC per minute of age',        group: 'permin', pass: s => s.ageMin > 0 ? s.mc / s.ageMin > 300 : null },
+  { key: 'pmMcCap',  name: 'under $20K of MC per minute of age',       group: 'permin', pass: s => s.ageMin > 0 && s.mc > 0 ? s.mc / s.ageMin < 20000 : null },
+  { key: 'pmOwn',    name: 'over 1 owner gained per minute of age',    group: 'permin', pass: s => s.ageMin > 0 && s.deepOwners != null ? s.deepOwners / s.ageMin > 1 : null },
+  { key: 'pmOwnCap', name: 'under 40 owners per minute of age',        group: 'permin', pass: s => s.ageMin > 0 && s.deepOwners != null ? s.deepOwners / s.ageMin < 40 : null },
+  { key: 'pmTr',     name: 'over 5 lifetime trades per minute of age', group: 'permin', pass: s => s.ageMin > 0 ? (s.buys1h + s.sells1h) / Math.min(s.ageMin, 60) > 5 : null },
+  { key: 'pmLiq',    name: 'over $200 of liquidity per minute of age', group: 'permin', pass: s => s.ageMin > 0 ? s.liq / s.ageMin > 200 : null },
+  { key: 'pmChg',    name: 'under 20% of 6h move per minute of age',   group: 'permin', pass: s => s.ageMin > 0 ? Math.abs(s.chg6h) / s.ageMin < 20 : null },
+  { key: 'pmYoungHot',name: 'young and busy: under 30m with $10K+ in 5m', group: 'permin', pass: s => s.ageMin < 30 && s.vol5m > 10000 },
+  { key: 'pmOldAlive',name: 'over an hour old and still doing $5K in 5m', group: 'permin', pass: s => s.ageMin > 60 ? s.vol5m > 5000 : null },
+
+  // ── Interaction: products, not ratios ──
+  { key: 'ixLiqVet',  name: 'liquidity x veterans over 100K',          group: 'interact', pass: s => s.veterans != null ? s.liq * s.veterans > 100000 : null },
+  { key: 'ixLiqOwn',  name: 'liquidity x owners over 1M',              group: 'interact', pass: s => s.deepOwners != null ? s.liq * s.deepOwners > 1000000 : null },
+  { key: 'ixVolOwn',  name: '5m volume x owners over 1M',              group: 'interact', pass: s => s.deepOwners != null ? s.vol5m * s.deepOwners > 1000000 : null },
+  { key: 'ixVetInd',  name: 'veterans x independent wallets over 100', group: 'interact', pass: s => s.veterans != null && s.deepIndependent != null ? s.veterans * s.deepIndependent > 100 : null },
+  { key: 'ixFundOwn', name: 'funders x owners over 1000',              group: 'interact', pass: s => s.deepFunders != null && s.deepOwners != null ? s.deepFunders * s.deepOwners > 1000 : null },
+  { key: 'ixLiqTr',   name: 'liquidity x trade count over 500K',       group: 'interact', pass: s => s.liq * (s.buys5m + s.sells5m) > 500000 },
+  { key: 'ixMcLiq',   name: 'MC x liquidity over 200M',                group: 'interact', pass: s => s.mc * s.liq > 200000000 },
+  { key: 'ixVolVet',  name: '5m volume x veterans over 200K',          group: 'interact', pass: s => s.veterans != null ? s.vol5m * s.veterans > 200000 : null },
+  { key: 'ixSocVet',  name: 'socials x veterans over 5',               group: 'interact', pass: s => s.socials != null && s.veterans != null ? s.socials * s.veterans > 5 : null },
+  { key: 'ixAgeOwn',  name: 'age x owners over 500',                   group: 'interact', pass: s => s.deepOwners != null ? s.ageMin * s.deepOwners > 500 : null },
+  { key: 'ixLowBoth', name: 'not both thin: liq x owners under 20M',   group: 'interact', pass: s => s.deepOwners != null ? s.liq * s.deepOwners < 20000000 : null },
+  { key: 'ixVolLiq',  name: '5m volume x liquidity over 50M',          group: 'interact', pass: s => s.vol5m * s.liq > 50000000 },
+
+  // ── Path taxonomy: the full ordering of 5m / 1h / 6h ──
+  { key: 'pthAccel',  name: 'accelerating: 5m > 1h > 6h',              group: 'path2', pass: s => s.chg5m > s.chg1h && s.chg1h > s.chg6h },
+  { key: 'pthDecel',  name: 'decelerating: 5m < 1h < 6h',              group: 'path2', pass: s => s.chg5m < s.chg1h && s.chg1h < s.chg6h },
+  { key: 'pthTurnUp', name: 'turning up: 5m > 1h, 1h < 6h',            group: 'path2', pass: s => s.chg5m > s.chg1h && s.chg1h < s.chg6h },
+  { key: 'pthTurnDn', name: 'turning down: 5m < 1h, 1h > 6h',          group: 'path2', pass: s => s.chg5m < s.chg1h && s.chg1h > s.chg6h },
+  { key: 'pthSteady', name: 'all three within 30 points of each other',group: 'path2', pass: s => Math.max(s.chg5m, s.chg1h, s.chg6h) - Math.min(s.chg5m, s.chg1h, s.chg6h) < 30 },
+  { key: 'pthWild',   name: 'the three legs span over 200 points',     group: 'path2', pass: s => Math.max(s.chg5m, s.chg1h, s.chg6h) - Math.min(s.chg5m, s.chg1h, s.chg6h) > 200 },
+  { key: 'pth6hLead', name: 'the 6h leg is the largest',               group: 'path2', pass: s => s.chg6h >= s.chg1h && s.chg6h >= s.chg5m },
+  { key: 'pth5mLead', name: 'the 5m leg is the largest',               group: 'path2', pass: s => s.chg5m >= s.chg1h && s.chg5m >= s.chg6h },
+  { key: 'pthMidUp',  name: 'the hour did the work, not the minute',   group: 'path2', pass: s => s.chg1h > 0 ? s.chg1h > s.chg5m * 2 : null },
+  { key: 'pthNoRev',  name: 'no leg reverses the others',              group: 'path2', pass: s => (s.chg5m >= 0 && s.chg1h >= 0 && s.chg6h >= 0) || (s.chg5m <= 0 && s.chg1h <= 0 && s.chg6h <= 0) },
+  { key: 'pthGiveBk', name: 'not giving it back: 6h over +100%, 1h under -20%', group: 'path2', pass: s => !(s.chg6h > 100 && s.chg1h < -20) },
+  { key: 'pthFresh',  name: '6h equals 1h (the coin is under an hour old)', group: 'path2', pass: s => Math.abs(s.chg6h - s.chg1h) < 0.01 },
+
+  // ── Agreement: do independent signals concur ──
+  { key: 'agrVolPr',  name: 'volume and price agree (both up or both quiet)', group: 'agree', pass: s => s.vol1h > 0 ? !((s.vol5m * 12 > s.vol1h * 2) && s.chg5m < 0) : null },
+  { key: 'agrBuyPr',  name: 'buy pressure and price agree',            group: 'agree', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? !((s.buys5m / t > 0.6) && s.chg5m < -5) : null; } },
+  { key: 'agrSellPr', name: 'sell pressure and price agree',           group: 'agree', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? !((s.sells5m / t > 0.6) && s.chg5m > 5) : null; } },
+  { key: 'agrOwnVol', name: 'owner count and volume agree',            group: 'agree', pass: s => s.deepOwners != null ? !(s.vol5m > 20000 && s.deepOwners < 50) : null },
+  { key: 'agrLiqVol', name: 'liquidity and volume agree',              group: 'agree', pass: s => s.liq > 0 ? !(s.vol5m > s.liq * 5) : null },
+  { key: 'agrVetOwn', name: 'veteran count and owner count agree',     group: 'agree', pass: s => s.veterans != null && s.deepOwners != null ? !(s.deepOwners > 200 && s.veterans < 5) : null },
+  { key: 'agrAgeOwn', name: 'age and owner count agree',               group: 'agree', pass: s => s.deepOwners != null ? !(s.ageMin < 5 && s.deepOwners > 300) : null },
+  { key: 'agrMcLiq',  name: 'market cap and liquidity agree',          group: 'agree', pass: s => s.mc > 0 && s.liq > 0 ? !(s.mc > 50000 && s.liq < 5000) : null },
+  { key: 'agrTrVol',  name: 'trade count and volume agree',            group: 'agree', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? !(t > 300 && s.vol5m < 15000) : null; } },
+  { key: 'agrAll3',   name: 'volume, holders and price all pointing up', group: 'agree', pass: s => s.deepOwners != null && s.vol1h > 0 ? ((s.vol5m * 12) > s.vol1h && s.deepOwners >= 50 && s.chg5m > 0) : null },
+  { key: 'agrNone',   name: 'no signal contradicts another',           group: 'agree', pass: s => { const t = s.buys5m + s.sells5m; if (t === 0 || s.liq <= 0) return null; return !((s.buys5m / t > 0.6 && s.chg5m < -5) || (s.sells5m / t > 0.6 && s.chg5m > 5) || (s.vol5m > s.liq * 5)); } },
+  { key: 'agrFreshPr',name: 'a fresh-wallet majority is not also pumping', group: 'agree', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? !((s.freshWallets ?? 0) / t > 0.7 && s.chg5m > 50) : null; } },
+
+  // ── Corners: exclude one bad two-dimensional region ──
+  { key: 'cnrHiMcLoLiq', name: 'not high MC on thin liquidity',        group: 'corner', pass: s => s.mc > 0 && s.liq > 0 ? !(s.mc > 60000 && s.liq / s.mc < 0.1) : null },
+  { key: 'cnrHiVolFewOwn',name: 'not heavy volume with few owners',     group: 'corner', pass: s => s.deepOwners != null ? !(s.vol5m > 30000 && s.deepOwners < 80) : null },
+  { key: 'cnrManyTrTiny',name: 'not hundreds of trades at tiny size',  group: 'corner', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? !(t > 250 && s.vol5m / t < 60) : null; } },
+  { key: 'cnrOldDead',   name: 'not old and dead',                     group: 'corner', pass: s => !(s.ageMin > 120 && s.vol5m < 2000) },
+  { key: 'cnrYoungHuge', name: 'not minutes old at a huge cap',        group: 'corner', pass: s => s.mc > 0 ? !(s.ageMin < 10 && s.mc > 150000) : null },
+  { key: 'cnrFreshRun',  name: 'not a fresh-wallet crowd on a vertical',group: 'corner', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? !((s.freshWallets ?? 0) / t > 0.6 && s.chg1h > 200) : null; } },
+  { key: 'cnrClusterRun',name: 'not a clustered holder set on a vertical',group: 'corner', pass: s => s.deepClusterPct != null ? !(s.deepClusterPct > 25 && s.chg1h > 200) : null },
+  { key: 'cnrDevRun',    name: 'not a heavy dev bag on a vertical',    group: 'corner', pass: s => s.devHoldPct != null ? !(s.devHoldPct > 5 && s.chg1h > 200) : null },
+  { key: 'cnrSellDump',  name: 'not heavy selling into a falling price',group: 'corner', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? !(s.sells5m / t > 0.55 && s.chg5m < -10) : null; } },
+  { key: 'cnrThinRun',   name: 'not a vertical on under $8K of liquidity',group: 'corner', pass: s => s.liq > 0 ? !(s.liq < 8000 && s.chg1h > 150) : null },
+  { key: 'cnrNoVetRun',  name: 'not a vertical with under 3 veterans', group: 'corner', pass: s => s.veterans != null ? !(s.veterans < 3 && s.chg1h > 150) : null },
+  { key: 'cnrLoOwnHiMc', name: 'not a high cap with under 60 owners',  group: 'corner', pass: s => s.deepOwners != null && s.mc > 0 ? !(s.mc > 60000 && s.deepOwners < 60) : null },
+  { key: 'cnrCoolHiMc',  name: 'not a high cap that is already cooling',group: 'corner', pass: s => s.mc > 0 && s.vol1h > 0 ? !(s.mc > 60000 && (s.vol5m * 12) < s.vol1h * 0.5) : null },
+  { key: 'cnrFundFew',   name: 'not many owners from very few funders',group: 'corner', pass: s => s.deepFunders != null && s.deepOwners != null ? !(s.deepOwners > 100 && s.deepFunders < 8) : null },
+  { key: 'cnrNoSocRun',  name: 'not a vertical with no socials',       group: 'corner', pass: s => s.socials != null ? !(s.socials === 0 && s.chg1h > 200) : null },
+  { key: 'cnrDeadVol',   name: 'not volume against a dead price',      group: 'corner', pass: s => !(s.vol5m > 20000 && Math.abs(s.chg5m) < 2) },
+  { key: 'cnrGapUp',     name: 'not a one-leg gap: 5m over +150% and 1h under +50%', group: 'corner', pass: s => !(s.chg5m > 150 && s.chg1h < 50) },
+  { key: 'cnrLatePump',  name: 'not hours old and only now vertical',  group: 'corner', pass: s => !(s.ageMin > 360 && s.chg1h > 200) },
+
+  // ── Extreme: nothing about it is an outlier. Boring as a thesis ──
+  { key: 'xtrMc',     name: 'MC in the ordinary band $5K-$120K',       group: 'extreme', pass: s => s.mc > 0 ? s.mc >= 5000 && s.mc <= 120000 : null },
+  { key: 'xtrLiq',    name: 'liquidity in the ordinary band $4K-$80K', group: 'extreme', pass: s => s.liq > 0 ? s.liq >= 4000 && s.liq <= 80000 : null },
+  { key: 'xtrVol',    name: '5m volume in the ordinary band $3K-$120K',group: 'extreme', pass: s => s.vol5m > 0 ? s.vol5m >= 3000 && s.vol5m <= 120000 : null },
+  { key: 'xtrChg',    name: '5m move between -30% and +150%',          group: 'extreme', pass: s => s.chg5m >= -30 && s.chg5m <= 150 },
+  { key: 'xtrChg1h',  name: '1h move between -50% and +500%',          group: 'extreme', pass: s => s.chg1h >= -50 && s.chg1h <= 500 },
+  { key: 'xtrTr',     name: 'trade count in the ordinary band 30-400', group: 'extreme', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? t >= 30 && t <= 400 : null; } },
+  { key: 'xtrAge',    name: 'age in the ordinary band 2-240 minutes',  group: 'extreme', pass: s => s.ageMin >= 2 && s.ageMin <= 240 },
+  { key: 'xtrOwn',    name: 'owners in the ordinary band 40-500',      group: 'extreme', pass: s => s.deepOwners != null ? s.deepOwners >= 40 && s.deepOwners <= 500 : null },
+  { key: 'xtrNoneWild',name: 'MC, liquidity and volume all ordinary',  group: 'extreme', pass: s => s.mc > 0 && s.liq > 0 && s.vol5m > 0 ? (s.mc >= 5000 && s.mc <= 120000 && s.liq >= 4000 && s.liq <= 80000 && s.vol5m >= 3000 && s.vol5m <= 120000) : null },
+  { key: 'xtrCalmAll',name: 'ordinary size and no extreme move',       group: 'extreme', pass: s => s.mc > 0 ? (s.mc >= 5000 && s.mc <= 120000 && s.chg5m >= -30 && s.chg5m <= 150 && s.chg1h <= 500) : null },
+
+  // ── Data quality: do we know enough to have an opinion ──
+  { key: 'dqCore',    name: 'MC, liquidity and volume all present',    group: 'dataq', pass: s => s.mc > 0 && s.liq > 0 && s.vol5m > 0 },
+  { key: 'dqTrades',  name: 'trade counts present on both windows',    group: 'dataq', pass: s => (s.buys5m + s.sells5m) > 0 && (s.buys1h + s.sells1h) > 0 },
+  { key: 'dqHolders', name: 'holder data resolved at all',             group: 'dataq', pass: s => ((s.freshWallets ?? 0) + (s.veterans ?? 0)) > 0 },
+  { key: 'dqDeep',    name: 'the deep holder read resolved',           group: 'dataq', pass: s => (s.deepOwners ?? 0) > 0 },
+  { key: 'dqAge',     name: 'a real pair-creation time is known',      group: 'dataq', pass: s => s.ageMin > 0 },
+  { key: 'dqAll',     name: 'every core field present — full picture', group: 'dataq', pass: s => s.mc > 0 && s.liq > 0 && s.vol5m > 0 && s.ageMin > 0 && ((s.freshWallets ?? 0) + (s.veterans ?? 0)) > 0 && (s.deepOwners ?? 0) > 0 },
+  { key: 'dqCover',   name: 'traced wallets cover 20%+ of owners',     group: 'dataq', pass: s => (s.deepOwners ?? 0) > 0 ? (((s.freshWallets ?? 0) + (s.veterans ?? 0)) / s.deepOwners!) > 0.2 : null },
+  { key: 'dqNoZero',  name: 'no core field is suspiciously zero',      group: 'dataq', pass: s => !(s.liq === 0 && s.vol5m > 5000) },
+
+  // ── Implied: quantities the snapshot never states ──
+  { key: 'iplMcWas',  name: 'MC an hour ago was over $8K',             group: 'implied', pass: s => s.mc > 0 && s.chg1h > -100 ? s.mc / (1 + s.chg1h / 100) > 8000 : null },
+  { key: 'iplMcWasCap',name: 'MC an hour ago was under $60K',          group: 'implied', pass: s => s.mc > 0 && s.chg1h > -100 ? s.mc / (1 + s.chg1h / 100) < 60000 : null },
+  { key: 'iplAdd',    name: 'over $10K added to MC in the hour',       group: 'implied', pass: s => s.mc > 0 && s.chg1h > -100 ? s.mc - s.mc / (1 + s.chg1h / 100) > 10000 : null },
+  { key: 'iplAddCap', name: 'under $150K added to MC in the hour',     group: 'implied', pass: s => s.mc > 0 && s.chg1h > -100 ? (s.mc - s.mc / (1 + s.chg1h / 100)) < 150000 : null },
+  { key: 'iplAddPerTr',name: 'over $50 of MC added per 1h trade',      group: 'implied', pass: s => { const t = s.buys1h + s.sells1h; return t > 0 && s.mc > 0 && s.chg1h > -100 ? (s.mc - s.mc / (1 + s.chg1h / 100)) / t > 50 : null; } },
+  { key: 'iplMovePerOwn',name: 'over $100 of hourly move per owner',   group: 'implied', pass: s => (s.deepOwners ?? 0) > 0 && s.mc > 0 && s.chg1h > -100 ? Math.abs(s.mc - s.mc / (1 + s.chg1h / 100)) / s.deepOwners! > 100 : null },
+  { key: 'iplVolPerAdd',name: 'over 2x volume for every dollar of MC added', group: 'implied', pass: s => { const add = s.mc > 0 && s.chg1h > -100 ? s.mc - s.mc / (1 + s.chg1h / 100) : 0; return add > 0 ? s.vol1h / add > 2 : null; } },
+  { key: 'iplHardWon',name: 'under 20x volume per dollar of MC added', group: 'implied', pass: s => { const add = s.mc > 0 && s.chg1h > -100 ? s.mc - s.mc / (1 + s.chg1h / 100) : 0; return add > 0 ? s.vol1h / add < 20 : null; } },
+  { key: 'iplHolder', name: 'implied average holder position over $80',group: 'implied', pass: s => (s.deepOwners ?? 0) > 0 && s.mc > 0 ? (s.mc - s.liq) / s.deepOwners! > 80 : null },
+  { key: 'iplHolderCap',name: 'implied average holder position under $2K', group: 'implied', pass: s => (s.deepOwners ?? 0) > 0 && s.mc > 0 ? (s.mc - s.liq) / s.deepOwners! < 2000 : null },
+  { key: 'iplFloat',  name: 'liquidity is over 8% of the float',       group: 'implied', pass: s => s.mc > 0 ? s.liq / s.mc > 0.08 : null },
+  { key: 'iplExit',   name: 'the pool could absorb 20 average holders',group: 'implied', pass: s => (s.deepOwners ?? 0) > 0 && s.mc > 0 ? s.liq > ((s.mc - s.liq) / s.deepOwners!) * 20 : null },
+
+  // ── Either-or: a shape no AND rule can reach ──
+  { key: 'orcVetOrInd', name: '5 veterans OR independent over 50%',    group: 'orcombo', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); const a = s.veterans != null ? s.veterans >= 5 : null; const b = t > 0 ? (s.deepIndependent ?? 0) / t > 0.5 : null; return a === null && b === null ? null : (a === true || b === true); } },
+  { key: 'orcSocOrVet', name: 'a social OR 10 veterans',               group: 'orcombo', pass: s => { const a = s.socials != null ? s.socials >= 1 : null; const b = s.veterans != null ? s.veterans >= 10 : null; return a === null && b === null ? null : (a === true || b === true); } },
+  { key: 'orcLiqOrOwn', name: 'liq over $15K OR 150 owners',           group: 'orcombo', pass: s => { const b = s.deepOwners != null ? s.deepOwners >= 150 : null; if (s.liq <= 0 && b === null) return null; return s.liq > 15000 || b === true; } },
+  { key: 'orcFreshOrVet',name: 'fresh under 50% OR 10 veterans',       group: 'orcombo', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (t === 0) return null; return ((s.freshWallets ?? 0) / t < 0.5) || ((s.veterans ?? 0) >= 10); } },
+  { key: 'orcMomOrDepth',name: '1h positive OR 100 owners',            group: 'orcombo', pass: s => { const b = s.deepOwners != null ? s.deepOwners >= 100 : null; return s.chg1h > 0 || b === true; } },
+  { key: 'orcBuyOrSize', name: 'buys over 60% OR average trade over $100', group: 'orcombo', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? (s.buys5m / t > 0.6 || s.vol5m / t > 100) : null; } },
+  { key: 'orcFundOrInd', name: '20 funders OR independent over 60%',   group: 'orcombo', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); const a = s.deepFunders != null ? s.deepFunders >= 20 : null; const b = t > 0 ? (s.deepIndependent ?? 0) / t > 0.6 : null; return a === null && b === null ? null : (a === true || b === true); } },
+  { key: 'orcAgeOrLiq',  name: 'older than 15m OR liq over $20K',      group: 'orcombo', pass: s => s.ageMin > 15 || s.liq > 20000 },
+  { key: 'orcNotBoth',   name: 'not both a fresh majority and thin liquidity', group: 'orcombo', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.liq > 0 ? !((s.freshWallets ?? 0) / t > 0.6 && s.liq < 8000) : null; } },
+  { key: 'orcNotBoth2',  name: 'not both clustered and thin',          group: 'orcombo', pass: s => s.deepClusterPct != null && s.liq > 0 ? !(s.deepClusterPct > 25 && s.liq < 8000) : null },
+  { key: 'orcAnyDepth',  name: 'any depth signal at all is strong',    group: 'orcombo', pass: s => { const vals = [s.veterans != null ? s.veterans >= 10 : null, s.deepOwners != null ? s.deepOwners >= 150 : null, s.deepFunders != null ? s.deepFunders >= 25 : null]; return vals.every(v => v === null) ? null : vals.some(v => v === true); } },
+  { key: 'orcTwoOfThree',name: 'at least two of: 5 veterans, a social, liq over $10K', group: 'orcombo', pass: s => { const vals = [s.veterans != null ? s.veterans >= 5 : null, s.socials != null ? s.socials >= 1 : null, s.liq > 0 ? s.liq > 10000 : null]; const known = vals.filter(v => v !== null); return known.length < 2 ? null : known.filter(v => v === true).length >= 2; } },
+  { key: 'orcTwoQuality',name: 'at least two of: fresh<60%, 1h positive, avg trade over $80', group: 'orcombo', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; const vals = [t > 0 ? (s.freshWallets ?? 0) / t < 0.6 : null, s.chg1h !== 0 ? s.chg1h > 0 : null, tr > 0 ? s.vol5m / tr > 80 : null]; const known = vals.filter(v => v !== null); return known.length < 2 ? null : known.filter(v => v === true).length >= 2; } },
+  { key: 'orcAllButOne', name: 'no more than one of five quality checks fails', group: 'orcombo', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; const vals = [t > 0 ? (s.freshWallets ?? 0) / t < 0.7 : null, s.liq > 0 ? s.liq > 10000 : null, s.chg1h !== 0 ? s.chg1h > 0 : null, tr > 0 ? s.buys5m / tr > 0.5 : null, s.deepOwners != null ? s.deepOwners >= 80 : null]; const known = vals.filter(v => v !== null); return known.length < 3 ? null : known.filter(v => v === false).length <= 1; } },
 ];
 export function snapshotFrom(m: any, extra: Partial<Snapshot> = {}): Snapshot {
   return {
