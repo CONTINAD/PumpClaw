@@ -415,6 +415,146 @@ export const CANDIDATES: Candidate[] = [
   { key: 'nc20', name: 'at least 10 veterans + has a social',      group: 'combo2', pass: s => s.veterans != null && s.socials != null ? (s.veterans >= 10 && s.socials >= 1) : null },
   { key: 'nc21', name: 'fresh <70% + under 500 trades in 5m',      group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.buys5m + s.sells5m) < 500) : null; } },
   { key: 'nc22', name: 'fresh <70% + avg trade over $80',          group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.vol5m / tr > 80) : null; } },
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Third wave — 111 candidates. Still nothing here blocks.
+  //
+  // The second wave spent every field in the snapshot, so this one spends the
+  // relationships BETWEEN them. Turnover asks how many times the pool changes
+  // hands rather than how much volume there was. Impact asks how much price that
+  // volume bought — the same $30K moves a real book 3% and a hollow one 300%.
+  // Netflow counts buyers instead of dividing them, because 20 net buyers out of
+  // 40 and out of 400 are different coins with the same ratio. Trend measures
+  // every metric against its own one-hour baseline, so "busy" becomes "busier
+  // than it was", which is the only version of busy that predicts anything.
+  //
+  // The grid is deliberately unglamorous: finer thresholds on the axes that have
+  // already earned attention. fake70 beat fake80 on a threshold move alone, which
+  // is the whole argument for measuring 40/50/55/65 rather than guessing again.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // ── Turnover: how many times the pool changes hands ──
+  { key: 'to05',     name: 'pool turns over under 0.5x in 5m',      group: 'turnover', pass: s => s.liq > 0 ? s.vol5m / s.liq < 0.5 : null },
+  { key: 'to1',      name: 'pool turns over under 1x in 5m',        group: 'turnover', pass: s => s.liq > 0 ? s.vol5m / s.liq < 1 : null },
+  { key: 'to2',      name: 'pool turns over under 2x in 5m',        group: 'turnover', pass: s => s.liq > 0 ? s.vol5m / s.liq < 2 : null },
+  { key: 'to5',      name: 'pool turns over under 5x in 5m',        group: 'turnover', pass: s => s.liq > 0 ? s.vol5m / s.liq < 5 : null },
+  { key: 'toFloor',  name: 'pool turns over at least 0.2x in 5m',   group: 'turnover', pass: s => s.liq > 0 ? s.vol5m / s.liq > 0.2 : null },
+  { key: 'toBand',   name: 'turnover between 0.2x and 2x in 5m',    group: 'turnover', pass: s => s.liq > 0 ? (s.vol5m / s.liq) >= 0.2 && (s.vol5m / s.liq) <= 2 : null },
+  { key: 'to24',     name: '24h turnover under 20x the pool',       group: 'turnover', pass: s => s.liq > 0 ? s.vol24h / s.liq < 20 : null },
+  { key: 'toTrend',  name: '5m turnover rate under the 1h rate',    group: 'turnover', pass: s => s.liq > 0 && s.vol1h > 0 ? (s.vol5m * 12) < s.vol1h : null },
+  { key: 'liqPerTr', name: 'over $40 of liquidity per 5m trade',    group: 'turnover', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 && s.liq > 0 ? s.liq / t > 40 : null; } },
+
+  // ── Impact: how much price that volume actually bought ──
+  { key: 'imEasy',     name: 'over 5% of move per 1x of MC traded',   group: 'impact', pass: s => { const tv = s.mc > 0 ? s.vol5m / s.mc : 0; return tv > 0 ? Math.abs(s.chg5m) / tv > 5 : null; } },
+  { key: 'imHard',     name: 'under 20% of move per 1x of MC traded', group: 'impact', pass: s => { const tv = s.mc > 0 ? s.vol5m / s.mc : 0; return tv > 0 ? Math.abs(s.chg5m) / tv < 20 : null; } },
+  { key: 'imBand',     name: '2-30% of move per 1x of MC traded',     group: 'impact', pass: s => { const tv = s.mc > 0 ? s.vol5m / s.mc : 0; const r = tv > 0 ? Math.abs(s.chg5m) / tv : -1; return r >= 0 ? r >= 2 && r <= 30 : null; } },
+  { key: 'imDeep',     name: 'under 3% of MC traded per 1% of move',  group: 'impact', pass: s => { const c = Math.abs(s.chg5m); return c > 0 && s.mc > 0 ? (s.vol5m / s.mc * 100) / c < 3 : null; } },
+  { key: 'mcVol05',    name: 'MC over half the 5m volume',            group: 'impact', pass: s => s.vol5m > 0 ? s.mc / s.vol5m > 0.5 : null },
+  { key: 'mcVol2',     name: 'MC over 2x the 5m volume',              group: 'impact', pass: s => s.vol5m > 0 ? s.mc / s.vol5m > 2 : null },
+  { key: 'volShock',   name: '5m volume over 30% of MC',              group: 'impact', pass: s => s.mc > 0 ? s.vol5m / s.mc > 0.3 : null },
+  { key: 'volCalm',    name: '5m volume under 10% of MC',             group: 'impact', pass: s => s.mc > 0 ? s.vol5m / s.mc < 0.1 : null },
+  { key: 'chgPerTr',   name: 'under 0.5% of 5m move per trade',       group: 'impact', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? Math.abs(s.chg5m) / t < 0.5 : null; } },
+  { key: 'chgPerTrHi', name: 'over 0.05% of 5m move per trade',       group: 'impact', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? Math.abs(s.chg5m) / t > 0.05 : null; } },
+
+  // ── Netflow: buyers counted, not divided ──
+  { key: 'nfPos',     name: 'more buys than sells in 5m',            group: 'netflow', pass: s => (s.buys5m + s.sells5m) > 0 ? s.buys5m > s.sells5m : null },
+  { key: 'nf20',      name: 'at least 20 net buyers in 5m',          group: 'netflow', pass: s => (s.buys5m + s.sells5m) > 0 ? (s.buys5m - s.sells5m) >= 20 : null },
+  { key: 'nf50',      name: 'at least 50 net buyers in 5m',          group: 'netflow', pass: s => (s.buys5m + s.sells5m) > 0 ? (s.buys5m - s.sells5m) >= 50 : null },
+  { key: 'nfCap200',  name: 'under 200 net buyers (not a stampede)', group: 'netflow', pass: s => (s.buys5m + s.sells5m) > 0 ? (s.buys5m - s.sells5m) < 200 : null },
+  { key: 'nf1h',      name: 'more buys than sells over the hour',    group: 'netflow', pass: s => (s.buys1h + s.sells1h) > 0 ? s.buys1h > s.sells1h : null },
+  { key: 'nf1h50',    name: 'at least 50 net buyers over the hour',  group: 'netflow', pass: s => (s.buys1h + s.sells1h) > 0 ? (s.buys1h - s.sells1h) >= 50 : null },
+  { key: 'nfShare10', name: 'net buyers over 10% of 5m trades',      group: 'netflow', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? (s.buys5m - s.sells5m) / t > 0.1 : null; } },
+  { key: 'nfShare30', name: 'net buyers over 30% of 5m trades',      group: 'netflow', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? (s.buys5m - s.sells5m) / t > 0.3 : null; } },
+  { key: 'sellsCap',  name: 'under 150 sells in 5m',                 group: 'netflow', pass: s => (s.buys5m + s.sells5m) > 0 ? s.sells5m < 150 : null },
+  { key: 'buysFloor', name: 'at least 30 buys in 5m',                group: 'netflow', pass: s => (s.buys5m + s.sells5m) > 0 ? s.buys5m >= 30 : null },
+
+  // ── Trend: each metric against its own one-hour baseline ──
+  { key: 'tdSize',     name: '5m average trade larger than the 1h average',  group: 'trend', pass: s => { const a = s.buys5m + s.sells5m, b = s.buys1h + s.sells1h; return a > 0 && b > 0 && s.vol1h > 0 ? (s.vol5m / a) > (s.vol1h / b) : null; } },
+  { key: 'tdSizeDown', name: '5m average trade smaller than the 1h average', group: 'trend', pass: s => { const a = s.buys5m + s.sells5m, b = s.buys1h + s.sells1h; return a > 0 && b > 0 && s.vol1h > 0 ? (s.vol5m / a) < (s.vol1h / b) : null; } },
+  { key: 'tdBuyUp',    name: 'buy share rising against the hour',            group: 'trend', pass: s => { const a = s.buys5m + s.sells5m, b = s.buys1h + s.sells1h; return a > 0 && b > 0 ? (s.buys5m / a) > (s.buys1h / b) : null; } },
+  { key: 'tdBuyDown',  name: 'buy share falling against the hour',           group: 'trend', pass: s => { const a = s.buys5m + s.sells5m, b = s.buys1h + s.sells1h; return a > 0 && b > 0 ? (s.buys5m / a) < (s.buys1h / b) : null; } },
+  { key: 'tdVolUp',    name: '5m volume rate above the 1h rate',             group: 'trend', pass: s => s.vol1h > 0 ? (s.vol5m * 12) > s.vol1h : null },
+  { key: 'tdVolCalm',  name: '5m volume rate under 3x the 1h rate',          group: 'trend', pass: s => s.vol1h > 0 ? (s.vol5m * 12) < s.vol1h * 3 : null },
+  { key: 'tdMomUp',    name: '5m move faster than the hour average',         group: 'trend', pass: s => s.chg1h !== 0 ? s.chg5m > s.chg1h / 12 : null },
+  { key: 'tdMomCalm',  name: '5m move under 3x the hour average',            group: 'trend', pass: s => s.chg1h > 0 ? s.chg5m < (s.chg1h / 12) * 3 : null },
+  { key: 'tdPaceBand', name: '5m trade pace 0.5-3x the 1h pace',             group: 'trend', pass: s => { const h = (s.buys1h + s.sells1h) / 12; const n = s.buys5m + s.sells5m; return h > 0 ? (n / h) >= 0.5 && (n / h) <= 3 : null; } },
+  { key: 'tdAll',      name: 'volume, pace and buy share all rising',        group: 'trend', pass: s => { const a = s.buys5m + s.sells5m, b = s.buys1h + s.sells1h, h = b / 12; return a > 0 && b > 0 && s.vol1h > 0 ? ((s.vol5m * 12) > s.vol1h && a > h && (s.buys5m / a) > (s.buys1h / b)) : null; } },
+
+  // ── Grid: finer thresholds on axes that already earned attention ──
+  { key: 'gF40', name: 'fresh-wallet share under 40%', group: 'grid', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.40 : null; } },
+  { key: 'gF50', name: 'fresh-wallet share under 50%', group: 'grid', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.50 : null; } },
+  { key: 'gF55', name: 'fresh-wallet share under 55%', group: 'grid', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.55 : null; } },
+  { key: 'gF65', name: 'fresh-wallet share under 65%', group: 'grid', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.65 : null; } },
+  { key: 'gV7',  name: 'at least 7 veteran holders',   group: 'grid', pass: s => s.veterans != null ? s.veterans >= 7 : null },
+  { key: 'gV15', name: 'at least 15 veteran holders',  group: 'grid', pass: s => s.veterans != null ? s.veterans >= 15 : null },
+  { key: 'gV25', name: 'at least 25 veteran holders',  group: 'grid', pass: s => s.veterans != null ? s.veterans >= 25 : null },
+  { key: 'gV40', name: 'at least 40 veteran holders',  group: 'grid', pass: s => s.veterans != null ? s.veterans >= 40 : null },
+  { key: 'gI30', name: 'independent wallets over 30% of traced', group: 'grid', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 ? (s.deepIndependent ?? 0) / t > 0.3 : null; } },
+  { key: 'gI40', name: 'independent wallets over 40% of traced', group: 'grid', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 ? (s.deepIndependent ?? 0) / t > 0.4 : null; } },
+  { key: 'gI60', name: 'independent wallets over 60% of traced', group: 'grid', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 ? (s.deepIndependent ?? 0) / t > 0.6 : null; } },
+  { key: 'gI80', name: 'independent wallets over 80% of traced', group: 'grid', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 ? (s.deepIndependent ?? 0) / t > 0.8 : null; } },
+  { key: 'gL3',  name: 'liquidity over $3K',   group: 'grid', pass: s => s.liq > 3000 },
+  { key: 'gL7',  name: 'liquidity over $7K',   group: 'grid', pass: s => s.liq > 7000 },
+  { key: 'gL15', name: 'liquidity over $15K',  group: 'grid', pass: s => s.liq > 15000 },
+  { key: 'gL25', name: 'liquidity over $25K',  group: 'grid', pass: s => s.liq > 25000 },
+  { key: 'gL30', name: 'liquidity over $30K',  group: 'grid', pass: s => s.liq > 30000 },
+  { key: 'gL75', name: 'liquidity over $75K',  group: 'grid', pass: s => s.liq > 75000 },
+  { key: 'gM5',  name: 'MC over $5K',   group: 'grid', pass: s => s.mc > 5000 },
+  { key: 'gM10', name: 'MC over $10K',  group: 'grid', pass: s => s.mc > 10000 },
+  { key: 'gM20', name: 'MC over $20K',  group: 'grid', pass: s => s.mc > 20000 },
+  { key: 'gM30', name: 'MC under $30K', group: 'grid', pass: s => s.mc > 0 ? s.mc < 30000 : null },
+  { key: 'gM50', name: 'MC under $50K', group: 'grid', pass: s => s.mc > 0 ? s.mc < 50000 : null },
+  { key: 'gM75', name: 'MC under $75K', group: 'grid', pass: s => s.mc > 0 ? s.mc < 75000 : null },
+  { key: 'gM90', name: 'MC under $90K', group: 'grid', pass: s => s.mc > 0 ? s.mc < 90000 : null },
+  { key: 'gA1',  name: 'older than 1 minute',   group: 'grid', pass: s => s.ageMin > 1 },
+  { key: 'gA3',  name: 'older than 3 minutes',  group: 'grid', pass: s => s.ageMin > 3 },
+  { key: 'gA8',  name: 'older than 8 minutes',  group: 'grid', pass: s => s.ageMin > 8 },
+  { key: 'gA45', name: 'older than 45 minutes', group: 'grid', pass: s => s.ageMin > 45 },
+  { key: 'gA90', name: 'older than 90 minutes', group: 'grid', pass: s => s.ageMin > 90 },
+  { key: 'gA180',name: 'older than 3 hours',    group: 'grid', pass: s => s.ageMin > 180 },
+  { key: 'gA720',name: 'older than 12 hours',   group: 'grid', pass: s => s.ageMin > 720 },
+  { key: 'gW2',  name: 'over $2K volume in 5m',    group: 'grid', pass: s => s.vol5m > 2000 },
+  { key: 'gW5',  name: 'over $5K volume in 5m',    group: 'grid', pass: s => s.vol5m > 5000 },
+  { key: 'gW15', name: 'over $15K volume in 5m',   group: 'grid', pass: s => s.vol5m > 15000 },
+  { key: 'gW30', name: 'over $30K volume in 5m',   group: 'grid', pass: s => s.vol5m > 30000 },
+  { key: 'gW100',name: 'under $100K volume in 5m', group: 'grid', pass: s => s.vol5m > 0 ? s.vol5m < 100000 : null },
+  { key: 'gT25', name: 'at least 25 trades in 5m',  group: 'grid', pass: s => (s.buys5m + s.sells5m) >= 25 },
+  { key: 'gT75', name: 'at least 75 trades in 5m',  group: 'grid', pass: s => (s.buys5m + s.sells5m) >= 75 },
+  { key: 'gT150',name: 'at least 150 trades in 5m', group: 'grid', pass: s => (s.buys5m + s.sells5m) >= 150 },
+  { key: 'gT300',name: 'under 300 trades in 5m',    group: 'grid', pass: s => (s.buys5m + s.sells5m) > 0 ? (s.buys5m + s.sells5m) < 300 : null },
+  { key: 'gD01', name: 'dev holds under 0.1%', group: 'grid', pass: s => s.devHoldPct != null ? s.devHoldPct < 0.1 : null },
+  { key: 'gD3',  name: 'dev holds under 3%',   group: 'grid', pass: s => s.devHoldPct != null ? s.devHoldPct < 3 : null },
+  { key: 'gD7',  name: 'dev holds under 7%',   group: 'grid', pass: s => s.devHoldPct != null ? s.devHoldPct < 7 : null },
+  { key: 'gD20', name: 'dev holds under 20%',  group: 'grid', pass: s => s.devHoldPct != null ? s.devHoldPct < 20 : null },
+  { key: 'gS3',  name: 'same-funder share under 3%',  group: 'grid', pass: s => s.sameFunderPct != null ? s.sameFunderPct < 3 : null },
+  { key: 'gS15', name: 'same-funder share under 15%', group: 'grid', pass: s => s.sameFunderPct != null ? s.sameFunderPct < 15 : null },
+  { key: 'gS30', name: 'same-funder share under 30%', group: 'grid', pass: s => s.sameFunderPct != null ? s.sameFunderPct < 30 : null },
+  { key: 'gN5',  name: 'at least 5 distinct funders',  group: 'grid', pass: s => s.deepFunders != null ? s.deepFunders >= 5 : null },
+  { key: 'gN10', name: 'at least 10 distinct funders', group: 'grid', pass: s => s.deepFunders != null ? s.deepFunders >= 10 : null },
+  { key: 'gN15', name: 'at least 15 distinct funders', group: 'grid', pass: s => s.deepFunders != null ? s.deepFunders >= 15 : null },
+  { key: 'gN40', name: 'at least 40 distinct funders', group: 'grid', pass: s => s.deepFunders != null ? s.deepFunders >= 40 : null },
+
+  // ── Three-condition combinations ──
+  { key: 'tc1',  name: 'fresh<70% + 5 veterans + liq over $10K',       group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.veterans ?? 0) >= 5 && s.liq > 10000) : null; } },
+  { key: 'tc2',  name: 'fresh<70% + 1h positive + pace rising',        group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const h = (s.buys1h + s.sells1h) / 12; return t > 0 && h > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.chg1h > 0 && (s.buys5m + s.sells5m) > h) : null; } },
+  { key: 'tc3',  name: 'fresh<70% + MC $15-60K + buys over 55%',       group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.mc >= 15000 && s.mc <= 60000 && s.buys5m / tr > 0.55) : null; } },
+  { key: 'tc4',  name: '10 veterans + independent>50% + a social',     group: 'combo3', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 && s.veterans != null && s.socials != null ? (s.veterans >= 10 && (s.deepIndependent ?? 0) / t > 0.5 && s.socials >= 1) : null; } },
+  { key: 'tc5',  name: 'fresh<70% + older than 5m + 1h under +400%',   group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.ageMin > 5 && s.chg1h < 400) : null; } },
+  { key: 'tc6',  name: 'fresh<70% + avg trade>$80 + liq over $10K',    group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.vol5m / tr > 80 && s.liq > 10000) : null; } },
+  { key: 'tc7',  name: '100 owners + fresh<70% + 20 funders',          group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.deepOwners != null && s.deepFunders != null ? (s.deepOwners >= 100 && (s.freshWallets ?? 0) / t < 0.7 && s.deepFunders >= 20) : null; } },
+  { key: 'tc8',  name: 'fresh<70% + turnover 0.2-2x + 1h positive',    group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.liq > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.vol5m / s.liq) >= 0.2 && (s.vol5m / s.liq) <= 2 && s.chg1h > 0) : null; } },
+  { key: 'tc9',  name: 'veterans>50% + liq over $10K + MC under $60K', group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.veterans ?? 0) / t > 0.5 && s.liq > 10000 && s.mc > 0 && s.mc < 60000) : null; } },
+  { key: 'tc10', name: 'fresh<70% + 20 net buyers + pace rising',      group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const h = (s.buys1h + s.sells1h) / 12; return t > 0 && h > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.buys5m - s.sells5m) >= 20 && (s.buys5m + s.sells5m) > h) : null; } },
+  { key: 'tc11', name: 'fresh<70% + not parabolic + not dumping',      group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.chg1h < 400 && s.chg5m > -25) : null; } },
+  { key: 'tc12', name: 'a social + 5 veterans + liq over $10K',        group: 'combo3', pass: s => s.socials != null && s.veterans != null ? (s.socials >= 1 && s.veterans >= 5 && s.liq > 10000) : null },
+  { key: 'tc13', name: 'fresh<70% + $10-80K volume + buys over 55%',   group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.vol5m >= 10000 && s.vol5m <= 80000 && s.buys5m / tr > 0.55) : null; } },
+  { key: 'tc14', name: 'independent>50% + 20 funders + 80 owners',     group: 'combo3', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 && s.deepFunders != null && s.deepOwners != null ? ((s.deepIndependent ?? 0) / t > 0.5 && s.deepFunders >= 20 && s.deepOwners >= 80) : null; } },
+  { key: 'tc15', name: 'fresh<70% + dev under 5% + older than 5m',     group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.devHoldPct != null ? ((s.freshWallets ?? 0) / t < 0.7 && s.devHoldPct < 5 && s.ageMin > 5) : null; } },
+  { key: 'tc16', name: '10 veterans + 1h positive + turnover under 2x',group: 'combo3', pass: s => s.veterans != null && s.liq > 0 ? (s.veterans >= 10 && s.chg1h > 0 && s.vol5m / s.liq < 2) : null },
+  { key: 'tc17', name: 'fresh<70% + liq/MC 0.15-0.35 + buys over 55%', group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 && s.mc > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.liq / s.mc) >= 0.15 && (s.liq / s.mc) <= 0.35 && s.buys5m / tr > 0.55) : null; } },
+  { key: 'tc18', name: 'fresh<70% + trade size rising + 1h positive',  group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const a = s.buys5m + s.sells5m, b = s.buys1h + s.sells1h; return t > 0 && a > 0 && b > 0 && s.vol1h > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.vol5m / a) > (s.vol1h / b) && s.chg1h > 0) : null; } },
+  { key: 'tc19', name: 'fresh<70% + under 500 trades + avg over $80',  group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && tr < 500 && s.vol5m / tr > 80) : null; } },
+  { key: 'tc20', name: 'veterans>50% + independent>50% + 20 funders',  group: 'combo3', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const d = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 && d > 0 && s.deepFunders != null ? ((s.veterans ?? 0) / t > 0.5 && (s.deepIndependent ?? 0) / d > 0.5 && s.deepFunders >= 20) : null; } },
 ];
 export function snapshotFrom(m: any, extra: Partial<Snapshot> = {}): Snapshot {
   return {
