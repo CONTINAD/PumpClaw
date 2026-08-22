@@ -252,8 +252,170 @@ export const CANDIDATES: Candidate[] = [
   { key: 'dpInd50', name: 'at least 50 independent holders', group: 'depth', pass: s => (s.deepIndependent != null ? s.deepIndependent >= 50 : null) },
   { key: 'dpFund10', name: 'at least 10 distinct funders', group: 'depth', pass: s => (s.deepFunders != null ? s.deepFunders >= 10 : null) },
   { key: 'dpFundRatio', name: 'funders at least half of traced holders', group: 'depth', pass: s => { if (s.deepFunders == null || s.deepIndependent == null || s.deepCluster == null) return null; const t = s.deepIndependent + s.deepCluster; return t > 0 ? s.deepFunders / t >= 0.5 : null; } },
-];
+  // ──────────────────────────────────────────────────────────────────────────
+  // Second wave — 112 candidates, none of which blocks anything.
+  //
+  // The first wave answered "is the chart healthy" from a handful of angles and
+  // then ran out of ideas, which is why 84 usable candidates produced exactly one
+  // usable axis: wallet composition. Chart-shape rules kept scoring the same way
+  // because they were all reading the same three numbers.
+  //
+  // These deliberately spread across dimensions the first wave never touched —
+  // trade PACE rather than volume, the SHAPE of the price path across three
+  // timeframes rather than its direction, per-holder economics, absolute veteran
+  // counts rather than shares, venue, and combinations anchored on the one signal
+  // that has already earned its place. Each returns null on missing input so a
+  // thin field is reported as "no opinion" rather than scored as a pass.
+  // ──────────────────────────────────────────────────────────────────────────
 
+  // ── Trade pace: how many hands, how fast, and which way ──
+  { key: 'tr50',      name: 'at least 50 trades in 5m',            group: 'pace', pass: s => (s.buys5m + s.sells5m) >= 50 },
+  { key: 'tr100',     name: 'at least 100 trades in 5m',           group: 'pace', pass: s => (s.buys5m + s.sells5m) >= 100 },
+  { key: 'tr200',     name: 'at least 200 trades in 5m',           group: 'pace', pass: s => (s.buys5m + s.sells5m) >= 200 },
+  { key: 'trCap500',  name: 'under 500 trades in 5m',              group: 'pace', pass: s => (s.buys5m + s.sells5m) < 500 },
+  { key: 'trBand2',   name: '50-400 trades in 5m',                 group: 'pace', pass: s => { const t = s.buys5m + s.sells5m; return t >= 50 && t <= 400; } },
+  { key: 'trPerMin',  name: 'over 20 trades a minute',             group: 'pace', pass: s => (s.buys5m + s.sells5m) / 5 > 20 },
+  { key: 'trAccel2',  name: '5m trade pace over 2x the 1h pace',   group: 'pace', pass: s => { const h = (s.buys1h + s.sells1h) / 12; return h > 0 ? (s.buys5m + s.sells5m) > h * 2 : null; } },
+  { key: 'trDecel',   name: '5m trade pace under the 1h pace',     group: 'pace', pass: s => { const h = (s.buys1h + s.sells1h) / 12; return h > 0 ? (s.buys5m + s.sells5m) < h : null; } },
+  { key: 'buyAccel',  name: 'buys5m over 25% of buys1h',           group: 'pace', pass: s => s.buys1h > 0 ? s.buys5m / s.buys1h > 0.25 : null },
+  { key: 'sellAccel', name: 'sells5m over 25% of sells1h',         group: 'pace', pass: s => s.sells1h > 0 ? s.sells5m / s.sells1h > 0.25 : null },
+  { key: 'buyShare55',name: 'buys over 55% of 5m trades',          group: 'pace', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? s.buys5m / t > 0.55 : null; } },
+  { key: 'buyShare65',name: 'buys over 65% of 5m trades',          group: 'pace', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? s.buys5m / t > 0.65 : null; } },
+  { key: 'buyShareLo',name: 'buys under 75% of 5m trades',         group: 'pace', pass: s => { const t = s.buys5m + s.sells5m; return t > 0 ? s.buys5m / t < 0.75 : null; } },
+  { key: 'trPerHold', name: 'under 4 trades per owner',            group: 'pace', pass: s => (s.deepOwners ?? 0) > 0 ? (s.buys5m + s.sells5m) / s.deepOwners! < 4 : null },
+
+  // ── Volume time-structure: is this the first hour, or a decaying one ──
+  { key: 'v1h24hi',   name: '1h volume over half the 24h volume',  group: 'vshape', pass: s => s.vol24h > 0 ? s.vol1h / s.vol24h > 0.5 : null },
+  { key: 'v1h24lo',   name: '1h volume under 80% of 24h volume',   group: 'vshape', pass: s => s.vol24h > 0 ? s.vol1h / s.vol24h < 0.8 : null },
+  { key: 'vFirstHr',  name: 'first hour of trading (1h = 24h vol)',group: 'vshape', pass: s => s.vol24h > 0 ? s.vol1h / s.vol24h > 0.97 : null },
+  { key: 'vDecay',    name: '5m rate under 1.5x the 1h rate',      group: 'vshape', pass: s => s.vol1h > 0 ? (s.vol5m * 12) / s.vol1h < 1.5 : null },
+  { key: 'vSurge2',   name: '5m rate over 2x the 1h rate',         group: 'vshape', pass: s => s.vol1h > 0 ? (s.vol5m * 12) / s.vol1h > 2 : null },
+  { key: 'v24mc1',    name: '24h volume over 1x MC',               group: 'vshape', pass: s => s.mc > 0 ? s.vol24h / s.mc > 1 : null },
+  { key: 'v24mcCap',  name: '24h volume under 5x MC',              group: 'vshape', pass: s => s.mc > 0 ? s.vol24h / s.mc < 5 : null },
+  { key: 'v5abs25',   name: 'over $25K volume in 5m',              group: 'vshape', pass: s => s.vol5m > 25000 },
+  { key: 'v5abs50',   name: 'over $50K volume in 5m',              group: 'vshape', pass: s => s.vol5m > 50000 },
+  { key: 'v5cap200',  name: 'under $200K volume in 5m',            group: 'vshape', pass: s => s.vol5m < 200000 },
+  { key: 'v5band',    name: '$10K-$80K volume in 5m',              group: 'vshape', pass: s => s.vol5m >= 10000 && s.vol5m <= 80000 },
+
+  // ── Price path across all three timeframes, not just one ──
+  { key: 'allUp',     name: '5m, 1h and 6h all positive',          group: 'path', pass: s => s.chg5m > 0 && s.chg1h > 0 && s.chg6h > 0 },
+  { key: 'notAllDown',name: 'not all three timeframes negative',   group: 'path', pass: s => !(s.chg5m < 0 && s.chg1h < 0 && s.chg6h < 0) },
+  { key: 'roundTrip', name: '6h up but 1h down (giving it back)',  group: 'path', pass: s => !(s.chg6h > 50 && s.chg1h < 0) },
+  { key: 'reclaim',   name: '1h down but 5m up (turning)',         group: 'path', pass: s => s.chg1h < 0 && s.chg5m > 0 },
+  { key: 'coolUp',    name: '5m positive but under +50%',          group: 'path', pass: s => s.chg5m > 0 && s.chg5m < 50 },
+  { key: 'chg6hCap',  name: '6h change under +1000%',              group: 'path', pass: s => s.chg6h < 1000 },
+  { key: 'chg6hPos',  name: '6h change positive',                  group: 'path', pass: s => s.chg6h > 0 },
+  { key: 'lead5',     name: '5m move larger than the 1h move',     group: 'path', pass: s => s.chg5m > s.chg1h },
+  { key: 'lag5',      name: '5m move smaller than the 1h move',    group: 'path', pass: s => s.chg5m < s.chg1h },
+  { key: 'chgRatio',  name: '5m is 10-60% of the 1h move',         group: 'path', pass: s => s.chg1h > 0 ? (s.chg5m / s.chg1h) >= 0.1 && (s.chg5m / s.chg1h) <= 0.6 : null },
+  { key: 'flat5',     name: '5m change between -5% and +5%',       group: 'path', pass: s => s.chg5m >= -5 && s.chg5m <= 5 },
+  { key: 'noSpike5',  name: '5m change under +200%',               group: 'path', pass: s => s.chg5m < 200 },
+  { key: 'noDump6h',  name: '6h change above -50%',                group: 'path', pass: s => s.chg6h > -50 },
+
+  // ── Liquidity, in relation to what is trading against it ──
+  { key: 'lq5',       name: 'liquidity over $5K',                  group: 'liq3', pass: s => s.liq > 5000 },
+  { key: 'lq50',      name: 'liquidity over $50K',                 group: 'liq3', pass: s => s.liq > 50000 },
+  { key: 'lqCap100',  name: 'liquidity under $100K',               group: 'liq3', pass: s => s.liq > 0 ? s.liq < 100000 : null },
+  { key: 'lqBand2',   name: 'liquidity $8K-$40K',                  group: 'liq3', pass: s => s.liq >= 8000 && s.liq <= 40000 },
+  { key: 'lqVol5',    name: 'liquidity over 30% of 5m volume',     group: 'liq3', pass: s => s.vol5m > 0 ? s.liq / s.vol5m > 0.3 : null },
+  { key: 'lqVol24',   name: 'liquidity over 10% of 24h volume',    group: 'liq3', pass: s => s.vol24h > 0 ? s.liq / s.vol24h > 0.1 : null },
+  { key: 'lqPerOwn',  name: 'over $80 liquidity per owner',        group: 'liq3', pass: s => (s.deepOwners ?? 0) > 0 ? s.liq / s.deepOwners! > 80 : null },
+  { key: 'lqMcTight', name: 'liq/MC between 0.15 and 0.35',        group: 'liq3', pass: s => s.mc > 0 ? (s.liq / s.mc) >= 0.15 && (s.liq / s.mc) <= 0.35 : null },
+  { key: 'lqMcHi',    name: 'liq/MC over 0.25',                    group: 'liq3', pass: s => s.mc > 0 ? s.liq / s.mc > 0.25 : null },
+
+  // ── Per-holder economics: what each wallet is worth and doing ──
+  { key: 'mcPerOwnCap',name: 'under $400 MC per owner',            group: 'econ', pass: s => (s.deepOwners ?? 0) > 0 ? s.mc / s.deepOwners! < 400 : null },
+  { key: 'mcPerOwnFl', name: 'over $60 MC per owner',              group: 'econ', pass: s => (s.deepOwners ?? 0) > 0 ? s.mc / s.deepOwners! > 60 : null },
+  { key: 'mcPerOwnBd', name: '$60-$400 MC per owner',              group: 'econ', pass: s => (s.deepOwners ?? 0) > 0 ? (s.mc / s.deepOwners!) >= 60 && (s.mc / s.deepOwners!) <= 400 : null },
+  { key: 'volPerOwn',  name: 'under $200 of 5m volume per owner',  group: 'econ', pass: s => (s.deepOwners ?? 0) > 0 ? s.vol5m / s.deepOwners! < 200 : null },
+  { key: 'ownVsTr',    name: 'owners over 20% of the 5m trade count', group: 'econ', pass: s => { const t = s.buys5m + s.sells5m; return (s.deepOwners ?? 0) > 0 && t > 0 ? s.deepOwners! / t > 0.2 : null; } },
+  { key: 'own100',     name: 'at least 100 owner wallets',         group: 'econ', pass: s => s.deepOwners != null ? s.deepOwners >= 100 : null },
+  { key: 'own200',     name: 'at least 200 owner wallets',         group: 'econ', pass: s => s.deepOwners != null ? s.deepOwners >= 200 : null },
+  { key: 'ownCap300',  name: 'under 300 owner wallets',            group: 'econ', pass: s => s.deepOwners != null ? s.deepOwners < 300 : null },
+  { key: 'ownBand',    name: '80-400 owner wallets',               group: 'econ', pass: s => s.deepOwners != null ? s.deepOwners >= 80 && s.deepOwners <= 400 : null },
+
+  // ── Graph shape beyond the single largest cluster ──
+  { key: 'indShare50', name: 'independent wallets over 50% of traced', group: 'graph2', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 ? (s.deepIndependent ?? 0) / t > 0.5 : null; } },
+  { key: 'indShare70', name: 'independent wallets over 70% of traced', group: 'graph2', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 ? (s.deepIndependent ?? 0) / t > 0.7 : null; } },
+  { key: 'fundPerOwn', name: 'over 0.5 funders per owner',         group: 'graph2', pass: s => (s.deepOwners ?? 0) > 0 && s.deepFunders != null ? s.deepFunders / s.deepOwners! > 0.5 : null },
+  { key: 'fund20b',    name: 'at least 20 distinct funders',       group: 'graph2', pass: s => s.deepFunders != null ? s.deepFunders >= 20 : null },
+  { key: 'fund30b',    name: 'at least 30 distinct funders',       group: 'graph2', pass: s => s.deepFunders != null ? s.deepFunders >= 30 : null },
+  { key: 'cluVsOwn',   name: 'largest cluster under 10% of owners',group: 'graph2', pass: s => (s.deepOwners ?? 0) > 0 && s.deepCluster != null ? s.deepCluster / s.deepOwners! < 0.1 : null },
+  { key: 'sf5',        name: 'same-funder share under 5%',         group: 'graph2', pass: s => s.sameFunderPct != null ? s.sameFunderPct < 5 : null },
+  { key: 'sf10',       name: 'same-funder share under 10%',        group: 'graph2', pass: s => s.sameFunderPct != null ? s.sameFunderPct < 10 : null },
+  { key: 'sf20b',      name: 'same-funder share under 20%',        group: 'graph2', pass: s => s.sameFunderPct != null ? s.sameFunderPct < 20 : null },
+
+  // ── Veterans and fresh wallets as COUNTS, not shares ──
+  { key: 'vet10',     name: 'at least 10 veteran holders',         group: 'wallets', pass: s => s.veterans != null ? s.veterans >= 10 : null },
+  { key: 'vet20',     name: 'at least 20 veteran holders',         group: 'wallets', pass: s => s.veterans != null ? s.veterans >= 20 : null },
+  { key: 'vet30',     name: 'at least 30 veteran holders',         group: 'wallets', pass: s => s.veterans != null ? s.veterans >= 30 : null },
+  { key: 'vetSh50',   name: 'veterans over 50% of traced',         group: 'wallets', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.veterans ?? 0) / t > 0.5 : null; } },
+  { key: 'vetSh70',   name: 'veterans over 70% of traced',         group: 'wallets', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.veterans ?? 0) / t > 0.7 : null; } },
+  { key: 'freshCap20',name: 'under 20 fresh wallets',              group: 'wallets', pass: s => s.freshWallets != null ? s.freshWallets < 20 : null },
+  { key: 'freshCap40',name: 'under 40 fresh wallets',              group: 'wallets', pass: s => s.freshWallets != null ? s.freshWallets < 40 : null },
+  { key: 'traced30',  name: 'at least 30 wallets traced',          group: 'wallets', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? t >= 30 : null; } },
+  { key: 'traced50',  name: 'at least 50 wallets traced',          group: 'wallets', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? t >= 50 : null; } },
+  { key: 'fvRatio1',  name: 'fresh:veteran under 1:1',             group: 'wallets', pass: s => (s.veterans ?? 0) > 0 ? (s.freshWallets ?? 0) / s.veterans! < 1 : null },
+  { key: 'fvRatio05', name: 'fresh:veteran under 1:2',             group: 'wallets', pass: s => (s.veterans ?? 0) > 0 ? (s.freshWallets ?? 0) / s.veterans! < 0.5 : null },
+
+  // ── Dev holdings at thresholds the first wave skipped ──
+  { key: 'dev1',      name: 'dev holds under 1%',                  group: 'dev2', pass: s => s.devHoldPct != null ? s.devHoldPct < 1 : null },
+  { key: 'dev10',     name: 'dev holds under 10%',                 group: 'dev2', pass: s => s.devHoldPct != null ? s.devHoldPct < 10 : null },
+  { key: 'dev15',     name: 'dev holds under 15%',                 group: 'dev2', pass: s => s.devHoldPct != null ? s.devHoldPct < 15 : null },
+  { key: 'devBand',   name: 'dev holds 0.5%-5% (skin, not control)', group: 'dev2', pass: s => s.devHoldPct != null ? s.devHoldPct >= 0.5 && s.devHoldPct <= 5 : null },
+  { key: 'devZero',   name: 'dev holds essentially nothing',       group: 'dev2', pass: s => s.devHoldPct != null ? s.devHoldPct < 0.2 : null },
+
+  // ── Age, including the revival case the volume gate keeps missing ──
+  { key: 'ag30',      name: 'older than 30 min',                   group: 'age2', pass: s => s.ageMin > 30 },
+  { key: 'ag60',      name: 'older than 1 hour',                   group: 'age2', pass: s => s.ageMin > 60 },
+  { key: 'ag120',     name: 'older than 2 hours',                  group: 'age2', pass: s => s.ageMin > 120 },
+  { key: 'agCap60',   name: 'under 1 hour old',                    group: 'age2', pass: s => s.ageMin < 60 },
+  { key: 'agCap360',  name: 'under 6 hours old',                   group: 'age2', pass: s => s.ageMin < 360 },
+  { key: 'agCapDay',  name: 'under 24 hours old',                  group: 'age2', pass: s => s.ageMin < 1440 },
+  { key: 'agRevival', name: 'older than 24 hours (a revival)',     group: 'age2', pass: s => s.ageMin > 1440 },
+  { key: 'agBand2',   name: '15-120 minutes old',                  group: 'age2', pass: s => s.ageMin >= 15 && s.ageMin <= 120 },
+  { key: 'agBand3',   name: '2-30 minutes old',                    group: 'age2', pass: s => s.ageMin >= 2 && s.ageMin <= 30 },
+
+  // ── Clock, at a finer grain than the first wave's two blocks ──
+  { key: 'utcNight',  name: '00:00-05:59 UTC',                     group: 'clock2', pass: s => s.hourUtc != null ? s.hourUtc < 6 : null },
+  { key: 'utcMorning',name: '06:00-11:59 UTC',                     group: 'clock2', pass: s => s.hourUtc != null ? s.hourUtc >= 6 && s.hourUtc < 12 : null },
+  { key: 'utcArvo',   name: '12:00-17:59 UTC',                     group: 'clock2', pass: s => s.hourUtc != null ? s.hourUtc >= 12 && s.hourUtc < 18 : null },
+  { key: 'utcLate',   name: '20:00-23:59 UTC',                     group: 'clock2', pass: s => s.hourUtc != null ? s.hourUtc >= 20 : null },
+  { key: 'notArvo',   name: 'not 12:00-17:59 UTC',                 group: 'clock2', pass: s => s.hourUtc != null ? !(s.hourUtc >= 12 && s.hourUtc < 18) : null },
+
+  // ── Venue ──
+  { key: 'dexCurve',  name: 'still on the pump.fun curve',         group: 'venue', pass: s => s.dexId ? s.dexId === 'pumpfun' : null },
+  { key: 'dexSwap',   name: 'migrated to pumpswap',                group: 'venue', pass: s => s.dexId ? s.dexId === 'pumpswap' : null },
+  { key: 'dexOther',  name: 'neither pumpfun nor pumpswap',        group: 'venue', pass: s => s.dexId ? (s.dexId !== 'pumpfun' && s.dexId !== 'pumpswap') : null },
+
+  // ── Socials at counts, since one link is trivially pasted ──
+  { key: 'social2',   name: 'at least 2 socials',                  group: 'social2', pass: s => s.socials != null ? s.socials >= 2 : null },
+  { key: 'social3',   name: 'all three socials',                   group: 'social2', pass: s => s.socials != null ? s.socials >= 3 : null },
+
+  // ── Combinations anchored on the one axis that has already earned its place ──
+  { key: 'nc1',  name: 'fresh <70% + at least 5 veterans',         group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.veterans ?? 0) >= 5) : null; } },
+  { key: 'nc2',  name: 'fresh <70% + liquidity over $10K',         group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.liq > 10000) : null; } },
+  { key: 'nc3',  name: 'fresh <70% + 1h change positive',          group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.chg1h > 0) : null; } },
+  { key: 'nc4',  name: 'at least 5 veterans + avg trade over $80', group: 'combo2', pass: s => { const t = s.buys5m + s.sells5m; return s.veterans != null && t > 0 ? (s.veterans >= 5 && s.vol5m / t > 80) : null; } },
+  { key: 'nc5',  name: 'fresh <70% + MC $15K-$60K',                group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.mc >= 15000 && s.mc <= 60000) : null; } },
+  { key: 'nc6',  name: 'fresh <70% + at least 100 owners',         group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.deepOwners != null ? ((s.freshWallets ?? 0) / t < 0.7 && s.deepOwners >= 100) : null; } },
+  { key: 'nc7',  name: 'independent >50% + at least 5 veterans',   group: 'combo2', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 && s.veterans != null ? ((s.deepIndependent ?? 0) / t > 0.5 && s.veterans >= 5) : null; } },
+  { key: 'nc8',  name: 'fresh <70% + buys over 55%',               group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.buys5m / tr > 0.55) : null; } },
+  { key: 'nc9',  name: 'has a social + fresh <70%',                group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.socials != null ? ((s.freshWallets ?? 0) / t < 0.7 && s.socials >= 1) : null; } },
+  { key: 'nc10', name: 'fresh <70% + 5m rate over the 1h rate',    group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.vol1h > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.vol5m * 12) / s.vol1h > 1) : null; } },
+  { key: 'nc11', name: 'veterans >50% + liquidity over $10K',      group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.veterans ?? 0) / t > 0.5 && s.liq > 10000) : null; } },
+  { key: 'nc12', name: 'fresh <70% + 1h change under +400%',       group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.chg1h < 400) : null; } },
+  { key: 'nc13', name: 'fresh <70% + older than 5 min',            group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.ageMin > 5) : null; } },
+  { key: 'nc14', name: 'at least 20 funders + fresh <70%',         group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.deepFunders != null ? ((s.freshWallets ?? 0) / t < 0.7 && s.deepFunders >= 20) : null; } },
+  { key: 'nc15', name: 'liq/MC 0.15-0.35 + fresh <70%',            group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.mc > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.liq / s.mc) >= 0.15 && (s.liq / s.mc) <= 0.35) : null; } },
+  { key: 'nc16', name: 'trade pace rising + fresh <70%',           group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const h = (s.buys1h + s.sells1h) / 12; return t > 0 && h > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.buys5m + s.sells5m) > h) : null; } },
+  { key: 'nc17', name: 'fresh <70% + 24h volume over 1x MC',       group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.mc > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.vol24h / s.mc > 1) : null; } },
+  { key: 'nc18', name: 'over 100 owners + independent over 50%',   group: 'combo2', pass: s => { const t = (s.deepIndependent ?? 0) + (s.deepCluster ?? 0); return t > 0 && s.deepOwners != null ? (s.deepOwners >= 100 && (s.deepIndependent ?? 0) / t > 0.5) : null; } },
+  { key: 'nc19', name: 'fresh <70% + dev under 5%',                group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 && s.devHoldPct != null ? ((s.freshWallets ?? 0) / t < 0.7 && s.devHoldPct < 5) : null; } },
+  { key: 'nc20', name: 'at least 10 veterans + has a social',      group: 'combo2', pass: s => s.veterans != null && s.socials != null ? (s.veterans >= 10 && s.socials >= 1) : null },
+  { key: 'nc21', name: 'fresh <70% + under 500 trades in 5m',      group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && (s.buys5m + s.sells5m) < 500) : null; } },
+  { key: 'nc22', name: 'fresh <70% + avg trade over $80',          group: 'combo2', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; return t > 0 && tr > 0 ? ((s.freshWallets ?? 0) / t < 0.7 && s.vol5m / tr > 80) : null; } },
+];
 export function snapshotFrom(m: any, extra: Partial<Snapshot> = {}): Snapshot {
   return {
     mc: m?.marketCap ?? 0, liq: m?.liquidity ?? 0,
