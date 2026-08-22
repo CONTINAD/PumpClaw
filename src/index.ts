@@ -1787,7 +1787,34 @@ async function dexSweepLoop() {
       const open = taskManager.openPositions();
       const pending = taskManager.pendingEntries();
       if (open.length === 0 && pending.length === 0) continue;
-      const mints = [...new Set([...open.map(({ pos }) => pos.mint), ...pending.map(p => p.mint)])];
+      // ── Money first ───────────────────────────────────────────────────────
+      //
+      // The loop walks its mints one at a time and awaits each: a DexScreener read,
+      // now a Jupiter quote for any real dip order in range, then every task holding
+      // the coin. Seventy mints deep, the last one is reached seconds after the
+      // first, and until now the order was whatever the position book happened to
+      // produce — which is dominated by the shadow fleet, because 2,422 paper tasks
+      // hold far more coins than one real one.
+      //
+      // So a real dip order with a wallet behind it could sit behind sixty-odd mints
+      // of pure bookkeeping before anyone asked what its price was. Nothing about
+      // that queue spends money; the thing waiting at the back is the only thing
+      // that does. The dip window is ten minutes and the wick that fills it can be
+      // under one, so the seconds are not free.
+      //
+      // Real mints go first. Same set, same work, same tick — only the order
+      // changes, and it costs the shadow fleet nothing it can measure, since paper
+      // fills are simulated against whatever price the tick carries whenever it
+      // arrives.
+      // One pass to learn which task ids spend real money, rather than a lookup
+      // through 2,423 tasks for every pending order on every tick.
+      const realTaskIds = new Set(taskManager.all().filter(t => !t.paper).map(t => t.id));
+      const realMints = new Set([
+        ...open.filter(({ task }) => !task.paper).map(({ pos }) => pos.mint),
+        ...pending.filter(p => realTaskIds.has(p.taskId)).map(p => p.mint),
+      ]);
+      const all = [...new Set([...open.map(({ pos }) => pos.mint), ...pending.map(p => p.mint)])];
+      const mints = [...all].sort((a, b) => (realMints.has(b) ? 1 : 0) - (realMints.has(a) ? 1 : 0));
       const data = await fetchBatchMarketData(mints);
       for (const mint of mints) {
         const m = data.get(mint);
