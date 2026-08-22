@@ -237,7 +237,7 @@ function recordSkip(post: { mint: string; name: string; creator?: string }, reas
   // the page is read, so a rule invented next week is scored against every coin
   // already seen instead of starting from nothing. Storing the verdict instead of
   // the inputs would mean a fresh month of waiting for each threshold tweak.
-  const snap = market ? snapshotFrom(market, extra ?? {}) : undefined;
+  const snap = market ? snapshotFrom(market, { ...(extra ?? {}), source: (post as any).source }) : undefined;
   const rec = { mint: post.mint, name: post.name, reason, details, marketCap: mc, timestamp: Date.now(), creator: post.creator, snap };
   skippedRing.push(rec);
   if (skippedRing.length > 200) skippedRing.shift();

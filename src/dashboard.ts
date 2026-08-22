@@ -6753,6 +6753,7 @@ export function startDashboard(port?: number): void {
             hourUtc: new Date(c.entryTime ?? 0).getUTCHours(),
             deepOwners: dh.owners, deepCluster: dh.largestCluster,
             deepClusterPct: dh.clusterPct, deepIndependent: dh.independent, deepFunders: dh.funders,
+            source: c.source,
           } });
         }
         for (const k of read('skips.json')) {

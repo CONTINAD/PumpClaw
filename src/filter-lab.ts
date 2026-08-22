@@ -51,6 +51,12 @@ export interface Snapshot {
   deepIndependent?: number;
   /** Distinct funders — a farm has few, an organic holder set has many. */
   deepFunders?: number;
+
+  /** Which channel produced the call. Added after solearlytrending fell from 47%
+   *  to 22% inside three days while nothing about the coins it named changed:
+   *  the lab could describe every property of a coin except who suggested it, so
+   *  the one rule that would have caught the drop was the one it could not state. */
+  source?: string;
 }
 
 export interface Candidate {
@@ -709,6 +715,66 @@ export const CANDIDATES: Candidate[] = [
   { key: 'orcTwoOfThree',name: 'at least two of: 5 veterans, a social, liq over $10K', group: 'orcombo', pass: s => { const vals = [s.veterans != null ? s.veterans >= 5 : null, s.socials != null ? s.socials >= 1 : null, s.liq > 0 ? s.liq > 10000 : null]; const known = vals.filter(v => v !== null); return known.length < 2 ? null : known.filter(v => v === true).length >= 2; } },
   { key: 'orcTwoQuality',name: 'at least two of: fresh<60%, 1h positive, avg trade over $80', group: 'orcombo', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; const vals = [t > 0 ? (s.freshWallets ?? 0) / t < 0.6 : null, s.chg1h !== 0 ? s.chg1h > 0 : null, tr > 0 ? s.vol5m / tr > 80 : null]; const known = vals.filter(v => v !== null); return known.length < 2 ? null : known.filter(v => v === true).length >= 2; } },
   { key: 'orcAllButOne', name: 'no more than one of five quality checks fails', group: 'orcombo', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const tr = s.buys5m + s.sells5m; const vals = [t > 0 ? (s.freshWallets ?? 0) / t < 0.7 : null, s.liq > 0 ? s.liq > 10000 : null, s.chg1h !== 0 ? s.chg1h > 0 : null, tr > 0 ? s.buys5m / tr > 0.5 : null, s.deepOwners != null ? s.deepOwners >= 80 : null]; const known = vals.filter(v => v !== null); return known.length < 3 ? null : known.filter(v => v === false).length <= 1; } },
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Fifth wave — the LIVE gates, scored beside everything else, plus the
+  // combinations that were the point of building the lab in the first place.
+  //
+  // Every rule below marked [LIVE] is a replica of a gate that is blocking calls
+  // in production right now. They have never been measured against the shadow
+  // candidates, only against each other on the gates page, so nobody could say
+  // whether the live stack is better or worse than a single shadow rule. Now the
+  // whole set sits in one table.
+  //
+  // Context this was built for: the 2x rate ran at 51% from 08-09 to 08-19 and
+  // then fell to 34%. The coins are not obviously different — but the CHANNELS
+  // are. solearlytrending went from 47% to 22% in three days, soltrenchtrending
+  // from 53% to 43%, and neither the filters nor the market did that. So `source`
+  // is now part of the snapshot and the per-source rules below are the first
+  // hypothesis in this file about who is talking rather than what they said.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // ── The live gates, one at a time ──
+  { key: 'LVvol',    name: '[LIVE] 5m volume clears its MC tier',   group: 'live', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; return s.vol5m >= need; } },
+  { key: 'LVmc',     name: '[LIVE] MC under the $100K ceiling',     group: 'live', pass: s => s.mc > 0 ? s.mc < 100000 : null },
+  { key: 'LVliq',    name: '[LIVE] liquidity gate as written (0 passes)', group: 'live', pass: s => !(s.liq > 0 && s.liq < 7000) },
+  { key: 'LVliqStrict', name: '[LIVE+] liquidity gate if 0 did NOT pass', group: 'live', pass: s => s.liq >= 7000 },
+  { key: 'LVdump',   name: '[LIVE] 5m change above -25%',           group: 'live', pass: s => s.chg5m > -25 },
+  { key: 'LVsell',   name: '[LIVE] sells under 1.3x buys',          group: 'live', pass: s => s.buys5m > 0 && s.sells5m > 0 ? (s.sells5m / s.buys5m) <= 1.3 : null },
+  { key: 'LVact',    name: '[LIVE] at least 20 buys in 5m',         group: 'live', pass: s => s.buys5m > 0 ? s.buys5m >= 20 : null },
+  { key: 'LVcool',   name: '[LIVE] 15%+ of 1h volume in the last 5m',group: 'live', pass: s => s.vol1h > 0 && s.vol5m > 0 ? (s.vol5m / s.vol1h) >= 0.15 : null },
+  { key: 'LVsoc',    name: '[LIVE] has at least one social',        group: 'live', pass: s => s.socials != null ? s.socials >= 1 : null },
+  { key: 'LVfresh',  name: '[LIVE] fresh-wallet share under 70%',   group: 'live', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t >= 10 ? (s.freshWallets ?? 0) / t < 0.70 : null; } },
+  { key: 'LVstack',  name: '[LIVE] the whole live stack together',  group: 'live', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (s.mc <= 0 || s.vol5m <= 0) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && (s.buys5m === 0 || s.sells5m === 0 || s.sells5m / s.buys5m <= 1.3) && (s.buys5m === 0 || s.buys5m >= 20) && (s.vol1h <= 0 || s.vol5m / s.vol1h >= 0.15) && (t < 10 || (s.freshWallets ?? 0) / t < 0.70); } },
+  { key: 'LVstackTight', name: '[LIVE+] the live stack with liquidity actually required', group: 'live', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); if (s.mc <= 0 || s.vol5m <= 0) return null; return s.vol5m >= need && s.mc < 100000 && s.liq >= 7000 && s.chg5m > -25 && (s.buys5m === 0 || s.sells5m === 0 || s.sells5m / s.buys5m <= 1.3) && (s.buys5m === 0 || s.buys5m >= 20) && (s.vol1h <= 0 || s.vol5m / s.vol1h >= 0.15) && (t < 10 || (s.freshWallets ?? 0) / t < 0.70); } },
+
+  // ── Who is talking, not what they said ──
+  { key: 'srcTrench',  name: 'called by soltrenchtrending',         group: 'source', pass: s => s.source ? s.source === 'soltrenchtrending' : null },
+  { key: 'srcEarly',   name: 'called by solearlytrending',          group: 'source', pass: s => s.source ? s.source === 'solearlytrending' : null },
+  { key: 'srcWhale',   name: 'called by solwhaletrending',          group: 'source', pass: s => s.source ? s.source === 'solwhaletrending' : null },
+  { key: 'srcNotEarly',name: 'anything except solearlytrending',    group: 'source', pass: s => s.source ? s.source !== 'solearlytrending' : null },
+  { key: 'srcNotWhale',name: 'anything except solwhaletrending',    group: 'source', pass: s => s.source ? s.source !== 'solwhaletrending' : null },
+  { key: 'srcTrenchOnly',name: 'only soltrenchtrending and gem_tools', group: 'source', pass: s => s.source ? (s.source === 'soltrenchtrending' || s.source === 'gem_tools_calls') : null },
+
+  // ── The live stack, plus one shadow rule at a time ──
+  { key: 'lcFresh40', name: 'live stack + fresh under 40%',         group: 'livecombo', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0 || t === 0) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && (s.freshWallets ?? 0) / t < 0.40; } },
+  { key: 'lcVet15',   name: 'live stack + at least 15 veterans',    group: 'livecombo', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0 || s.veterans == null) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && s.veterans >= 15; } },
+  { key: 'lcLiq10',   name: 'live stack + liquidity actually over $10K', group: 'livecombo', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0) return null; return s.vol5m >= need && s.mc < 100000 && s.liq > 10000 && s.chg5m > -25; } },
+  { key: 'lcMom',     name: 'live stack + 1h positive',             group: 'livecombo', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && s.chg1h > 0; } },
+  { key: 'lcSize',    name: 'live stack + average trade over $80',  group: 'livecombo', pass: s => { const tr = s.buys5m + s.sells5m; const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0 || tr === 0) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && s.vol5m / tr > 80; } },
+  { key: 'lcOwn',     name: 'live stack + at least 100 owners',     group: 'livecombo', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0 || s.deepOwners == null) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && s.deepOwners >= 100; } },
+  { key: 'lcNotEarly',name: 'live stack + not solearlytrending',    group: 'livecombo', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0 || !s.source) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && s.source !== 'solearlytrending'; } },
+  { key: 'lcOrDepth', name: 'live stack + any strong depth signal', group: 'livecombo', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0) return null; const vals = [s.veterans != null ? s.veterans >= 10 : null, s.deepOwners != null ? s.deepOwners >= 150 : null, s.deepFunders != null ? s.deepFunders >= 25 : null]; if (vals.every(v => v === null)) return null; return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && vals.some(v => v === true); } },
+  { key: 'lcNoCorner',name: 'live stack + none of the bad corners', group: 'livecombo', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; const tr = s.buys5m + s.sells5m; if (s.mc <= 0 || s.vol5m <= 0) return null; const corners = !(s.mc > 60000 && s.liq > 0 && s.liq / s.mc < 0.1) && !(tr > 250 && s.vol5m / Math.max(tr, 1) < 60) && !(s.liq > 0 && s.liq < 8000 && s.chg1h > 150) && !(s.vol5m > 20000 && Math.abs(s.chg5m) < 2); return s.vol5m >= need && s.mc < 100000 && !(s.liq > 0 && s.liq < 7000) && s.chg5m > -25 && corners; } },
+
+  // ── The profile the bot actually had while it was hitting 51% ──
+  { key: 'era51',     name: 'the 51% era profile: MC $25K+, liq $10K+, $30K+ in 5m', group: 'era', pass: s => s.mc > 0 && s.vol5m > 0 ? (s.mc >= 25000 && s.liq >= 10000 && s.vol5m >= 30000) : null },
+  { key: 'era51soft', name: 'the 51% era, loosened: MC $20K+, $25K+ in 5m',          group: 'era', pass: s => s.mc > 0 && s.vol5m > 0 ? (s.mc >= 20000 && s.vol5m >= 25000) : null },
+  { key: 'era51mc',   name: 'MC at or above the 51% era median ($37K)',              group: 'era', pass: s => s.mc > 0 ? s.mc >= 37000 : null },
+  { key: 'era51vol',  name: '5m volume at or above the 51% era median ($40K)',       group: 'era', pass: s => s.vol5m > 0 ? s.vol5m >= 40000 : null },
+  { key: 'era51liq',  name: 'liquidity at or above the 51% era median ($13K)',       group: 'era', pass: s => s.liq >= 13000 },
+  { key: 'era51all',  name: 'every 51% era median cleared at once',                  group: 'era', pass: s => s.mc > 0 && s.vol5m > 0 ? (s.mc >= 37000 && s.vol5m >= 40000 && s.liq >= 13000) : null },
+  { key: 'era51live', name: 'the 51% era profile on top of the live stack',          group: 'era', pass: s => { const need = s.mc < 20000 ? 5000 : s.mc < 50000 ? 8000 : 15000; if (s.mc <= 0 || s.vol5m <= 0) return null; return s.vol5m >= need && s.mc < 100000 && s.chg5m > -25 && s.mc >= 25000 && s.liq >= 10000 && s.vol5m >= 30000; } },
 ];
 export function snapshotFrom(m: any, extra: Partial<Snapshot> = {}): Snapshot {
   return {
