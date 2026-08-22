@@ -17,14 +17,29 @@ import { URL } from 'url';
  *
  * One channel was one point of failure and one ceiling: every winner the bot could
  * possibly catch had to appear there first. Measured against the page contents,
- * these three overlap only 31-39% and together surface roughly three times as many
- * mints as solearlytrending alone (20 -> 44 on a single page load).
+ * these overlap only 31-39% and together surface roughly three times as many mints
+ * as any one of them alone (20 -> 44 on a single page load). They share the
+ * Soul_Sniper link format, so the parser below reads them unchanged.
  *
- * The two additions use the same Soul_Sniper link format, so the parser below reads
- * them unchanged — they were chosen for that as much as for their coverage.
+ * solearlytrending is out, on Alex's call, after 68 graded calls said so:
+ *
+ *   hit 2x, all time         34%   (soltrenchtrending 46%)
+ *   hit 2x, 08-20 onward     22%   (soltrenchtrending 42%)
+ *   hit 2x when it was the
+ *   only channel to post it  15%   over 33 calls
+ *
+ * It did not degrade because the market did — soltrench held near 45% through the
+ * same three days, on the same scanner, behind the same gates, while this one fell
+ * from 47% to 22%. Its posting volume never changed, so it is picking worse rather
+ * than picking more. Removing it drops call volume about 28% and lifts the
+ * source-tagged hit rate from 42% to 45%; keeping only soltrench and gem reaches 47%.
+ *
+ * Nothing here is permanent. The channel audit keeps recording every post from every
+ * channel whether or not it is scraped, so putting it back is a one-line change and
+ * the evidence for doing so will be on the /channels page when it exists.
  */
 const TG_CHANNELS: string[] = (process.env.TG_CHANNELS
-  ?? 'solearlytrending,soltrenchtrending,solwhaletrending,gem_tools_calls')
+  ?? 'soltrenchtrending,solwhaletrending,gem_tools_calls')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 /**
