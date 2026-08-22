@@ -58,6 +58,47 @@ const PROXY_LIST: string[] = (process.env.PROXY_LIST ?? '')
 
 let proxyIndex = 0;
 
+/* ── Proxy failure memory ────────────────────────────────────────────────────
+ *
+ * A proxy that answers CONNECT with 407 has rejected the credentials, and it will
+ * reject them again on the next attempt and every attempt after that. The loop
+ * below had no memory of this: three attempts per channel, a two-second sleep
+ * between each, repeated for every channel on every cycle, forever.
+ *
+ * The cost is not the failure — the direct fallback works and no post is lost —
+ * it is the time. Seven channels at three dead attempts plus their sleeps pushed
+ * one scan cycle past the point where it finished at all: the scanner went from a
+ * poll every 45-170s to no completed poll in 41 minutes, and the call pipeline
+ * stalled behind it while every component reported itself healthy.
+ *
+ * So the pool is benched after a run of failures and the scrape goes straight to
+ * direct, which is what it was going to do anyway three attempts later. One probe
+ * after the cooldown decides whether the credentials came back. The same shape as
+ * the RPC sick-bench and the candle capture's miss memory, for the same reason. */
+const PROXY_FAIL_LIMIT = 3;
+const PROXY_BENCH_MS = 10 * 60_000;
+let proxyFails = 0;
+let proxyBenchedUntil = 0;
+
+function proxiesUsable(): boolean {
+  return PROXY_LIST.length > 0 && Date.now() >= proxyBenchedUntil;
+}
+
+function noteProxyFailure(): void {
+  proxyFails++;
+  if (proxyFails >= PROXY_FAIL_LIMIT && Date.now() >= proxyBenchedUntil) {
+    proxyBenchedUntil = Date.now() + PROXY_BENCH_MS;
+    console.log(`[Telegram] Proxy pool benched for ${PROXY_BENCH_MS / 60_000} min after ` +
+      `${proxyFails} consecutive failures — scraping direct until it is worth another try`);
+  }
+}
+
+function noteProxySuccess(): void {
+  if (proxyFails > 0 || proxyBenchedUntil > 0) console.log('[Telegram] Proxy answered again — unbenched');
+  proxyFails = 0;
+  proxyBenchedUntil = 0;
+}
+
 function getNextProxy(): string | null {
   if (PROXY_LIST.length === 0) return null;
   const proxy = PROXY_LIST[proxyIndex % PROXY_LIST.length];
@@ -194,8 +235,8 @@ export async function scrapeTrendingPosts(channel: string = TG_CHANNELS[0]): Pro
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-      const proxy = attempt < 3 ? getNextProxy() : null;
-      if (attempt === 3 && PROXY_LIST.length > 0) {
+      const proxy = attempt < 3 && proxiesUsable() ? getNextProxy() : null;
+      if (attempt === 3 && proxiesUsable()) {
         console.log('[Telegram] All proxy attempts failed — falling back to direct fetch');
       }
 
@@ -207,9 +248,11 @@ export async function scrapeTrendingPosts(channel: string = TG_CHANNELS[0]): Pro
         if (proxyRes.status !== 200) {
           console.error(`[Telegram] HTTP ${proxyRes.status} via proxy (attempt ${attempt + 1})`);
           lastErr = new Error(`HTTP ${proxyRes.status}`);
+          noteProxyFailure();
           if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
           continue;
         }
+        noteProxySuccess();
         html = proxyRes.body;
       } else {
         const res = await fetch(TG_URL, {
@@ -284,6 +327,9 @@ export async function scrapeTrendingPosts(channel: string = TG_CHANNELS[0]): Pro
       return posts;
     } catch (err: any) {
       lastErr = err;
+      // A throw on a proxy attempt is the proxy failing — a refused CONNECT, a
+      // timeout, a reset. Direct-fetch attempts must not bench the pool.
+      if (attempt < 3 && proxiesUsable()) noteProxyFailure();
       console.error(`[Telegram] Scrape error (attempt ${attempt + 1}): ${err.message}`);
       if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
     }
