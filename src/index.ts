@@ -1907,10 +1907,15 @@ async function main() {
 
   // Fix any position whose entry was recorded at the trigger price instead of the fill
   taskManager.repairAll().catch(err => console.error(`[Repair] ${err.message}`));
-  // A minute in, so the audit's transaction reads do not land on top of boot's.
-  setTimeout(() => {
+  // A minute in, so the audit's transaction reads do not land on top of boot's,
+  // then every half hour. Booting was the only trigger, which meant a trade that
+  // lost its sell record at 02:00 stayed a fabricated loss until the next deploy —
+  // $Same sat at -0.6130 on a position that had already been sold. It only reads
+  // when something looks short, so a book that agrees with the wallet costs one
+  // signature fetch per cycle.
+  const auditNow = () =>
     taskManager.auditProceedsAll().catch(err => console.error(`[Audit] ${err.message}`));
-  }, 60_000).unref?.();
+  setTimeout(() => { auditNow(); setInterval(auditNow, 30 * 60_000).unref?.(); }, 60_000).unref?.();
 
   candleCaptureLoop().catch(err => console.error(`[Candles] Fatal: ${err.message}`));
 

@@ -165,6 +165,8 @@ export class Trader {
    *  two callout confirmations from the same minute needed `railway logs --lines 5000`.
    *  The guard itself is untouched — only how often it narrates. */
   private lastStalePriceLog = new Map<string, number>();
+  /** One "TP not taken, the feed spiked" line per mint per minute. */
+  private lastTpSpikeLog = new Map<string, number>();
 
   /**
    * @param taskId    stable id — 'main' keeps the legacy positions.json
@@ -901,10 +903,51 @@ export class Trader {
     for (let i = 0; i < strat.tps.length; i++) {
       const tp = strat.tps[i];
       if (!pos.tpHits[i] && mult >= tp.mult) {
+        // ── Take the profit only if the profit is there ────────────────────────
+        //
+        // `mult` is the feed's multiple, and the feed spikes. $mike's TP1 recorded
+        // 1.86x and returned 0.0616 SOL on a tenth of a 0.5960 entry — a fill near
+        // 1.03x. The level was never reached; a print said it was, and the bot sold
+        // into it.
+        //
+        // The stop already refuses to act on the feed alone, and PRICE_JUMP_LIMIT
+        // already treats a large one-tick rise as an artefact — but only for the
+        // trailing high, so a spike too small to be "a jump" still fires a ladder
+        // rung at a price nothing would fill at.
+        //
+        // So a triggered rung is confirmed against a real sell quote first. Below
+        // the level, the tick is skipped and the next one decides; the rung stays
+        // armed, exactly as it does after a failed sell. Confirmed, the exit is
+        // recorded at the executable multiple rather than the feed's, so the ledger
+        // describes the sale that happened.
+        //
+        // No quote, no delay: an exit engine that cannot exit when Jupiter is
+        // unreachable is a worse failure than one that occasionally sells a spike.
+        let tpMult = mult;
+        if (!this.paper) {
+          let execMult: number | null = null;
+          try {
+            const solUsd = await getSolPrice();
+            const jup = await jupiterGetPrice(mint, solUsd, true);
+            if (jup && jup.priceUsd > 0 && pos.entryPrice > 0) execMult = jup.priceUsd / pos.entryPrice;
+          } catch { /* fall through and sell on the feed */ }
+          if (execMult !== null) {
+            if (execMult < tp.mult) {
+              const last = this.lastTpSpikeLog.get(mint) ?? 0;
+              if (Date.now() - last > 60_000) {
+                this.lastTpSpikeLog.set(mint, Date.now());
+                console.log(`[Trader:${this.taskId}] $${pos.symbol} TP${i + 1} (${tp.mult}X) not taken — ` +
+                  `feed says ${mult.toFixed(2)}X but a sell fills at ${execMult.toFixed(2)}X. Level stays armed.`);
+              }
+              continue;
+            }
+            tpMult = execMult;
+          }
+        }
         // Mark the level hit only once the sell actually lands. Marking first meant
         // a failed sell retired the level permanently: the position kept 100% of
         // its size, never retried, and rode a taken profit back down to the stop.
-        const exit = await executeSell(`tp${i + 1}`, `TP${i + 1} ${tp.mult}X`, tp.sellPct, tp.mult);
+        const exit = await executeSell(`tp${i + 1}`, `TP${i + 1} ${tp.mult}X`, tp.sellPct, tpMult);
         if (exit) {
           pos.tpHits[i] = true;
           if (i < 3) (pos as any)[`tp${i + 1}Hit`] = true;
