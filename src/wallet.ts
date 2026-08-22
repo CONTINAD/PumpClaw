@@ -491,6 +491,57 @@ export async function anySignatureStatus(sig: string): Promise<'ok' | 'pending' 
  * null when it cannot tell, and the caller keeps booking zero — a wrong number
  * confidently recorded would be worse than the honest floor it replaces.
  */
+/**
+ * Every sale this wallet has made, grouped by mint, in one pass.
+ *
+ * recoverSaleProceeds answers the same question for a single coin, and answering
+ * it thirty times means thirty walks of the same signature list. The retroactive
+ * audit needs all of them at once, so this walks the list once and keeps each
+ * credit with its block time — a mint that was bought, sold, and bought again must
+ * not have the first sale counted against the second position.
+ */
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+export async function walletSalesByMint(
+  keypair?: Keypair, maxSigs = 1000, gapMs = 150,
+): Promise<Map<string, { sol: number; ts: number }[]> | null> {
+  const kp = keypair ?? getWallet();
+  const owner = kp.publicKey.toBase58();
+  const out = new Map<string, { sol: number; ts: number }[]>();
+  try {
+    const sigs = await rpcRead(
+      c => c.getSignaturesForAddress(kp.publicKey, { limit: maxSigs }), 'sigs-for-audit');
+    for (const s of sigs.filter(x => !x.err)) {
+      if (gapMs > 0) await new Promise(r => setTimeout(r, gapMs));
+      let tx;
+      try {
+        tx = await rpcRead(c => c.getParsedTransaction(s.signature, {
+          maxSupportedTransactionVersion: 0,
+        }), 'tx-for-audit');
+      } catch { continue; }
+      if (!tx?.meta) continue;
+      const keys = tx.transaction.message.accountKeys.map(k => k.pubkey.toBase58());
+      const i = keys.indexOf(owner);
+      if (i < 0) continue;
+      const delta = (tx.meta.postBalances[i] - tx.meta.preBalances[i]) / 1e9;
+      if (delta <= 0) continue;   // a buy pays SOL out; only sales are proceeds
+      const mints = new Set(
+        [...(tx.meta.preTokenBalances ?? []), ...(tx.meta.postTokenBalances ?? [])]
+          .filter(b => b.owner === owner && b.mint !== WSOL_MINT)
+          .map(b => b.mint));
+      // One coin per transaction or the SOL cannot be attributed to either.
+      if (mints.size !== 1) continue;
+      const mint = [...mints][0];
+      const list = out.get(mint) ?? [];
+      list.push({ sol: delta, ts: (s.blockTime ?? 0) * 1000 });
+      out.set(mint, list);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 export async function recoverSaleProceeds(
   mint: string, keypair?: Keypair, sinceMs = 30 * 60_000, maxSigs = 25,
 ): Promise<{ sol: number; txs: number } | null> {

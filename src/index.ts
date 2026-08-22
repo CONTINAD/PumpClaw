@@ -1907,6 +1907,10 @@ async function main() {
 
   // Fix any position whose entry was recorded at the trigger price instead of the fill
   taskManager.repairAll().catch(err => console.error(`[Repair] ${err.message}`));
+  // A minute in, so the audit's transaction reads do not land on top of boot's.
+  setTimeout(() => {
+    taskManager.auditProceedsAll().catch(err => console.error(`[Audit] ${err.message}`));
+  }, 60_000).unref?.();
 
   candleCaptureLoop().catch(err => console.error(`[Candles] Fatal: ${err.message}`));
 

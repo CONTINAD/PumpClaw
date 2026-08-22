@@ -624,6 +624,21 @@ class TaskManager {
     return out;
   }
 
+  /**
+   * Credit closed trades with proceeds that reached the wallet but never the book
+   * (runs once, a minute after startup, so it does not compete with boot RPC).
+   */
+  async auditProceedsAll(): Promise<void> {
+    for (const t of this.all().filter(x => !x.paper)) {
+      try {
+        const r = await this.traderFor(t).auditClosedProceeds();
+        if (r.fixed > 0) {
+          console.log(`[Tasks] ${t.name}: ${r.fixed} closed trade(s) re-credited, +${r.credited.toFixed(4)} SOL`);
+        }
+      } catch (err: any) { console.error(`[Tasks] proceeds audit failed (${t.name}): ${err.message}`); }
+    }
+  }
+
   /** Repair entry bases on every real task (runs at startup). */
   async repairAll(): Promise<void> {
     for (const t of this.all().filter(x => !x.paper)) {

@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { Keypair } from '@solana/web3.js';
 import { CONFIG, NON_POSITION_MINTS } from './config.js';
-import { getSolBalance, getSolBalanceFresh, getTokenBalance, closeTokenAccount, getConnection, mintDecimals, recoverSaleProceeds} from './wallet.js';
+import { getSolBalance, getSolBalanceFresh, getTokenBalance, closeTokenAccount, getConnection, mintDecimals, recoverSaleProceeds, walletSalesByMint } from './wallet.js';
 import { getSolPrice } from './dexscreener.js';
 import { jupiterBuy, jupiterSell, jupiterGetPrice, type SwapResult, type SwapOpts } from './jupiter.js';
 import { STRATEGY_PRESETS, type Strategy } from './strategy.js';
@@ -1271,6 +1271,77 @@ export class Trader {
 
   getOpenPositions(): RealPosition[] {
     return [...this.positions.values()].filter(p => p.status === 'open');
+  }
+
+  /**
+   * Credit closed trades with the SOL that actually came back.
+   *
+   * The forward path already handles a position the wallet no longer holds: it
+   * reads the proceeds off chain before closing. Nothing ever went back for the
+   * trades that closed before that existed, or for the ones the take-profit race
+   * closed while half the bag was still unsold — those kept whatever had been
+   * recorded at the moment they were shut, and the rest of the sale is money the
+   * book never saw.
+   *
+   * It reads as a losing task on a winning wallet. Against DIP's 29 closed trades
+   * the chain shows 11.1910 SOL bought and 10.9239 sold; the book shows 10.490 and
+   * 9.590, so about 0.63 SOL of real proceeds are missing and every one of them is
+   * scored as a loss on the calendar.
+   *
+   * So the wallet gets the last word here too. For each closed position, the sales
+   * on chain for that mint after its entry are summed; if that exceeds what was
+   * recorded, the difference is booked as a recovered exit and the P&L recomputed.
+   * Assignment, not addition — a recorded exit and its on-chain transaction are the
+   * same sale, so the total replaces rather than adds, and running the audit twice
+   * changes nothing the second time.
+   */
+  async auditClosedProceeds(): Promise<{ fixed: number; credited: number }> {
+    if (this.paper) return { fixed: 0, credited: 0 };
+    const suspect = [...this.positions.values()].filter(p => {
+      if (p.status !== 'closed') return false;
+      const sold = p.exits.reduce((a, e) => a + (e.pctSold ?? 0), 0);
+      // Nothing came back, or the position shut with part of the bag unaccounted.
+      return (p.totalSolReturned ?? 0) <= 0 || sold < 0.99;
+    });
+    if (suspect.length === 0) return { fixed: 0, credited: 0 };
+
+    console.log(`[Trader:${this.taskId}] Auditing ${suspect.length} closed trade(s) against the wallet…`);
+    const sales = await walletSalesByMint(this.kp());
+    if (!sales) {
+      console.log(`[Trader:${this.taskId}] Audit skipped — could not read the wallet's history`);
+      return { fixed: 0, credited: 0 };
+    }
+
+    let fixed = 0, credited = 0;
+    for (const pos of suspect) {
+      const after = (sales.get(pos.mint) ?? []).filter(x => x.ts >= (pos.entryTime ?? 0) - 60_000);
+      if (after.length === 0) continue;
+      const chain = after.reduce((a, x) => a + x.sol, 0);
+      const gap = chain - (pos.totalSolReturned ?? 0);
+      if (gap <= 0.005) continue;   // rounding, not a missing sale
+
+      pos.exits.push({
+        reason: 'recovered_exit',
+        label: `Unrecorded sale · recovered from chain (${after.length} tx)`,
+        multiplierAtExit: pos.entryPrice > 0 && pos.entrySol > 0 ? gap / pos.entrySol : 0,
+        pctSold: Math.max(0, 1 - pos.exits.reduce((a, e) => a + (e.pctSold ?? 0), 0)),
+        tokensSold: 0,
+        solReceived: gap,
+        txSignature: '',
+        timestamp: after[after.length - 1].ts,
+      });
+      pos.totalSolReturned = chain;
+      pos.finalPnlSol = chain - pos.entrySol;
+      fixed++; credited += gap;
+      console.log(`[Trader:${this.taskId}] $${pos.symbol}: book had ${(chain - gap).toFixed(4)} SOL back, ` +
+        `chain says ${chain.toFixed(4)} — crediting ${gap.toFixed(4)}, ` +
+        `P&L now ${pos.finalPnlSol >= 0 ? '+' : ''}${pos.finalPnlSol.toFixed(4)}`);
+    }
+    if (fixed > 0) {
+      this.flush();
+      console.log(`[Trader:${this.taskId}] Audit corrected ${fixed} trade(s), +${credited.toFixed(4)} SOL restored to the book`);
+    }
+    return { fixed, credited };
   }
 
   getAllPositions(): RealPosition[] {
