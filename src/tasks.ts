@@ -15,6 +15,8 @@ import { walletSource, getWallet } from './wallet.js';
 import { PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
 import { postCallout, calloutThesis } from './pump-callout.js';
+import { jupiterGetPrice } from './jupiter.js';
+import { getSolPrice } from './dexscreener.js';
 
 /** $12.4K / $1.2M, the way every other surface in this bot writes a market cap. */
 function fmtMC(mc: number): string {
@@ -78,6 +80,8 @@ class TaskManager {
   private tasks = new Map<string, TradeTask>();
   private traders = new Map<string, Trader>();
   private pending: PendingEntry[] = [];
+  /** One "the dip isn't buyable" line per mint per minute, not one every 3s tick. */
+  private lastDipFeedLog = new Map<string, number>();
 
   constructor() {
     this.load();
@@ -138,6 +142,19 @@ class TaskManager {
 
     let filled = 0;
     const keep: PendingEntry[] = [];
+
+    // Resolved at most once per tick, and only if a real task actually reaches its
+    // target — a quote is worth spending on a buy that is about to happen, not on
+    // the 2,400 shadow orders that will never touch a wallet.
+    let cachedExec: number | null | undefined;
+    const executablePrice = async (): Promise<number | null> => {
+      if (cachedExec !== undefined) return cachedExec;
+      try {
+        const jup = await jupiterGetPrice(mint, await getSolPrice(), true);
+        cachedExec = jup && jup.priceUsd > 0 ? jup.priceUsd : null;
+      } catch { cachedExec = null; }
+      return cachedExec;
+    };
     for (const p of this.pending) {
       if (p.mint !== mint) { keep.push(p); continue; }
       if (p.expiresAt <= now) {
@@ -164,6 +181,50 @@ class TaskManager {
 
       if (price > p.target) { keep.push(p); continue; }
 
+      const task = this.tasks.get(p.taskId);
+      if (!task || !task.enabled) continue;
+
+      // ── The dip has to be one you can actually buy ─────────────────────────
+      // The price that arms these orders is DexScreener's, and on a fast wick it
+      // reports a level the market has already left. $SIDELINED was called at
+      // 8.671e-6 and triggered its -20% order at 6.420e-6 — a 26% dip on the feed.
+      // The buy filled at 6.909e-6: back at the 20% line, 7.6% above the number
+      // that fired it. The dip had passed before the feed finished describing it.
+      //
+      // The sell side already refuses to act on a feed price without asking what a
+      // trade would really fill at — checkPositionInner quotes Jupiter before it
+      // lets a stop fire. The buy side had no such check, so every dip order was
+      // armed against a price that could not be transacted, and the wick the bot
+      // thought it was buying was routinely gone by the time the swap landed.
+      //
+      // So the target is now judged against a real SOL→token quote. Above target,
+      // the dip is not available and the order waits — the window is still open and
+      // a genuine pullback will still fill it. At or under, the quote becomes the
+      // basis, which also makes the recorded entry the price actually paid rather
+      // than the one that happened to trigger.
+      //
+      // Jupiter unreachable falls through to the feed price. A bot that cannot buy
+      // when a quote fails is worse than one that occasionally buys a stale wick.
+      let fillPrice = price;
+      if (!task.paper) {
+        const exec = await executablePrice();
+        if (exec !== null && exec > 0) {
+          if (exec > p.target) {
+            const last = this.lastDipFeedLog.get(p.mint) ?? 0;
+            if (now - last > 60_000) {
+              this.lastDipFeedLog.set(p.mint, now);
+              console.log(`[Tasks] Dip NOT filled: $${p.symbol} — feed shows ${(price / p.callPrice).toFixed(2)}x ` +
+                `(at its ${(p.target / p.callPrice).toFixed(2)}x target) but a buy fills at ` +
+                `${(exec / p.callPrice).toFixed(2)}x, ${((exec / p.target - 1) * 100).toFixed(0)}% above it — ` +
+                `the dip is not there to buy. Order still live.`);
+            }
+            keep.push(p);
+            continue;
+          }
+          fillPrice = exec;
+        }
+      }
+
       // A dip order had an upper bound and no lower one, so it filled at whatever
       // the price happened to be the moment it dropped through the target. On a coin
       // that gapped, that is the bottom of a rug rather than a pullback.
@@ -178,25 +239,26 @@ class TaskManager {
       // that thesis is simply false and the order should die with it, so a fill more
       // than DIP_MAX_OVERSHOOT below its own target is treated as a rug in progress
       // and the order is cancelled rather than filled.
-      if (price < p.target * (1 - CONFIG.DIP_MAX_OVERSHOOT)) {
+      if (fillPrice < p.target * (1 - CONFIG.DIP_MAX_OVERSHOOT)) {
         console.log(`[Tasks] Dip order CANCELLED: $${p.symbol} gapped to ` +
-          `${(price / p.callPrice).toFixed(3)}x of the call, far below its ${(p.target / p.callPrice).toFixed(2)}x target — ` +
+          `${(fillPrice / p.callPrice).toFixed(3)}x of the call, far below its ${(p.target / p.callPrice).toFixed(2)}x target — ` +
           `that is a rug, not a dip`);
-        this.noteDipOutcome(p, `dip cancelled: gapped to ${(price / p.callPrice).toFixed(2)}x of the call — rug, not a dip`);
+        this.noteDipOutcome(p, `dip cancelled: gapped to ${(fillPrice / p.callPrice).toFixed(2)}x of the call — rug, not a dip`);
         continue;
       }
 
-      const task = this.tasks.get(p.taskId);
-      if (!task || !task.enabled) continue;
       try {
-        const pos = await this.traderFor(task).buy(p.mint, p.symbol, p.name, price, mc);
+        // MC travels with the price it was measured against, or a quote-based fill
+        // would be recorded at the feed's market cap.
+        const fillMC = price > 0 ? mc * (fillPrice / price) : mc;
+        const pos = await this.traderFor(task).buy(p.mint, p.symbol, p.name, fillPrice, fillMC);
         if (pos) {
           filled++;
-          console.log(`[Tasks] ✅ Dip filled for "${task.name}": $${p.symbol} at ${((price / p.callPrice - 1) * 100).toFixed(0)}% from call`);
+          console.log(`[Tasks] ✅ Dip filled for "${task.name}": $${p.symbol} at ${((fillPrice / p.callPrice - 1) * 100).toFixed(0)}% from call`);
           if (!task.paper) {
             this.noteBuyOutcome(task, p.symbol, p.mint, true, null);
             sendTradeActivity(task.name, 'buy', p.symbol, p.mint,
-              `**${pos.entrySol} SOL** on a **${((1 - price / p.callPrice) * 100).toFixed(0)}% dip** from the call`,
+              `**${pos.entrySol} SOL** on a **${((1 - fillPrice / p.callPrice) * 100).toFixed(0)}% dip** from the call`,
               pos.entryTx).catch(() => {});
 
             // Dip fills are real buys on a real wallet and were the one entry path
