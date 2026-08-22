@@ -87,6 +87,10 @@ export const CONFIG = {
    *  way down, and the order would be catching that. DIP_MAX_OVERSHOOT already kills
    *  fills that gap far BELOW target; this kills fills that only got there after a
    *  run ABOVE it. */
+  /** Within this multiple of its target, a real dip order stops trusting the
+   *  indexed feed and decides on a live Jupiter quote instead. Wide enough to be
+   *  already watching before the coin crosses, so a sub-minute wick is not missed. */
+  DIP_WATCH_BAND: 1.35,
   DIP_MAX_RUNUP: 2.0,
   DIP_MAX_OVERSHOOT: 0.30,
   BUNDLE_CHECK_ENABLED: true,
