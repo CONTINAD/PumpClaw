@@ -533,6 +533,41 @@ async function fastScanCycle() {
     }
     recordBundleObs(post, bundle, true, undefined, market.marketCap, market.priceUsd);
 
+    // ── A holder set that is nearly all new wallets ────────────────────────────
+    //
+    // The bundle check asks whether the holders are RELATED. This asks something
+    // the clustering cannot see: whether they existed before this coin did. A farm
+    // built from wallets funded separately, at different times, from different
+    // sources passes every connectivity test there is and still has one property
+    // no organic holder set has — none of its members has ever done anything else.
+    //
+    // Scored in the filter lab against 722 observations before it was allowed to
+    // block anything. At the 80% line it stopped 55 coins, and 90.9% of those fell
+    // under 0.25x against 57.1% of the ones it let through — while the allowed half
+    // hit 2x MORE often, 23.2% against 18.2%. It is the only axis in 84 usable
+    // candidates that improves both sides at once; every chart-shape rule that
+    // avoids crashes also avoids runners, because the coins that spike hardest are
+    // the ones that crash hardest. Wallet composition is not chart shape.
+    //
+    // Under FRESH_MIN_SAMPLE traced wallets the ratio is noise — "1 fresh, 0
+    // veteran" is 100% fresh and says nothing — so the gate stands down rather than
+    // guessing, the same way the socials lookup lets an outage through instead of
+    // turning it into a call drought.
+    const freshN = bundle.metrics?.freshWallets ?? 0;
+    const vetN = bundle.metrics?.veterans ?? 0;
+    const tracedN = freshN + vetN;
+    if (CONFIG.FRESH_MAX_SHARE > 0 && tracedN >= CONFIG.FRESH_MIN_SAMPLE) {
+      const freshShare = freshN / tracedN;
+      if (freshShare >= CONFIG.FRESH_MAX_SHARE) {
+        const details = `${freshN} fresh + ${vetN} veteran — ${Math.round(freshShare * 100)}% of the holder set ` +
+          `has no history before this coin (cut at ${Math.round(CONFIG.FRESH_MAX_SHARE * 100)}%)`;
+        log(`⚠ FRESH_MAJORITY — skipping ${post.name}: ${details}`);
+        recordSkip(post, 'FRESH_MAJORITY', details, market.marketCap, market.priceUsd, market,
+          { devHoldPct: bundle.metrics?.devHoldPct, freshWallets: freshN, veterans: vetN, sameFunderPct: bundle.metrics?.sameFunderPct });
+        continue;
+      }
+    }
+
     // Fee floor — a migrated coin that hasn't generated real fees hasn't been
     // genuinely traded. Scales with market cap: bigger claimed cap demands more
     // proof of activity behind it.

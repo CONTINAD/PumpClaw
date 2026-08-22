@@ -222,6 +222,10 @@ export const CANDIDATES: Candidate[] = [
   // absence of experienced holders is toxic, which is why the existing 'fresh
   // wallets under 25%' candidate is pointed at the wrong end of it.
   { key: 'fake90', name: 'fresh-wallet share under 90%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.90 : null; } },
+  { key: 'fake75', name: 'fresh-wallet share under 75%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.75 : null; } },
+  { key: 'fake70', name: 'fresh-wallet share under 70%  [LIVE]', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.70 : null; } },
+  { key: 'fake70s', name: 'fresh under 70% (10+ wallets traced)', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t >= 10 ? (s.freshWallets ?? 0) / t < 0.70 : null; } },
+  { key: 'fake60', name: 'fresh-wallet share under 60%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.60 : null; } },
   { key: 'fake80', name: 'fresh-wallet share under 80%', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.freshWallets ?? 0) / t < 0.80 : null; } },
   { key: 'vet3', name: 'at least 3 veteran holders', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.veterans ?? 0) >= 3 : null; } },
   { key: 'vet5', name: 'at least 5 veteran holders', group: 'fakechart', pass: s => { const t = (s.freshWallets ?? 0) + (s.veterans ?? 0); return t > 0 ? (s.veterans ?? 0) >= 5 : null; } },

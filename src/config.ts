@@ -124,6 +124,15 @@ export const CONFIG = {
   // Shadow slot-cluster detection (records only — never blocks a call).
   // A funder that creates this many wallets inside this many slots is running a
   // script. 10 slots is about 4 seconds; JOEY's three were 1 slot apart.
+  /** Block a coin whose holder set is this share fresh wallets or more.
+   *  Shadow-scored before going live: across 722 observations the 80% version
+   *  blocked 55 coins, 90.9% of which fell under 0.25x against 57.1% of the ones
+   *  it allowed, and the allowed half still hit 2x more often (23.2% vs 18.2%).
+   *  Alex chose the tighter 70% cut. */
+  FRESH_MAX_SHARE: 0.70,
+  /** Below this many traced wallets the share is noise, so the gate stands down.
+   *  A coin read as "1 fresh, 0 veteran" is 100% fresh and means nothing. */
+  FRESH_MIN_SAMPLE: 10,
   SLOT_CLUSTER_MIN_WALLETS: 3,
   SLOT_CLUSTER_WINDOW: 10,
 
