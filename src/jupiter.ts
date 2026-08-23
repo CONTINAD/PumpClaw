@@ -216,25 +216,51 @@ async function getSwapTransaction(
     };
   }
 
-  const res = await fetch(JUPITER_SWAP, {
-    method: 'POST',
-    headers: jupHeaders({ 'Content-Type': 'application/json' }),
-    signal: AbortSignal.timeout(15_000),
-    body: JSON.stringify({
-      quoteResponse,
-      userPublicKey,
-      dynamicComputeUnitLimit: true,
-      dynamicSlippage: false,
-      prioritizationFeeLamports: prioritization,
-    }),
+  // Jupiter's build endpoint fails transiently, and this step had no retry of its
+  // own while the quote above it retries four times. A single blip therefore burned
+  // one of the trader's two sell attempts and pushed the rest behind its backoff —
+  // on a stop firing into a rug, seconds are the whole cost. Seen live: three
+  // preflights against one mint inside a minute, and the middle one came back
+  // 500 "Missing token program" while the other two built fine.
+  //
+  // Only server-side and network failures are retried. A 4xx means the request
+  // itself is wrong and repeating it just spends time the stop does not have.
+  const body = JSON.stringify({
+    quoteResponse,
+    userPublicKey,
+    dynamicComputeUnitLimit: true,
+    dynamicSlippage: false,
+    prioritizationFeeLamports: prioritization,
   });
 
-  if (!res.ok) {
+  let lastErr = '';
+  for (let tries = 0; tries < 3; tries++) {
+    let res: Response;
+    try {
+      res = await fetch(JUPITER_SWAP, {
+        method: 'POST',
+        headers: jupHeaders({ 'Content-Type': 'application/json' }),
+        signal: AbortSignal.timeout(15_000),
+        body,
+      });
+    } catch (err: any) {
+      lastErr = `Jupiter swap failed (network): ${err.message}`;
+      if (tries < 2) { await new Promise(r => setTimeout(r, 250 * (tries + 1))); continue; }
+      throw new Error(lastErr);
+    }
+
+    if (res.ok) {
+      const data: any = await res.json();
+      return { tx: data.swapTransaction, tipUsed, viaJito };
+    }
+
     const text = await res.text();
-    throw new Error(`Jupiter swap failed (${res.status}): ${text}`);
+    lastErr = `Jupiter swap failed (${res.status}): ${text}`;
+    if (res.status < 500 || tries === 2) throw new Error(lastErr);
+    console.log(`[Jupiter] swap build ${res.status}, retrying (${tries + 1}/2)`);
+    await new Promise(r => setTimeout(r, 250 * (tries + 1)));
   }
-  const data: any = await res.json();
-  return { tx: data.swapTransaction, tipUsed, viaJito };
+  throw new Error(lastErr);
 }
 
 /**
