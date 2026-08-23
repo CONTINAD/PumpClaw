@@ -95,10 +95,21 @@ export function runFleet(obs: FleetObs[], target = 2): FleetResult {
   // Anything whose pass-rate splits the called and rejected populations by more than
   // this is a pipeline artifact rather than a property, and cannot be filtered on
   // anyway — you would have to already know the answer to evaluate it.
+  // Two nets. The first catches a candidate whose pass-rate differs wildly between
+  // the called and rejected populations.
+  //
+  // The second catches what the first missed on the live page: 'the deep holder read
+  // resolved' passes only 29% of calls, so its rate DIFFERENCE is small — but every
+  // single coin it passes is one we called, because that read only runs on coins
+  // already near a call. The direction that matters is therefore P(called | passes):
+  // when nothing that got rejected can ever pass a candidate, the candidate is
+  // reading the pipeline, not the coin.
   const CONFOUND_MAX = 0.45;
+  const PURITY_MAX = 0.90;
   const takenIdx: number[] = [], skipIdx: number[] = [];
   for (let i = 0; i < n; i++) (rows[i].taken ? takenIdx : skipIdx).push(i);
   const canScreen = takenIdx.length >= 30 && skipIdx.length >= 30;
+  const baseTaken = takenIdx.length / n;
 
   const vecs: { c: Candidate; v: Uint8Array; nTr: number }[] = [];
   const dropped: string[] = [];
@@ -117,7 +128,10 @@ export function runFleet(obs: FleetObs[], target = 2): FleetResult {
       let a = 0, b = 0;
       for (const i of takenIdx) a += v[i];
       for (const i of skipIdx) b += v[i];
-      if (Math.abs(a / takenIdx.length - b / skipIdx.length) > CONFOUND_MAX) {
+      const passers = a + b;
+      const purity = passers > 0 ? a / passers : 0;
+      if (Math.abs(a / takenIdx.length - b / skipIdx.length) > CONFOUND_MAX
+          || (passers >= 20 && purity > PURITY_MAX && purity > baseTaken * 2)) {
         dropped.push(c.name); continue;
       }
     }
