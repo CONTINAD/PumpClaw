@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from '
 import { graderLastRun } from './index.js';
 import { BIRDEYE_ON } from './price-oracle.js';
 import { CANDIDATES } from './filter-lab.js';
+import { mine, ruleToCandidate } from './rule-miner.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -1881,9 +1882,48 @@ const NAV_MORE: [string, [string, string][]][] = [
   ['Real money', [['/exits', 'Exits'], ['/ledger', 'Ledger'], ['/tasks', 'Tasks']]],
   ['Calls', [['/channels', 'Channels'], ['/features', 'Features'], ['/bundles', 'Bundles']]],
   ['Strategy', [['/builder', 'Builder'], ['/sweep', 'Sweep'], ['/params', 'Params']]],
-  ['Filters', [['/gates', 'Gate scoreboard'], ['/clock', 'Clock'], ['/filters', 'Live rules']]],
+  ['Filters', [['/gates', 'Gate scoreboard'], ['/miner', 'Rule miner'], ['/clock', 'Clock'], ['/filters', 'Live rules']]],
   ['', [['/settings', 'Settings']]],
 ];
+
+
+/**
+ * Every coin with a graded outcome, in the shape the miner wants.
+ *
+ * The filter lab builds the same set inline and throws away the timestamp, which is
+ * fine when candidates are fixed and scored once. The miner needs the clock: rules
+ * are mined on the older data and tested on the newer, and without a time on each
+ * row there is no way to split them.
+ */
+function minerObservations(): { peak: number; taken: boolean; at: number; snap: any }[] {
+  const read = (f: string) => { try { return JSON.parse(readFileSync(join(CONFIG.DATA_DIR, f), 'utf-8')); } catch { return []; } };
+  const out: { peak: number; taken: boolean; at: number; snap: any }[] = [];
+  for (const c of read('calls.json')) {
+    if (typeof c.peakMultiplier !== 'number' || !c.entryTime) continue;
+    const h = c.entryHolders ?? {};
+    const dh = c.entryDeepHolders ?? {};
+    out.push({ peak: c.peakMultiplier, taken: true, at: c.entryTime, snap: {
+      mc: c.entryMC ?? 0, liq: c.entryLiquidity ?? 0,
+      vol5m: c.entryVolume5m ?? 0, vol1h: c.entryVolume1h ?? 0, vol24h: c.entryVolume24h ?? 0,
+      buys5m: c.entryBuys5m ?? 0, sells5m: c.entrySells5m ?? 0,
+      buys1h: c.entryBuys1h ?? 0, sells1h: c.entrySells1h ?? 0,
+      chg5m: c.entryPriceChange5m ?? 0, chg1h: c.entryPriceChange1h ?? 0, chg6h: c.entryPriceChange6h ?? 0,
+      ageMin: c.entryAgeMin ?? 0, dexId: c.entryDexId,
+      socials: typeof c.entrySocials === 'number' ? c.entrySocials : undefined,
+      freshWallets: h.freshWallets, veterans: h.veterans,
+      devHoldPct: h.devHoldPct, sameFunderPct: h.sameFunderPct,
+      hourUtc: new Date(c.entryTime).getUTCHours(),
+      deepOwners: dh.owners, deepCluster: dh.largestCluster,
+      deepClusterPct: dh.clusterPct, deepIndependent: dh.independent, deepFunders: dh.funders,
+      source: c.source,
+    } });
+  }
+  for (const k of read('skips.json')) {
+    if (typeof k.peakMultiplier !== 'number' || !k.snap || !k.timestamp) continue;
+    out.push({ peak: k.peakMultiplier, taken: false, at: k.timestamp, snap: k.snap });
+  }
+  return out;
+}
 
 /* ── /gates — what every filter actually blocked, and what it cost ──────────────
  *
@@ -2232,6 +2272,7 @@ function settingsShell(inner: string, self = '/settings'): string {
     '/gates': '🚦 Gate Scoreboard',
     '/filters': '🛡 Live Filter Rules',
     '/filter-lab': '🧪 Filter Lab',
+    '/miner': '⛏ Rule Miner',
     '/bundles': '🕸 Bundle Checks',
     '/ledger': '📒 Ledger',
     '/settings': '⚙️ Settings',
@@ -5267,6 +5308,137 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Live page error: ' + err.message);
       });
+    } else if (pathname === '/miner') {
+      // Rules mined from the winners, rather than guessed at and then tested.
+      //
+      // The filter lab can only score a rule somebody thought of first. This asks
+      // the other half of the question — given every coin that ran, what did they
+      // have in common — and hands the answer back as rules. Nothing it finds can
+      // block a call; the output is a reading list.
+      try {
+        const tm = (url.match(/[?&]target=([\d.]+)/) || [])[1];
+        const target = tm ? Math.max(1.2, Math.min(20, parseFloat(tm))) : 2;
+        const mined = mine(minerObservations(), target);
+
+        const TARGETS = [2, 3, 5, 10];
+        const tabs = TARGETS.map(t => `<a href="/miner?target=${t}" style="padding:6px 14px;border-radius:8px;text-decoration:none;font-size:13px;
+          border:1px solid ${t === target ? 'var(--purple)' : 'var(--border)'};
+          background:${t === target ? 'rgba(139,92,246,.14)' : 'transparent'};
+          color:${t === target ? 'var(--text)' : 'var(--text2)'};font-weight:${t === target ? 650 : 400}">${t}x</a>`).join('');
+
+        const vChip = (v: string) => {
+          const m: Record<string, [string, string]> = {
+            holds: ['held up out of sample', 'var(--green)'],
+            weakens: ['weaker out of sample', 'var(--amber)'],
+            collapses: ['collapsed out of sample', 'var(--red)'],
+            untested: ['too few out-of-sample matches', 'var(--text3)'],
+          };
+          const [txt, col] = m[v] ?? ['—', 'var(--text3)'];
+          return `<span style="font-size:10px;color:${col};border:1px solid ${col};border-radius:20px;padding:2px 7px;white-space:nowrap">${txt}</span>`;
+        };
+
+        const ruleRow = (r: any) => `<tr style="border-top:1px solid var(--border)">
+          <td style="font-size:12.5px;line-height:1.5;max-width:420px">${esc(r.label)}</td>
+          <td class="mono">${r.support}</td>
+          <td class="mono">${Math.round(r.precision * 100)}%</td>
+          <td class="mono" style="color:${r.lift >= 1.5 ? 'var(--green)' : 'var(--text)'};font-weight:650">${r.lift.toFixed(2)}x</td>
+          <td class="mono">${r.holdoutSupport}</td>
+          <td class="mono">${r.holdoutSupport >= 12 ? Math.round(r.holdoutPrecision * 100) + '%' : '—'}</td>
+          <td class="mono" style="color:${r.holdoutLift >= 1.3 ? 'var(--green)' : r.holdoutLift < 1 ? 'var(--red)' : 'var(--text2)'};font-weight:650">${r.holdoutSupport >= 12 ? r.holdoutLift.toFixed(2) + 'x' : '—'}</td>
+          <td class="mono">${r.holdoutSupport >= 12 ? r.holdoutMedianPeak.toFixed(2) + 'x' : '—'}</td>
+          <td>${vChip(r.verdict)}</td>
+        </tr>`;
+
+        const held = mined.rules.filter((r: any) => r.verdict === 'holds');
+        const inner = `
+        <div class="card" style="max-width:none">
+          <h3>⛏ Rule Miner — what the winners had in common</h3>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin:6px 0 12px">
+            Every coin with a graded outcome, bought and rejected alike, described by everything
+            known about it at call time. The miner scores each condition on its own, keeps the
+            strongest, and combines them into pairs and triples — no rule is written by hand.
+            <b>Nothing here blocks a call.</b>
+          </p>
+          <p style="font-size:12.5px;color:var(--text2);line-height:1.7;margin:0 0 14px;
+             border-left:2px solid var(--purple);padding-left:11px">
+            Search this hard and you will always find something that fits. So rules are mined on the
+            older <b>70%</b> and scored again on the newer <b>30%</b> the miner never saw. Read the
+            out-of-sample columns first — a rule that only works in-sample is the overfit this page
+            is most prone to, and it is labelled rather than hidden.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+            <span style="font-size:12px;color:var(--text3)">what counts as a runner:</span>${tabs}
+          </div>
+          <div style="display:flex;gap:22px;flex-wrap:wrap;font-size:12px;color:var(--text2);
+               border-top:1px solid var(--border);padding-top:12px">
+            <span>observations <b class="mono" style="color:var(--text)">${mined.observations}</b></span>
+            <span>mined on <b class="mono" style="color:var(--text)">${mined.trainCount}</b></span>
+            <span>tested on <b class="mono" style="color:var(--text)">${mined.holdoutCount}</b></span>
+            <span>base rate <b class="mono" style="color:var(--text)">${(mined.baseRate * 100).toFixed(1)}%</b></span>
+            <span>out of sample <b class="mono" style="color:var(--text)">${(mined.holdoutBaseRate * 100).toFixed(1)}%</b></span>
+            <span>survived <b class="mono" style="color:${held.length ? 'var(--green)' : 'var(--amber)'}">${held.length} of ${mined.rules.length}</b></span>
+          </div>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Combined rules, survivors first</h3>
+          <p style="font-size:12px;color:var(--text2);margin:2px 0 10px">
+            <b>lift</b> is how many times the base rate a rule achieves. <b>support</b> is how many
+            coins it matched. A rule needs 30 matches to appear at all and 12 out of sample to be judged.
+          </p>
+          <div style="overflow-x:auto"><table>
+            <tr>
+              <th>rule</th><th>matched</th><th>hit ${target}x</th><th>lift</th>
+              <th>matched</th><th>hit ${target}x</th><th>lift</th><th>med peak</th><th>verdict</th>
+            </tr>
+            <tr><th colspan="4" style="font-size:10px;color:var(--text3);border:none;padding-top:0">— mined on the older 70% —</th>
+                <th colspan="5" style="font-size:10px;color:var(--purple);border:none;padding-top:0">— tested on the newer 30% —</th></tr>
+            ${mined.rules.map(ruleRow).join('') || '<tr><td colspan="9" style="color:var(--text3);font-size:13px">No combination cleared the support floor. That is a real answer: at this target the winners have nothing in common that 30+ coins share.</td></tr>'}
+          </table></div>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Single conditions, ranked</h3>
+          <p style="font-size:12px;color:var(--text2);margin:2px 0 10px">
+            What each condition is worth on its own, before anything is combined. These are the
+            ingredients the beam search is built from — a condition doing nothing here can still
+            matter in combination, and the miner will miss those.
+          </p>
+          <div style="overflow-x:auto"><table>
+            <tr><th>condition</th><th>matched</th><th>hit ${target}x</th><th>lift</th><th>matched</th><th>hit ${target}x</th><th>lift</th><th>verdict</th></tr>
+            ${mined.singles.map((r: any) => `<tr style="border-top:1px solid var(--border)">
+              <td style="font-size:12.5px">${esc(r.label)}</td>
+              <td class="mono">${r.support}</td>
+              <td class="mono">${Math.round(r.precision * 100)}%</td>
+              <td class="mono" style="font-weight:650;color:${r.lift >= 1.4 ? 'var(--green)' : 'var(--text)'}">${r.lift.toFixed(2)}x</td>
+              <td class="mono">${r.holdoutSupport}</td>
+              <td class="mono">${r.holdoutSupport >= 12 ? Math.round(r.holdoutPrecision * 100) + '%' : '—'}</td>
+              <td class="mono" style="font-weight:650;color:${r.holdoutLift >= 1.3 ? 'var(--green)' : r.holdoutLift < 1 ? 'var(--red)' : 'var(--text2)'}">${r.holdoutSupport >= 12 ? r.holdoutLift.toFixed(2) + 'x' : '—'}</td>
+              <td>${vChip(r.verdict)}</td>
+            </tr>`).join('')}
+          </table></div>
+        </div>
+
+        <div class="card" style="max-width:none">
+          <h3>Where these go next</h3>
+          <p style="font-size:13px;color:var(--text2);line-height:1.7;margin:0">
+            Every rule that survived the holdout is handed to the <a href="/filter-lab" style="color:var(--purple)">Filter Lab</a>
+            automatically, where it is scored on EV and crash rate beside the hand-written candidates.
+            That is a different question from the one on this page: here a rule is judged on whether it
+            finds ${target}x coins, there on whether the coins it lets through are worth more than the
+            ones it blocks. A rule can win one and lose the other, and both are worth knowing before
+            anything goes live.
+          </p>
+        </div>`;
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PumpClaw · Rule Miner</title><style>${SETTINGS_STYLE}</style></head><body>
+<div class="topbar" style="gap:14px"><h1 style="flex:0 0 auto">⛏ Rule Miner</h1>${navBar('/miner')}</div>
+<div class="wrap" style="max-width:1200px">${inner}</div></body></html>`);
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Error building rule miner: ' + err.message + '\n' + err.stack);
+      }
     } else if (pathname === '/filter-lab') {
       // Candidate filters that reject nothing.
       //
@@ -6799,7 +6971,29 @@ export function startDashboard(port?: number): void {
         const rate = (a: number[], t: number) => (a.length ? (100 * a.filter(x => x >= t).length) / a.length : 0);
         const under = (a: number[], t: number) => (a.length ? (100 * a.filter(x => x < t).length) / a.length : 0);
 
-        const rows = CANDIDATES.map(f => {
+        // ── Mined rules, scored beside the hand-written ones ──────────────────
+        //
+        // The miner asks whether a rule finds runners; this page asks whether the
+        // coins it lets through are worth more than the ones it blocks. Those are
+        // different questions and a rule can win one while losing the other, so
+        // anything that survived the miner's holdout is scored here too rather
+        // than being taken on the miner's word. Only survivors: a rule that
+        // collapsed out of sample has already failed the cheaper test.
+        const minedCandidates: typeof CANDIDATES = [];
+        try {
+          const seenKeys = new Set<string>();
+          for (const t of [2, 3, 5, 10]) {
+            const m = mine(minerObservations(), t);
+            for (const r of m.rules.filter(x => x.verdict === 'holds').slice(0, 6)) {
+              const cand = ruleToCandidate(r, t);
+              if (seenKeys.has(cand.key)) continue;
+              seenKeys.add(cand.key);
+              minedCandidates.push(cand);
+            }
+          }
+        } catch { /* the lab still works without them */ }
+
+        const rows = [...CANDIDATES, ...minedCandidates].map(f => {
           const yes: number[] = [], no: number[] = [], yesPk: number[] = [], noPk: number[] = [];
           const yesLo: number[] = [], noLo: number[] = [];
           for (const o of obs) {
@@ -6836,7 +7030,7 @@ export function startDashboard(port?: number): void {
           rejected: obs.filter(o => !o.taken).length,
           withTrough: obs.filter(o => o.low !== null).length,
           pathBacked: obs.filter(o => o.mint && realRet.has(o.mint)).length,
-          groups: [...new Set(CANDIDATES.map(c => c.group))].sort(),
+          groups: [...new Set([...CANDIDATES, ...minedCandidates].map(c => c.group))].sort(),
           note: 'edge = EV of coins the filter would ALLOW minus EV of the ones it would BLOCK. '
               + 'Positive means the rule is picking the better half. Nothing here blocks a buy. '
               + 'usable=false means one side has under 15 samples, which is not yet an opinion. '
