@@ -5344,7 +5344,7 @@ export function startDashboard(port?: number): void {
         const tm = (url.match(/[?&]target=([\d.]+)/) || [])[1];
         const target = tm ? parseFloat(tm) : 2;
         const obs: FleetObs[] = minerObservations()
-          .map(o => ({ snap: snapshotFrom({}, o.snap), peak: o.peak, ts: o.at }));
+          .map(o => ({ snap: snapshotFrom({}, o.snap), peak: o.peak, ts: o.at, taken: o.taken }));
         const f = runFleet(obs, target);
         const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
         const tabs = [2, 3, 5].map(t =>
@@ -5375,7 +5375,11 @@ export function startDashboard(port?: number): void {
             A combination has to beat that <i>and</i> hold its lower confidence bound above the base rate
             before it is worth anything. ${sig === 0
               ? '<b>Nothing clears it right now</b> — at this sample size the search cannot tell a rule from a coincidence. That is the honest state, not a bug.'
-              : '<b>' + sig + ' combination(s) clear it.</b>'}</p>
+              : '<b>' + sig + ' combination(s) clear it.</b>'}
+            ${f.dropped.length ? `<br><br><b>${f.dropped.length} candidate(s) screened out</b> for tracking the pipeline
+              rather than the coin — they separate called from rejected almost perfectly because they only
+              resolve on coins already near a call, not because they say anything about the coin:
+              <i>${f.dropped.slice(0, 6).join(', ')}${f.dropped.length > 6 ? '…' : ''}</i>.` : ''}</p>
           <table><thead><tr>
             <th>combination</th><th class="n">train n</th><th class="n">train</th>
             <th class="n">test n</th><th class="n">test</th><th class="n">95% CI</th>

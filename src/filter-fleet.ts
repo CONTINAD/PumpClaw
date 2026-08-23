@@ -23,7 +23,7 @@
  */
 import { CANDIDATES, type Candidate, type Snapshot } from './filter-lab.js';
 
-export interface FleetObs { snap: Snapshot; peak: number; ts: number; }
+export interface FleetObs { snap: Snapshot; peak: number; ts: number; taken?: boolean; }
 
 export interface FleetRow {
   keys: string[];
@@ -44,6 +44,8 @@ export interface FleetResult {
   nullRuns: number[];
   rows: FleetRow[];
   singles: FleetRow[];
+  /** Candidates screened out for tracking the pipeline rather than the coin. */
+  dropped: string[];
 }
 
 const MIN_TRAIN = 40;
@@ -83,7 +85,23 @@ export function runFleet(obs: FleetObs[], target = 2): FleetResult {
   // Each candidate becomes a pass-vector once. Everything after this is array AND,
   // which is what makes enumerating thousands of combinations cheap enough to do
   // on a page load rather than in a script somebody has to remember to run.
+  // Some observations are coins we called and some are coins we rejected, and a few
+  // candidates separate those two groups almost perfectly — not because they measure
+  // anything about the coin, but because they measure how far down the pipeline it
+  // got. 'the deep holder read resolved' is the clearest: that read only runs on
+  // coins already close to being called, so it scores like a brilliant filter while
+  // being a restatement of the gate chain. Ranked naively it took every top slot.
+  //
+  // Anything whose pass-rate splits the called and rejected populations by more than
+  // this is a pipeline artifact rather than a property, and cannot be filtered on
+  // anyway — you would have to already know the answer to evaluate it.
+  const CONFOUND_MAX = 0.45;
+  const takenIdx: number[] = [], skipIdx: number[] = [];
+  for (let i = 0; i < n; i++) (rows[i].taken ? takenIdx : skipIdx).push(i);
+  const canScreen = takenIdx.length >= 30 && skipIdx.length >= 30;
+
   const vecs: { c: Candidate; v: Uint8Array; nTr: number }[] = [];
+  const dropped: string[] = [];
   for (const c of CANDIDATES) {
     const v = new Uint8Array(n);
     let nTr = 0, nTe = 0;
@@ -94,6 +112,14 @@ export function runFleet(obs: FleetObs[], target = 2): FleetResult {
       // missing metric never masquerades as a rejection.
       v[i] = ok === false ? 0 : 1;
       if (v[i]) { if (i < split) nTr++; else nTe++; }
+    }
+    if (canScreen) {
+      let a = 0, b = 0;
+      for (const i of takenIdx) a += v[i];
+      for (const i of skipIdx) b += v[i];
+      if (Math.abs(a / takenIdx.length - b / skipIdx.length) > CONFOUND_MAX) {
+        dropped.push(c.name); continue;
+      }
     }
     if (nTr >= MIN_TRAIN && nTe >= MIN_TEST && nTr < split) vecs.push({ c, v, nTr });
   }
@@ -196,6 +222,6 @@ export function runFleet(obs: FleetObs[], target = 2): FleetResult {
   return {
     target, n, trainN: split, testN: n - split,
     baseTrain: baseTr.rate, baseTest: baseTe.rate,
-    noiseFloor, nullRuns, rows: out.slice(0, 60), singles: singles.slice(0, 25),
+    noiseFloor, nullRuns, rows: out.slice(0, 60), singles: singles.slice(0, 25), dropped,
   };
 }
