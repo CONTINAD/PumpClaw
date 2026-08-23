@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from 'fs';
 import { graderLastRun } from './index.js';
 import { BIRDEYE_ON } from './price-oracle.js';
-import { CANDIDATES } from './filter-lab.js';
+import { CANDIDATES, snapshotFrom } from './filter-lab.js';
 import { mine, ruleToCandidate } from './rule-miner.js';
+import { runFleet, type FleetObs } from './filter-fleet.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -1882,7 +1883,7 @@ const NAV_MORE: [string, [string, string][]][] = [
   ['Real money', [['/exits', 'Exits'], ['/ledger', 'Ledger'], ['/tasks', 'Tasks']]],
   ['Calls', [['/channels', 'Channels'], ['/features', 'Features'], ['/bundles', 'Bundles']]],
   ['Strategy', [['/builder', 'Builder'], ['/sweep', 'Sweep'], ['/params', 'Params']]],
-  ['Filters', [['/gates', 'Gate scoreboard'], ['/miner', 'Rule miner'], ['/clock', 'Clock'], ['/filters', 'Live rules']]],
+  ['Filters', [['/gates', 'Gate scoreboard'], ['/miner', 'Rule miner'], ['/filter-fleet', 'Filter fleet'], ['/clock', 'Clock'], ['/filters', 'Live rules']]],
   ['', [['/settings', 'Settings']]],
 ];
 
@@ -5331,6 +5332,81 @@ export function startDashboard(port?: number): void {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Live page error: ' + err.message);
       });
+    } else if (pathname === '/filter-fleet') {
+      // The shadow fleet, for filters.
+      //
+      // 476 candidates were only ever scored one at a time, which cannot answer the
+      // question that matters — which COMBINATION is best. This enumerates them, and
+      // then does the thing that makes the answer trustworthy: re-runs the identical
+      // enumeration against shuffled outcomes to find how good a rule luck produces
+      // at this sample size, and marks everything under that line as noise.
+      try {
+        const tm = (url.match(/[?&]target=([\d.]+)/) || [])[1];
+        const target = tm ? parseFloat(tm) : 2;
+        const obs: FleetObs[] = minerObservations()
+          .map(o => ({ snap: snapshotFrom({}, o.snap), peak: o.peak, ts: o.at }));
+        const f = runFleet(obs, target);
+        const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
+        const tabs = [2, 3, 5].map(t =>
+          `<a href="/filter-fleet?target=${t}" class="tab${t === target ? ' on' : ''}">${t}×</a>`).join('');
+        const row = (r: typeof f.rows[0]) => `<tr class="${r.aboveNoise ? 'sig' : ''}">
+          <td>${r.name}</td>
+          <td class="n">${r.trainN}</td><td class="n">${pct(r.trainRate)}</td>
+          <td class="n">${r.testN}</td><td class="n"><b>${pct(r.testRate)}</b></td>
+          <td class="n">${pct(r.testLo)}–${pct(r.testHi)}</td>
+          <td class="n" style="color:${r.lift > 0 ? '#10b981' : '#ef4444'}">${r.lift >= 0 ? '+' : ''}${(r.lift * 100).toFixed(0)}pp</td>
+          <td>${r.aboveNoise ? '<span class="ok">above noise</span>' : '<span class="no">noise</span>'}</td></tr>`;
+        const sig = f.rows.filter(r => r.aboveNoise).length;
+        const html = settingsShell(`
+        <div class="card" style="max-width:none">
+          <h3>🧪 Filter fleet</h3>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6">Every combination of the strongest candidates out of ${CANDIDATES.length}, scored against all history — and measured
+             against what the same search finds in pure noise.</p>
+          <div class="tabs">${tabs}</div>
+          <div class="cards">
+            <div class="card"><b>${f.n}</b><span>coins</span></div>
+            <div class="card"><b>${pct(f.baseTest)}</b><span>base rate, test half</span></div>
+            <div class="card"><b>${pct(f.noiseFloor)}</b><span>noise floor</span></div>
+            <div class="card"><b>${sig}</b><span>combos above it</span></div>
+          </div>
+          <p class="note">The noise floor is the best training score this same enumeration reaches when the
+            outcomes are <b>shuffled at random</b> — ${f.nullRuns.length} runs, 90th percentile.
+            Runs came back at ${f.nullRuns.map(x => pct(x)).join(', ')}.
+            A combination has to beat that <i>and</i> hold its lower confidence bound above the base rate
+            before it is worth anything. ${sig === 0
+              ? '<b>Nothing clears it right now</b> — at this sample size the search cannot tell a rule from a coincidence. That is the honest state, not a bug.'
+              : '<b>' + sig + ' combination(s) clear it.</b>'}</p>
+          <table><thead><tr>
+            <th>combination</th><th class="n">train n</th><th class="n">train</th>
+            <th class="n">test n</th><th class="n">test</th><th class="n">95% CI</th>
+            <th class="n">vs base</th><th>verdict</th></tr></thead>
+            <tbody>${f.rows.map(row).join('')}</tbody></table>
+          <h2 style="margin-top:28px">Best singles, for reference</h2>
+          <table><thead><tr>
+            <th>filter</th><th class="n">train n</th><th class="n">train</th>
+            <th class="n">test n</th><th class="n">test</th><th class="n">95% CI</th>
+            <th class="n">vs base</th><th>verdict</th></tr></thead>
+            <tbody>${f.singles.map(row).join('')}</tbody></table>
+          <style>
+            .tabs{display:flex;gap:8px;margin:12px 0}
+            .tab{padding:6px 14px;border:1px solid var(--line);border-radius:6px;text-decoration:none;color:var(--text2)}
+            .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+            .cards{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0}
+            .card{border:1px solid var(--line);border-radius:8px;padding:10px 16px;min-width:120px}
+            .card b{display:block;font-size:22px}
+            .card span{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+            .note{font-size:13px;color:var(--text2);max-width:80ch;line-height:1.6}
+            tr.sig td{background:rgba(16,185,129,.08)}
+            .ok{color:#10b981;font-weight:600;font-size:11px}
+            .no{color:var(--text3);font-size:11px}
+          </style>
+        </div>`);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html.replace('<title>PumpClaw Settings</title>', '<title>PumpClaw · Filter fleet</title>'));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(`<pre>Filter fleet error: ${err.message}</pre>`);
+      }
     } else if (pathname === '/miner') {
       // Rules mined from the winners, rather than guessed at and then tested.
       //
