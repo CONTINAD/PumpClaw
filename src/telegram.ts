@@ -34,12 +34,31 @@ import { URL } from 'url';
  * than picking more. Removing it drops call volume about 28% and lifts the
  * source-tagged hit rate from 42% to 45%; keeping only soltrench and gem reaches 47%.
  *
+ * soltrenchtrending is out too, on Alex's call, once the audit could compare all four
+ * channels through the same gates on their own outcomes. It was the highest-volume
+ * source and the worst one:
+ *
+ *                          calls   hit 2x        never reach TP1      SOL/call
+ *   soltrenchtrending        117    31.6%   53.8%  [44.8-62.6]        +0.0794
+ *   solwhaletrending          49    67.3%   24.5%  [14.6-38.1]        +0.3850
+ *
+ * Those intervals do not overlap. More than half of every trench call never reached
+ * the first take-profit, which with this ladder is a guaranteed loss, and it supplied
+ * 51% of the calls for 26% of the value. It is not a sample-size story either: across
+ * three equal time slices its SOL/call ran +0.1250, +0.0953, +0.0544 while whale held
+ * +0.4035, +0.3287, +0.4095, and whale still returns +0.3037/call with its three
+ * biggest winners deleted.
+ *
+ * This cuts call volume to roughly a third, which is the trade being made knowingly:
+ * while the exit is giving back every runner it touches, each extra call is a fresh
+ * chance to pay the trail rather than a fresh chance to win.
+ *
  * Nothing here is permanent. The channel audit keeps recording every post from every
  * channel whether or not it is scraped, so putting it back is a one-line change and
  * the evidence for doing so will be on the /channels page when it exists.
  */
 const TG_CHANNELS: string[] = (process.env.TG_CHANNELS
-  ?? 'soltrenchtrending,solwhaletrending,gem_tools_calls')
+  ?? 'solwhaletrending,gem_tools_calls')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 /**
