@@ -2737,7 +2737,23 @@ function buildLedgerHTML(): string {
       <td class="mono" style="font-size:12px;color:var(--text2)">${(p.peakMultiplier ?? 0).toFixed(2)}x</td>
       <td style="font-size:11px;color:var(--text2)">
         ${exits.length
-          ? exits.map(e => `<div style="white-space:nowrap">${e.label ?? e.reason} · ${(e.multiplierAtExit ?? 0).toFixed(2)}x · ${(e.solReceived ?? 0).toFixed(4)}</div>`).join('')
+          ? exits.map(e => {
+              // multiplierAtExit is the price that TRIGGERED the exit, not the price it
+              // filled at. Normally those agree inside a percent or two, so the trigger
+              // was fine to show alone. On a fast collapse they do not: a stop retry
+              // escalates slippage to 50% and then 90% because the priority is OUT, and
+              // the fill can land far under the level that fired it. $RBTC recorded a
+              // clean "Stop Loss −23% · 0.77x" and returned 0.48x of the money in.
+              // Two of 44 single-exit trades diverged by more than 12%, and both read as
+              // ordinary stops in every table built on this field.
+              const trig = e.multiplierAtExit ?? 0;
+              const cost = (p.entrySol ?? 0) * (e.pctSold ?? 0);
+              const real = cost > 0 ? (e.solReceived ?? 0) / cost : null;
+              const slipped = real !== null && trig > 0 && real < trig * 0.92;
+              return `<div style="white-space:nowrap">${e.label ?? e.reason} · ${trig.toFixed(2)}x${
+                slipped ? ` <span style="color:#ef4444" title="filled ${(((real! / trig) - 1) * 100).toFixed(0)}% below the level that triggered it">→ ${real!.toFixed(2)}x filled</span>` : ''
+              } · ${(e.solReceived ?? 0).toFixed(4)}</div>`;
+            }).join('')
           : isOpen ? '<span style="color:var(--text3)">no exits yet</span>'
           : '<span style="color:#ef4444">closed with no exit recorded</span>'}
       </td>
@@ -5060,7 +5076,14 @@ export function startDashboard(port?: number): void {
         const rows = positions.slice(0, 60).map(p => {
           const ret = p.entrySol > 0 ? p.totalSolReturned / p.entrySol : 0;
           const sells = p.exits.map(e =>
-            `<div style="font-size:11px;color:var(--text2)">${e.label} — <b style="color:${e.multiplierAtExit >= 1 ? '#10b981' : '#ef4444'}">${n2(e.multiplierAtExit)}×</b> → ${n2(e.solReceived, 3)} ◎</div>`
+            (() => {
+              // Same trigger-vs-fill split as the ledger: show what actually came back
+              // whenever it lands materially under the level that fired the exit.
+              const cost = (p.entrySol ?? 0) * (e.pctSold ?? 0);
+              const real = cost > 0 ? (e.solReceived ?? 0) / cost : null;
+              const slipped = real !== null && e.multiplierAtExit > 0 && real < e.multiplierAtExit * 0.92;
+              return `<div style="font-size:11px;color:var(--text2)">${e.label} — <b style="color:${e.multiplierAtExit >= 1 ? '#10b981' : '#ef4444'}">${n2(e.multiplierAtExit)}×</b>${slipped ? ` <span style="color:#ef4444">(filled ${n2(real!)}×)</span>` : ''} → ${n2(e.solReceived, 3)} ◎</div>`;
+            })()
           ).join('') || '<div style="font-size:11px;color:var(--text3)">— still open —</div>';
           const pl = p.status === 'closed' ? (p.finalPnlSol ?? 0) : null;
           return `<tr>
