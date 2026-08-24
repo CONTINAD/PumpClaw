@@ -144,6 +144,12 @@ tbody tr:last-child td{border-bottom:none}
   font-weight:700;text-decoration:none;border:1px solid rgba(61,255,158,.4);color:var(--phos);
   background:rgba(61,255,158,.07);transition:.15s;white-space:nowrap}
 .gl a:hover{background:var(--phos);color:#04120a;box-shadow:0 0 18px rgba(61,255,158,.4)}
+.rangepick{display:flex;gap:4px;flex-wrap:wrap;margin:10px 0 2px}
+.rangepick button{font:600 10px/1 'IBM Plex Mono',monospace;letter-spacing:.08em;
+  padding:5px 8px;border-radius:4px;cursor:pointer;text-transform:uppercase;
+  background:transparent;color:var(--dim);border:1px solid rgba(255,255,255,.10)}
+.rangepick button:hover{color:var(--ice);border-color:rgba(255,255,255,.25)}
+.rangepick button.on{background:var(--phos);color:#04120a;border-color:var(--phos)}
 </style>
 </head>
 <body>
@@ -152,6 +158,11 @@ tbody tr:last-child td{border-bottom:none}
 <div class="rail">
   <div class="brand"><span class="mk">◤</span>PUMP<em>CLAW</em></div>
   <div class="pulse"><span class="dot" id="hb"></span><span id="hbtxt">connecting</span></div>
+  <!-- Every number on this board was hard-coded to 24h, so a quiet night and a busy
+       one rendered identically and there was no way to ask "what about the last
+       hour". The window is now a control, and every panel label reads back the one
+       that is selected rather than the word "24h". -->
+  <div class="rangepick" id="rangepick"></div>
   <nav>
     <!-- Same six links and the same More menu as every other page.
          The homepage kept its own eleven-link strip after the rest of the site moved
@@ -192,7 +203,7 @@ tbody tr:last-child td{border-bottom:none}
         <div class="body flush" id="calls"><div class="empty">loading…</div></div>
       </div>
       <div class="panel">
-        <h2>◆ Real Money Curve <span class="tag" id="eqtag">cumulative PnL · 24h</span></h2>
+        <h2>◆ Real Money Curve <span class="tag" id="eqtag">cumulative PnL</span></h2>
         <div class="body"><canvas id="eq" height="150" style="width:100%"></canvas></div>
       </div>
       <div class="panel">
@@ -228,7 +239,7 @@ tbody tr:last-child td{border-bottom:none}
         <div class="foot">Opens the strategy's page with a form to run it on your own wallet.</div>
       </div>
       <div class="panel">
-        <h2>◆ Best Calls <span class="tag">24h, by peak</span></h2>
+        <h2>◆ Best Calls <span class="tag" id="besttag">by peak</span></h2>
         <div class="body flush" id="best"><div class="empty">loading…</div></div>
       </div>
       <div class="panel">
@@ -252,11 +263,44 @@ function kpi(cls, lbl, val, sub, edge) {
     '<div class="val">' + val + '</div><div class="sub">' + sub + '</div></div>';
 }
 
+// Window state. Persisted so a reload does not silently drop you back to 24h and
+// make you re-read a board you thought you were already looking at.
+var RANGES = [['1h','1H',1],['6h','6H',6],['12h','12H',12],['24h','24H',24],['7d','7D',168],['all','ALL',9999]];
+var RANGE = (function () {
+  var q = (location.search.match(/[?&]range=([^&]+)/) || [])[1];
+  var saved = null;
+  try { saved = localStorage.getItem('hqRange'); } catch (e) { /* private mode */ }
+  var want = q || saved || '24h';
+  return RANGES.some(function (r) { return r[0] === want; }) ? want : '24h';
+})();
+function rangeHours() {
+  for (var i = 0; i < RANGES.length; i++) if (RANGES[i][0] === RANGE) return RANGES[i][2];
+  return 24;
+}
+function rangeLabel() {
+  for (var i = 0; i < RANGES.length; i++) if (RANGES[i][0] === RANGE) return RANGES[i][1];
+  return '24H';
+}
+function drawPicker() {
+  var el = $('rangepick'); if (!el) return;
+  el.innerHTML = RANGES.map(function (r) {
+    return '<button data-r="' + r[0] + '" class="' + (r[0] === RANGE ? 'on' : '') + '">' + r[1] + '</button>';
+  }).join('');
+  Array.prototype.forEach.call(el.querySelectorAll('button'), function (b) {
+    b.onclick = function () {
+      RANGE = b.getAttribute('data-r');
+      try { localStorage.setItem('hqRange', RANGE); } catch (e) { /* private mode */ }
+      drawPicker();
+      paint();
+    };
+  });
+}
+
 async function paint() {
   let data, shadow, live, skipped, feed;
   try {
     [data, shadow, live, skipped, feed] = await Promise.all([
-      j('/api/data?range=24h'), j('/api/shadow?hours=24'), j('/api/live'),
+      j('/api/data?range=' + RANGE), j('/api/shadow?hours=' + rangeHours()), j('/api/live'),
       j('/api/skipped').catch(() => ({})), j('/api/feed?real=1').catch(() => ({ events: [] }))
     ]);
   } catch (e) {
@@ -307,9 +351,9 @@ async function paint() {
   const realPnl = realOut - realIn;
 
   $('kpis').innerHTML =
-    kpi('neutral', 'Calls · 24h', totalCalls, hit2 + ' hit 2× · ' + (ms['5']||0) + ' hit 5× · ' + (ms['10']||0) + ' hit 10×', 'var(--ice)') +
+    kpi('neutral', 'Calls · ' + rangeLabel(), totalCalls, hit2 + ' hit 2× · ' + (ms['5']||0) + ' hit 5× · ' + (ms['10']||0) + ' hit 10×', 'var(--ice)') +
     kpi(totalCalls ? 'ok' : 'neutral', 'Hit rate 2×', totalCalls ? Math.round(hit2/totalCalls*100) + '%' : '—', 'of calls doubled from entry', 'var(--phos)') +
-    kpi(realPnl >= 0 ? 'ok' : 'bad', 'Real PnL · 24h', fmtSol(realPnl) + ' ◎',
+    kpi(realPnl >= 0 ? 'ok' : 'bad', 'Real PnL · ' + rangeLabel(), fmtSol(realPnl) + ' ◎',
         realTrades + ' closed trade' + (realTrades === 1 ? '' : 's') + ' · ' + realIn.toFixed(2) + ' ◎ deployed', 'var(--amber)') +
     kpi(openReal.length ? 'info' : 'neutral', 'Wallet', (bal === null || bal === undefined ? '—' : bal.toFixed(3)) + ' ◎',
         openReal.length ? openReal.length + ' live position(s) open' : 'no live positions', 'var(--amber)') +
@@ -354,7 +398,8 @@ async function paint() {
   }
 
   // ── recent calls ──
-  $('calltag').textContent = cw.length + ' tracked · 24h';
+  $('calltag').textContent = cw.length + ' tracked · ' + rangeLabel();
+  if ($('besttag')) $('besttag').textContent = rangeLabel() + ', by peak';
   $('calls').innerHTML = !cw.length ? '<div class="empty">no calls in this window</div>' :
     '<table><thead><tr><th>Coin</th><th class="num">Entry MC</th><th class="num">Peak</th>' +
     '<th class="num">Peak MC</th><th class="num">Called</th></tr></thead><tbody>' +
@@ -456,7 +501,7 @@ async function paint() {
         c.font = '600 12px -apple-system,sans-serif';
         c.fillText((end >= 0 ? '+' : '') + end.toFixed(3) + ' \u25ce', 8, 16);
       }
-      $('eqtag').textContent = tl.length + ' closed trades · 24h';
+      $('eqtag').textContent = tl.length + ' closed trades · ' + rangeLabel();
     }
   } catch (e) {}
 
@@ -531,6 +576,7 @@ async function paint() {
       '<span class="num">' + by[k] + '</span></div>').join('');
 }
 
+drawPicker();
 paint();
 setInterval(paint, 20000);
 </script>

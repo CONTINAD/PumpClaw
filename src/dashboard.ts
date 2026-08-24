@@ -2959,9 +2959,18 @@ async function buildBundlesHTML(): Promise<string> {
  * volume there. And it can have a skipped median above its called median, which
  * means we are systematically throwing away that channel's winners.
  */
-function buildChannelsHTML(): string {
+function buildChannelsHTML(url = ''): string {
+  // A channel is not one thing. solearlytrending ran 47% and then 22% inside three
+  // days with nothing about its posts changing, and the all-time table could not show
+  // that — it averaged the good week into the bad one. Every number here is now
+  // scoped to a window, and there is an hour-of-day break-out underneath, because
+  // "which channel" and "what time" are the same question asked twice.
+  const range = parseRange(url);
+  const cutoff = RANGE_MS[range] === Infinity ? 0 : Date.now() - RANGE_MS[range];
   let obs: any[] = [];
   try { obs = JSON.parse(readFileSync(join(CONFIG.DATA_DIR, 'channel-audit.json'), 'utf-8')); } catch { /* none yet */ }
+  const obsAll = obs;
+  obs = obs.filter(o => (o.postedAt ?? 0) >= cutoff);
   let calls: CallRecord[] = [];
   try { calls = loadJSON(join(CONFIG.DATA_DIR, 'calls.json')); } catch { /* none */ }
   let skips: any[] = [];
@@ -3045,6 +3054,34 @@ function buildChannelsHTML(): string {
   const totalMeasured = rows.reduce((s, r) => s + r.n, 0);
   const totalPending = rows.reduce((s, r) => s + r.pending, 0);
 
+  // ── the clock, per channel ───────────────────────────────────────────────
+  // Four-hour blocks rather than 24 columns: at this call volume an hourly split
+  // puts two coins in a cell and every number becomes noise.
+  const BLOCKS = [0, 4, 8, 12, 16, 20];
+  const blockLabel = (h: number) => `${String(h).padStart(2, '0')}-${String(h + 3).padStart(2, '0')}`;
+  const clockRows = channels.map(ch => {
+    const mine = obs.filter(o => o.channel === ch && o.peak !== undefined);
+    return {
+      ch,
+      cells: BLOCKS.map(b => {
+        const inBlock = mine.filter(o => {
+          const h = new Date(o.postedAt).getUTCHours();
+          return h >= b && h < b + 4;
+        });
+        const peaks = inBlock.map(o => o.peak as number);
+        return { n: peaks.length, hit2: share(peaks, v => v >= 2), med: med(peaks) };
+      }),
+    };
+  });
+  const clockTotals = BLOCKS.map(b => {
+    const inBlock = obs.filter(o => o.peak !== undefined && (() => {
+      const h = new Date(o.postedAt).getUTCHours();
+      return h >= b && h < b + 4;
+    })());
+    const peaks = inBlock.map(o => o.peak as number);
+    return { n: peaks.length, hit2: share(peaks, v => v >= 2) };
+  });
+
   const fmt = (v: number | null, d = 2, suf = 'x') => v === null ? '—' : `${v.toFixed(d)}${suf}`;
   const pct = (v: number | null) => v === null ? '—' : `${v}%`;
   const col = (v: number | null, good: number) => v === null ? 'var(--text3)' : v >= good ? '#10b981' : v > good * 0.6 ? '#eab308' : '#ef4444';
@@ -3080,7 +3117,45 @@ function buildChannelsHTML(): string {
 
   const empty = totalMeasured === 0;
 
+  const rangePicker = `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px">
+      ${(['6h', '12h', '24h', '7d', 'all'] as TimeRange[]).map(r => `<a href="/channels?range=${r}"
+        style="padding:5px 12px;border-radius:6px;font-size:12px;text-decoration:none;
+        border:1px solid ${r === range ? 'var(--border2)' : 'var(--border)'};
+        background:${r === range ? 'var(--bg3)' : 'transparent'};
+        color:${r === range ? 'var(--text)' : 'var(--text2)'}">${RANGE_LABELS[r]}</a>`).join('')}
+      <span style="font-size:12px;color:var(--text3);align-self:center;margin-left:6px">
+        ${obs.length} of ${obsAll.length} posts in window</span>
+    </div>`;
+
+  const clockTable = obs.length < 20 ? '' : `
+  <div class="card" style="max-width:none">
+    <h3>By hour of day <span style="font-size:12px;color:var(--text3);font-weight:400">— UTC, 4-hour blocks, raw feed</span></h3>
+    <p style="font-size:12px;color:var(--text2);line-height:1.6;max-width:78ch">
+      Which channel is worth following is not a fixed answer — it depends when.
+      Each cell is <b>hit 2× (posts)</b> for the coins that channel put out in that block.
+      Anything under 8 posts is greyed: at this volume those are anecdotes, not rates.
+    </p>
+    <div style="overflow-x:auto"><table style="width:100%;font-size:12px">
+      <tr><th style="text-align:left">Channel</th>
+        ${BLOCKS.map(b => `<th>${blockLabel(b)}</th>`).join('')}</tr>
+      ${clockRows.map(r => `<tr>
+        <td style="font-weight:700;white-space:nowrap">${r.ch}</td>
+        ${r.cells.map(c => {
+          if (!c.n) return '<td class="mono" style="color:var(--text3)">—</td>';
+          const thin = c.n < 8;
+          const color = thin ? 'var(--text3)' : (c.hit2 ?? 0) >= 40 ? '#10b981' : (c.hit2 ?? 0) >= 25 ? '#eab308' : '#ef4444';
+          return `<td class="mono" style="color:${color}">${c.hit2 ?? '—'}%<span style="font-size:10px;color:var(--text3)"> (${c.n})</span></td>`;
+        }).join('')}</tr>`).join('')}
+      <tr style="border-top:1px solid var(--border2)">
+        <td style="font-weight:700;color:var(--text2)">all channels</td>
+        ${clockTotals.map(c => `<td class="mono" style="color:var(--text2)">${c.n ? (c.hit2 ?? '—') + '%' : '—'}<span style="font-size:10px;color:var(--text3)"> (${c.n})</span></td>`).join('')}</tr>
+    </table></div>
+  </div>`;
+
   return settingsShell(`
+  ${rangePicker}
+  ${clockTable}
   <div class="card" style="max-width:none">
     <h3>📡 Channels — everything</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
@@ -4560,7 +4635,7 @@ export function startDashboard(port?: number): void {
     } else if (pathname === '/channels') {
       try {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(buildChannelsHTML());
+        res.end(buildChannelsHTML(url));
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Error building channels: ' + err.message + '\n' + err.stack);
