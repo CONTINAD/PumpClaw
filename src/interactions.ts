@@ -110,11 +110,29 @@ async function buildMogCard(ca: string): Promise<any> {
 
 // ── /mogboard leaderboard ───────────────────────────────────
 
-const WINDOWS: Record<string, { label: string; ms: number }> = {
-  '24h': { label: 'last 24 hours', ms: 24 * 3600_000 },
-  '7d':  { label: 'last 7 days',   ms: 7 * 24 * 3600_000 },
-  '30d': { label: 'last 30 days',  ms: 30 * 24 * 3600_000 },
-  'all': { label: 'all time',      ms: Number.MAX_SAFE_INTEGER },
+/**
+ * Windows the board can be asked for.
+ *
+ * Four options meant the shortest question you could ask was "the last 24 hours",
+ * which on a 40-call day averages a good hour into a bad one and on a 4-call night
+ * is mostly empty. The short end is where the board actually gets used — right after
+ * a run, to see what just happened — so that is where the resolution went.
+ *
+ * 'today' is not a duration: it is midnight UTC to now. It answers a different
+ * question from '24h' ("how has the session gone" vs "the last day") and the two
+ * disagree most of the time, which is the point of having both.
+ */
+const WINDOWS: Record<string, { label: string; ms: number; sinceMidnight?: boolean }> = {
+  '1h':    { label: 'last hour',      ms: 3600_000 },
+  '3h':    { label: 'last 3 hours',   ms: 3 * 3600_000 },
+  '6h':    { label: 'last 6 hours',   ms: 6 * 3600_000 },
+  '12h':   { label: 'last 12 hours',  ms: 12 * 3600_000 },
+  'today': { label: 'today (UTC)',    ms: 0, sinceMidnight: true },
+  '24h':   { label: 'last 24 hours',  ms: 24 * 3600_000 },
+  '3d':    { label: 'last 3 days',    ms: 3 * 24 * 3600_000 },
+  '7d':    { label: 'last 7 days',    ms: 7 * 24 * 3600_000 },
+  '30d':   { label: 'last 30 days',   ms: 30 * 24 * 3600_000 },
+  'all':   { label: 'all time',       ms: Number.MAX_SAFE_INTEGER },
 };
 
 const MEDALS = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
@@ -126,7 +144,9 @@ function pad(str: string, width: number): string {
 
 function selectBoard(window: string) {
   const win = WINDOWS[window] ?? WINDOWS['24h'];
-  const cutoff = win.ms === Number.MAX_SAFE_INTEGER ? 0 : Date.now() - win.ms;
+  const cutoff = win.sinceMidnight
+    ? Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate())
+    : win.ms === Number.MAX_SAFE_INTEGER ? 0 : Date.now() - win.ms;
   const inWindow = loadCalls().filter(c => c.entryTime >= cutoff);
   if (inWindow.length === 0) return null;
 
@@ -328,7 +348,13 @@ export async function registerSlashCommands(): Promise<void> {
     options: [{
       type: 3, name: 'timeframe', description: 'How far back to rank (default 24h)', required: false,
       choices: [
+        { name: 'Last hour', value: '1h' },
+        { name: 'Last 3 hours', value: '3h' },
+        { name: 'Last 6 hours', value: '6h' },
+        { name: 'Last 12 hours', value: '12h' },
+        { name: 'Today (since UTC midnight)', value: 'today' },
         { name: 'Last 24 hours', value: '24h' },
+        { name: 'Last 3 days', value: '3d' },
         { name: 'Last 7 days', value: '7d' },
         { name: 'Last 30 days', value: '30d' },
         { name: 'All time', value: 'all' },
