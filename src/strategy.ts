@@ -89,6 +89,29 @@ export const STRATEGY_PRESETS: Record<string, { name: string; desc: string; make
     desc: 'Pullback entry, bank half early. Highest win rate at 60% (+5.5%/trade).',
     make: () => ({ ...BASE, preset: 'dip20split', entryMode: 'dip' as const, dipPct: 0.20, dipWindowMin: 30, tps: [{ mult: 1.3, sellPct: 0.5 }, { mult: 2, sellPct: 0.5 }], trailingDrop: 0.9, trailingFrom: 'afterLastTp' as const, stopLossPct: 0.7, breakEvenAfterTp1: true }),
   },
+  instant2x1m: {
+    name: 'Instant → 2X or 1 min, stop −12%',
+    desc: 'Buy the call immediately. Take 2X if it comes, otherwise out after 60 seconds. '
+        + 'Best instant config in the fleet: 324 trades, 48% win, +0.0352 robust avg, t=2.55.',
+    // Picked from the shadow fleet rather than guessed: 892 instant-entry configs with
+    // 40+ closed trades each, ranked on the trimmed mean (best 3 trades deleted).
+    //
+    // This one is the only family that comes out POSITIVE on that metric — every dip
+    // band is negative on it — and it does so with a t-statistic above 2. The shape of
+    // the top ten is consistent and unlike anything else in the fleet: trail ~4%,
+    // stop ~10%, and a hold clock of about ONE MINUTE. It is a scalp, not a hold.
+    //
+    // Caveat worth keeping in view: the fleet trades every call, and until tonight that
+    // was mostly soltrenchtrending — coins that pop and fade, which is exactly what a
+    // 60-second clock is built for. The whale+gem feed it will actually run on has a
+    // median peak of 4.06x and hits 5x on 40% of calls, so a 1-minute exit may leave
+    // real money behind there. That cannot be settled from 4-point snapshots; it needs
+    // this running as a shadow config for a few days first.
+    make: () => ({ ...BASE, preset: 'instant2x1m', entryMode: 'instant' as const,
+      tps: [{ mult: 2, sellPct: 1 }], maxHoldMin: 1,
+      trailingDrop: 0.9, trailingFrom: 'afterLastTp' as const,
+      stopLossPct: 0.88, breakEvenAfterTp1: false }),
+  },
   instanttp15: {
     name: 'Instant → TP 1.5X',
     desc: 'No waiting, quick 1.5X scalp — best instant-entry variant (+3.8%/trade).',
@@ -1476,7 +1499,19 @@ export function simulateStrategy(s: Strategy, P: number): number {
 
 export function describeStrategy(s: Strategy): string {
   const parts: string[] = [];
+  // Entry mode first — 'dip 25%' and 'instant' are the single biggest difference
+  // between two strategies and the line never said which one it was.
+  if (s.entryMode === 'dip') parts.push(`dip −${Math.round((s.dipPct ?? 0) * 100)}% / ${s.dipWindowMin}m`);
   for (const tp of s.tps) parts.push(`${Math.round(tp.sellPct * 100)}%@${tp.mult}X`);
-  parts.push(`trail −${Math.round(s.trailingDrop * 100)}%${s.trailingFrom === 'entry' ? ' (entry)' : ' (after TPs)'}`);
-  return parts.join(' · ');
+  // A 90% trail is how a strategy says "no trail"; printing it as 'trail −90%' made
+  // a 1-minute scalp read as the loosest exit in the system, which is its opposite.
+  if (s.trailingDrop < 0.9) {
+    parts.push(`trail −${Math.round(s.trailingDrop * 100)}%${s.trailingFrom === 'entry' ? ' (entry)' : ' (after TPs)'}`);
+  }
+  if (s.trailingFrom !== 'entry' && s.stopLossPct > 0 && s.stopLossPct < 1) {
+    parts.push(`stop −${Math.round((1 - s.stopLossPct) * 100)}%`);
+  }
+  if (s.maxHoldMin) parts.push(`${s.maxHoldMin}m clock`);
+  if (s.breakEvenAfterTp1) parts.push('BE after TP1');
+  return parts.length ? parts.join(' · ') : 'hold';
 }
