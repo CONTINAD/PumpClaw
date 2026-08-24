@@ -4079,6 +4079,54 @@ function captureHealth(): { files: number; newestAgeH: number | null; givenUp: n
            givenUp, waiting, stale: ageH !== null && ageH > 6 };
 }
 
+/**
+ * Windows for the pages that judge calls — /calls and /filters.
+ *
+ * Both took `days=` and whole days only, so the tightest question either could
+ * answer was "the last 24 hours". On a 40-call day that averages a good hour into
+ * a bad one; on a 4-call night it is mostly empty. Call quality moves faster than
+ * a day — soltrenchtrending halved inside three — and a control that cannot
+ * express "this morning" cannot show it.
+ *
+ * `today` is midnight UTC to now, not a rolling duration. It answers a different
+ * question from `1d` and the two routinely disagree, which is why both exist.
+ *
+ * `days=` still parses, so older links and bookmarks keep working.
+ */
+const CALL_WINDOWS: { key: string; label: string; ms: number; midnight?: boolean }[] = [
+  { key: '1h', label: '1h', ms: 3600_000 },
+  { key: '6h', label: '6h', ms: 6 * 3600_000 },
+  { key: '12h', label: '12h', ms: 12 * 3600_000 },
+  { key: 'today', label: 'Today', ms: 0, midnight: true },
+  { key: '1d', label: '1d', ms: 86400_000 },
+  { key: '3d', label: '3d', ms: 3 * 86400_000 },
+  { key: '7d', label: '7d', ms: 7 * 86400_000 },
+  { key: '30d', label: '30d', ms: 30 * 86400_000 },
+  { key: 'all', label: 'All time', ms: 0 },
+];
+
+function parseCallWindow(url: string): { key: string; label: string; cut: number; desc: string } {
+  const wm = url.match(/[?&]win=([a-z0-9]+)/);
+  const dm = url.match(/[?&]days=(\d+|all)/);
+  const key = wm?.[1] ?? (dm ? (dm[1] === 'all' ? 'all' : `${dm[1]}d`) : '7d');
+  const w = CALL_WINDOWS.find(x => x.key === key) ?? CALL_WINDOWS.find(x => x.key === '7d')!;
+  const now = new Date();
+  const cut = w.key === 'all' ? 0
+    : w.midnight ? Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    : Date.now() - w.ms;
+  const desc = w.key === 'all' ? 'all time' : w.midnight ? 'today (UTC)' : `last ${w.label}`;
+  return { key: w.key, label: w.label, cut, desc };
+}
+
+function callWindowPicker(path: string, active: string): string {
+  return `<div style="display:flex;gap:6px;margin:10px 0;flex-wrap:wrap">
+    ${CALL_WINDOWS.map(w => `<a href="${path}?win=${w.key}" style="padding:4px 10px;border-radius:6px;
+      font-size:12px;text-decoration:none;border:1px solid ${w.key === active ? 'var(--border2)' : 'var(--border)'};
+      background:${w.key === active ? 'var(--bg3)' : 'transparent'};
+      color:${w.key === active ? 'var(--text)' : 'var(--text2)'}">${w.label}</a>`).join('')}
+  </div>`;
+}
+
 function parseRange(url: string): TimeRange {
   const match = url.match(/[?&]range=([^&]+)/);
   const val = match?.[1] ?? 'all';
@@ -5731,9 +5779,8 @@ export function startDashboard(port?: number): void {
       // against what the coin actually did afterwards, which is the only way to
       // tell them apart.
       try {
-        const dm = url.match(/[?&]days=(\d+|all)/);
-        const days = dm ? dm[1] : '7';
-        const cut = days === 'all' ? 0 : Date.now() - parseInt(days) * 86400_000;
+        const win = parseCallWindow(url);
+        const days = win.key, cut = win.cut;
         type Skip = { mint: string; name: string; reason: string; details: string;
                       marketCap: number; timestamp: number; peakMultiplier?: number };
         const all: Skip[] = loadJSON(join(CONFIG.DATA_DIR, 'skips.json'));
@@ -5770,9 +5817,7 @@ export function startDashboard(port?: number): void {
             <b>“Would have hit 2×”</b> is the cost of the filter. <b>“Died”</b> is what it saved you from.
             A filter whose blocks mostly went on to double is costing you money.
           </p>
-          <div style="display:flex;gap:6px;margin:10px 0">
-            ${['1', '3', '7', '30', 'all'].map(dd => `<a href="/filters?days=${dd}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${dd === days ? 'var(--border2)' : 'var(--border)'};background:${dd === days ? 'var(--bg3)' : 'transparent'};color:${dd === days ? 'var(--text)' : 'var(--text2)'}">${dd === 'all' ? 'All time' : dd + 'd'}</a>`).join('')}
-          </div>
+          ${callWindowPicker('/filters', days)}
           <div style="font-size:12px;color:var(--text3)">
             ${skips.length} rejections recorded · ${graded.length} graded
             ${skips.length > graded.length ? ` · ${skips.length - graded.length} too recent to judge` : ''}
@@ -5829,9 +5874,8 @@ export function startDashboard(port?: number): void {
       // written up. A feature earns attention by having a bucket that loses
       // consistently across enough calls, not because it seemed important.
       try {
-        const dm = url.match(/[?&]days=(\d+|all)/);
-        const days = dm ? dm[1] : 'all';
-        const cut = days === 'all' ? 0 : Date.now() - parseInt(days) * 86400_000;
+        const win = parseCallWindow(url.includes('win=') || url.includes('days=') ? url : url + '?win=all');
+        const days = win.key, cut = win.cut;
         const all: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
         const calls = all.filter(c => c.entryTime >= cut && (c.peakMultiplier ?? 0) > 0);
         const n = calls.length;
@@ -5939,9 +5983,8 @@ export function startDashboard(port?: number): void {
       // to trade a call", this asks "is the call any good in the first place". A
       // strategy cannot rescue a bad signal, and mixing the two hides which is at fault.
       try {
-        const hm = url.match(/[?&]days=(\d+|all)/);
-        const days = hm ? hm[1] : '7';
-        const cut = days === 'all' ? 0 : Date.now() - parseInt(days) * 86400_000;
+        const win = parseCallWindow(url);
+        const days = win.key, cut = win.cut;
         const all: CallRecord[] = loadJSON(join(CONFIG.DATA_DIR, 'calls.json'));
         const calls = all.filter(c => c.entryTime >= cut).sort((a, b) => b.entryTime - a.entryTime);
         const n = calls.length;
@@ -5983,13 +6026,11 @@ export function startDashboard(port?: number): void {
 
         const html = settingsShell(`
         <div class="card" style="max-width:none">
-          <h3>📞 Call quality — ${days === 'all' ? 'all time' : `last ${days} days`}</h3>
-          <div style="display:flex;gap:6px;margin:10px 0">
-            ${['1', '3', '7', '30', 'all'].map(d => `<a href="/calls?days=${d}" style="padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none;border:1px solid ${d === days ? 'var(--border2)' : 'var(--border)'};background:${d === days ? 'var(--bg3)' : 'transparent'};color:${d === days ? 'var(--text)' : 'var(--text2)'}">${d === 'all' ? 'All time' : d + 'd'}</a>`).join('')}
-          </div>
+          <h3>📞 Call quality — ${win.desc}</h3>
+          ${callWindowPicker('/calls', win.key)}
           ${n === 0 ? '<p style="color:var(--text2);font-size:13px">No calls in this window.</p>' : `
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px">
-            ${kpi('Calls', String(n), days === 'all' ? 'all time' : `in ${days} days`)}
+            ${kpi('Calls', String(n), win.desc)}
             ${kpi('Hit 2X', pct(hit(2)) + '%', `${hit(2)} of ${n}`, pct(hit(2)) >= 50 ? '#10b981' : '#f59e0b')}
             ${kpi('Hit 5X', pct(hit(5)) + '%', `${hit(5)} of ${n}`, '#10b981')}
             ${kpi('Hit 10X', pct(hit(10)) + '%', `${hit(10)} of ${n}`, '#8b5cf6')}
