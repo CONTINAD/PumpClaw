@@ -379,19 +379,27 @@ export async function jupiterQuoteSol(mint: string, tokenAmount: number): Promis
 
 /**
  * Get the current price of a token via Jupiter quote API.
- * Quotes a small SOL buy (0.1 SOL) to derive the token's SOL-native price,
- * then converts to USD using the provided SOL price.
+ * Quotes a SOL buy to derive the token's SOL-native price, then converts to USD
+ * using the provided SOL price.
+ *
+ * `solIn` is the size the quote is taken at, and it matters more than it looks.
+ * A quote is a price for a specific amount: 0.1 SOL barely touches the pool, so
+ * it reads close to mid, while a real 1.3 SOL entry walks the curve and fills
+ * measurably higher. Quoting the probe size and then buying twelve times larger
+ * makes every fill look like slippage that no guard could have prevented — the
+ * two numbers were never prices of the same trade. Callers deciding a real entry
+ * should pass the size they are actually about to spend.
  *
  * This replaces the Jupiter Price API v2 which now requires auth.
  */
-export async function jupiterGetPrice(mint: string, solPriceUsd?: number, urgent = false): Promise<{ priceUsd: number; priceNative: number } | null> {
+export async function jupiterGetPrice(mint: string, solPriceUsd?: number, urgent = false, solIn = 0.1): Promise<{ priceUsd: number; priceNative: number } | null> {
   try {
     // Rate limit price-check quotes so they don't starve buy/sell quotes —
     // unless this is an exit decision, which must not queue behind anything.
     await rateLimitedQuote(urgent);
 
-    // Quote: how many tokens do I get for 0.1 SOL?
-    const lamportsIn = 100_000_000; // 0.1 SOL
+    // Quote: how many tokens do I get for solIn SOL?
+    const lamportsIn = Math.max(1_000_000, Math.floor(solIn * 1e9));
     const params = new URLSearchParams({
       inputMint: WSOL_MINT,
       outputMint: mint,
@@ -420,7 +428,7 @@ export async function jupiterGetPrice(mint: string, solPriceUsd?: number, urgent
     if (!(uiTokens > 0)) return null;
 
     // priceNative = SOL per token = (SOL spent) / (tokens received)
-    const solSpent = lamportsIn / 1e9; // 0.1
+    const solSpent = lamportsIn / 1e9;
     const priceNative = solSpent / uiTokens;
 
     // Convert to USD if SOL price provided

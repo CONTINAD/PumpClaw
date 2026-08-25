@@ -11,7 +11,7 @@ import bs58 from 'bs58';
 import { CONFIG } from './config.js';
 import { Trader, type RealExit, type RealPosition } from './trader.js';
 import { STRATEGY_PRESETS, sanitizeStrategy, type Strategy } from './strategy.js';
-import { walletSource, getWallet } from './wallet.js';
+import { walletSource, getWallet, getSolBalance } from './wallet.js';
 import { PUMPCLAW_SOURCE_ID } from './call-sources.js';
 import { sendTradeActivity, sendOpsAlert } from './discord.js';
 import { postCallout, calloutThesis } from './pump-callout.js';
@@ -147,10 +147,12 @@ class TaskManager {
     // for real tasks already in range of their target — a quote is worth spending
     // on a buy that is close to happening, not on every coin the fleet is holding.
     let cachedExec: number | null | undefined;
-    const executablePrice = async (): Promise<number | null> => {
+    const executablePrice = async (task: TradeTask): Promise<number | null> => {
       if (cachedExec !== undefined) return cachedExec;
       try {
-        const jup = await jupiterGetPrice(mint, await getSolPrice(), true);
+        // Quote the size about to be spent, not a probe. The band gate above only
+        // lets one real task through, so one quote per tick still covers it.
+        const jup = await jupiterGetPrice(mint, await getSolPrice(), true, await this.plannedEntrySol(task));
         cachedExec = jup && jup.priceUsd > 0 ? jup.priceUsd : null;
       } catch { cachedExec = null; }
       return cachedExec;
@@ -210,7 +212,7 @@ class TaskManager {
       let live = price;
       if (task && task.enabled && !task.paper
           && CONFIG.DIP_WATCH_BAND > 0 && price <= p.target * CONFIG.DIP_WATCH_BAND) {
-        const exec = await executablePrice();
+        const exec = await executablePrice(task);
         if (exec !== null && exec > 0) {
           live = exec;
           if (price <= p.target && exec > p.target) {
@@ -435,6 +437,31 @@ class TaskManager {
 
   keypairFor(task: TradeTask): Keypair {
     return Keypair.fromSecretKey(bs58.decode(task.walletKey));
+  }
+
+  /**
+   * The SOL a buy on this task would spend right now — the same arithmetic the
+   * trader does, so a quote taken at this size is a quote for the actual trade.
+   *
+   * Cached for a minute because it is read inside the dip watch loop and the
+   * balance only moves when a trade does; a stale-by-a-minute size is a slightly
+   * wrong quote size, which is far cheaper than an RPC read per tick per order.
+   * Falls back to the 0.1 SOL probe on an unreadable balance rather than
+   * blocking the watch — a slightly optimistic trigger beats no trigger.
+   */
+  private entrySizeCache = new Map<string, { sol: number; at: number }>();
+  async plannedEntrySol(task: TradeTask): Promise<number> {
+    const hit = this.entrySizeCache.get(task.id);
+    if (hit && Date.now() - hit.at < 60_000) return hit.sol;
+    try {
+      const bal = await getSolBalance(this.keypairFor(task));
+      const s = task.strategy;
+      let sol = Math.max(Math.floor(bal * s.entryPct * 1000) / 1000, s.minEntrySol);
+      if (s.maxEntrySol > 0) sol = Math.min(sol, s.maxEntrySol);
+      if (!(sol > 0)) return 0.1;
+      this.entrySizeCache.set(task.id, { sol, at: Date.now() });
+      return sol;
+    } catch { return 0.1; }
   }
 
   traderFor(task: TradeTask): Trader {
